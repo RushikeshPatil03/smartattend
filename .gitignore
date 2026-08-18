@@ -1,23 +1,40 @@
-# Logs
-logs
+# Dependencies
+node_modules
+server/node_modules
+face-service/__pycache__
+face-service/venv
+.venv
+
+# Production Build
+dist
+dist-ssr
+build
+
+# Environment variables & Secrets
+.env
+.env.*
+!.env.example
+*.local
+server/.env
+server/.env.*
+!server/.env.example
+
+# Logs & temp files
 *.log
+logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+server/*.log
 
-node_modules
-dist
-dist-ssr
-.env
-*.local
-
-# Editor directories and files
+# Editor & OS files
+.DS_Store
+Thumbs.db
+.idea
 .vscode/*
 !.vscode/extensions.json
-.idea
-.DS_Store
 *.suo
 *.ntvs*
 *.njsproj
