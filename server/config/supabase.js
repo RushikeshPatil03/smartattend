@@ -1,5 +1,11 @@
 const { createClient } = require("@supabase/supabase-js");
+const WebSocket = require("ws");
 const env = require("./env");
+
+// Polyfill global WebSocket for Node runtimes < 22
+if (typeof globalThis.WebSocket === "undefined") {
+  globalThis.WebSocket = WebSocket;
+}
 
 let supabaseInstance = null;
 
@@ -21,6 +27,7 @@ function getSupabaseClient() {
         persistSession: false,
       },
       realtime: {
+        transport: WebSocket,
         params: {
           eventsPerSecond: 20,
         },
