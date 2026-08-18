@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: smart-attend-api
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: cd server && npm install
+    startCommand: cd server && npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: FRONTEND_URL
+        value: https://smartattend.app
+      - key: CORS_ORIGINS
+        value: https://smartattend.app,https://www.smartattend.app
+      - key: CORS_ORIGIN_PATTERNS
+        value: https://*.smartattend.app,https://*.pages.dev
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: QR_SECRET
+        generateValue: true
+      - key: QR_TTL_SECONDS
+        value: 3
+      - key: DEFAULT_SESSION_RADIUS_METERS
+        value: 50

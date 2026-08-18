@@ -1,0 +1,35 @@
+{
+  "name": "smartattend---qr-attendance-system",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "infra:up": "docker compose up -d mongodb redis && node scripts/wait-for-infra.cjs",
+    "infra:down": "docker compose down",
+    "server:start": "npm --prefix server start",
+    "server:dev": "npm --prefix server run dev",
+    "dev:full": "npm run infra:up && npm --prefix server run dev",
+    "prod:start": "npm run infra:up && pm2-runtime start ecosystem.config.cjs",
+    "dev": "vite --host 0.0.0.0 --port 5173",
+    "build": "vite build",
+    "preview": "vite preview",
+    "perf:load": "node scripts/load-attendance-check.cjs"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^0.10.35",
+    "@supabase/supabase-js": "^2.49.1",
+    "html5-qrcode": "^2.3.8",
+    "lucide-react": "^0.554.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-qr-code": "^2.0.18",
+    "react-router-dom": "^7.18.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@types/react": "^19.2.10",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}

@@ -1,0 +1,36 @@
+services:
+  mongodb-clone:
+    container_name: smart-attend-mongo-clone
+    image: mongo:6
+    restart: unless-stopped
+    volumes:
+      - mongo-data-clone:/data/db
+    ports:
+      - "27018:27017" # Changed host port from 27017 to 27018
+
+  redis-clone:
+    container_name: smart-attend-redis-clone
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "no"]
+    ports:
+      - "6380:6379" # Changed host port from 6379 to 6380
+
+  server-clone:
+    container_name: smart-attend-server-clone
+    build: ./server
+    restart: unless-stopped
+    environment:
+      # Keeps internal Docker communication working perfectly
+      - MONGO_URI=mongodb://mongodb-clone:27017/smart_attendance_system_dev 
+      - JWT_SECRET=replace_with_real_secret_clone
+      - QR_SECRET=replace_with_real_qr_secret_clone
+      - REDIS_URL=redis://redis-clone:6379
+    ports:
+      - "4001:4000" # Changed host port from 4000 to 4001
+    depends_on:
+      - mongodb-clone
+      - redis-clone
+
+volumes:
+  mongo-data-clone: # Separate storage volume for the cloned database

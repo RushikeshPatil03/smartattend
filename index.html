@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SmartAttend</title>
+
+    <!-- Tailwind CDN (runtime styles) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+      :root {
+        color-scheme: light;
+        --app-bg: #eef4ff;
+        --app-ink: #0f172a;
+        --app-brand: #2563eb;
+        --app-brand-soft: rgba(37, 99, 235, 0.14);
+        --app-accent: #06b6d4;
+        --app-surface: rgba(255, 255, 255, 0.9);
+      }
+
+      * { box-sizing: border-box; }
+
+      html { scroll-behavior: smooth; }
+
+      body {
+        margin: 0;
+        font-family: 'Inter', sans-serif;
+        background:
+          linear-gradient(135deg, rgba(37, 99, 235, 0.12), transparent 28%),
+          radial-gradient(circle at top right, rgba(6, 182, 212, 0.14), transparent 28%),
+          radial-gradient(circle at bottom left, rgba(59, 130, 246, 0.12), transparent 32%),
+          linear-gradient(180deg, #f8fbff 0%, var(--app-bg) 100%);
+        color: var(--app-ink);
+      }
+
+      .font-display { font-family: 'Inter', sans-serif; }
+
+      .page-enter {
+        animation: page-enter 480ms cubic-bezier(.2,.8,.2,1);
+      }
+
+      .surface-card {
+        backdrop-filter: blur(10px);
+        box-shadow: 0 20px 58px -34px rgba(15, 23, 42, 0.24);
+        background: var(--app-surface);
+      }
+
+      ::selection {
+        background: rgba(37, 99, 235, 0.22);
+        color: #0f172a;
+      }
+
+      .shimmer {
+        position: relative;
+        overflow: hidden;
+      }
+
+      .shimmer::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        transform: translateX(-100%);
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.65), transparent);
+        animation: shimmer 1.8s infinite;
+      }
+
+      @keyframes shimmer {
+        100% { transform: translateX(100%); }
+      }
+
+      @keyframes page-enter {
+        from { opacity: 0; transform: translateY(14px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+
+      @keyframes scan-laser {
+        0% { top: 0%; opacity: 0; }
+        10% { opacity: 1; }
+        90% { opacity: 1; }
+        100% { top: 100%; opacity: 0; }
+      }
+      .animate-scan-laser {
+        animation: scan-laser 2s linear infinite;
+      }
+
+      @keyframes scale-in {
+        from { transform: scale(0.8); opacity: 0; }
+        to { transform: scale(1); opacity: 1; }
+      }
+      .animate-scale-in {
+        animation: scale-in 0.3s ease-out forwards;
+      }
+
+      @keyframes fade-in-down {
+        from { opacity: 0; transform: translateY(-10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      .animate-fade-in-down {
+        animation: fade-in-down 0.3s ease-out forwards;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html { scroll-behavior: auto; }
+        *, *::before, *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+    </style>
+
+    <!-- DO NOT LOAD REACT FROM CDN. VITE WILL LOAD REACT LOCALLY -->
+    <!-- REMOVED IMPORTMAP COMPLETELY -->
+  </head>
+
+  <body class="bg-gray-50 text-slate-900">
+    <div id="root"></div>
+
+    <!-- Vite entry point -->
+    <script type="module" src="/src/index.tsx"></script>
+  </body>
+</html>

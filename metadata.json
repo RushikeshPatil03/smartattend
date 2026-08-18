@@ -1,0 +1,8 @@
+{
+  "name": "SmartAttend - QR Attendance System",
+  "description": "A secure, real-time, proxy-proof attendance system using Dynamic QR codes, Geolocation validation, and Device Fingerprinting.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ]
+}
