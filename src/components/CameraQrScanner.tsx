@@ -27,8 +27,8 @@ type CameraQrScannerProps = {
   isScannerActive?: boolean;
 };
 
-const SCAN_INTERVAL_MS = 200;
-const DUPLICATE_DETECTION_COOLDOWN_MS = 1200;
+const SCAN_INTERVAL_MS = 60;
+const DUPLICATE_DETECTION_COOLDOWN_MS = 800;
 
 function isInsecureMobileCameraContext() {
   const host = window.location.hostname;
@@ -271,8 +271,8 @@ export default function CameraQrScanner({
       await scanner.start(
         { facingMode: "environment" },
         {
-          fps: 16,
-          qrbox: { width: 200, height: 200 },
+          fps: 24,
+          qrbox: { width: 220, height: 220 },
           aspectRatio: 1,
         },
         (decodedText) => {

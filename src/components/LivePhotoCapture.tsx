@@ -298,6 +298,13 @@ const LivePhotoCapture: React.FC<{
   }, []);
 
   useEffect(() => {
+    void loadModelsIfNeeded();
+    if (faceVerificationReferenceUrl) {
+      void computeDescriptorFromImageURL(faceVerificationReferenceUrl);
+    }
+  }, [faceVerificationReferenceUrl]);
+
+  useEffect(() => {
     if (typeof window === "undefined" || typeof DeviceOrientationEvent === "undefined") {
       return;
     }
@@ -374,18 +381,12 @@ const LivePhotoCapture: React.FC<{
           audio: false,
           video: {
             facingMode: "user",
-            width: { ideal: 480, max: 720 },
-            height: { ideal: 640, max: 960 },
-            frameRate: { ideal: 24, max: 30 },
+            width: { ideal: 480, max: 640 },
+            height: { ideal: 640, max: 800 },
+            frameRate: { ideal: 30, max: 30 },
           },
         });
       } catch (primaryError: any) {
-        if (
-          primaryError?.name !== "OverconstrainedError" &&
-          primaryError?.name !== "ConstraintNotSatisfiedError"
-        ) {
-          throw primaryError;
-        }
         stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
           video: { facingMode: "user" },

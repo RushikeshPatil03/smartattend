@@ -348,27 +348,10 @@ const Login: React.FC = () => {
 
   return (
     <div className="relative min-h-screen w-full overflow-x-hidden bg-[#070b14] text-slate-100 flex flex-col justify-between selection:bg-blue-500 selection:text-white">
-      {/* Ambient Gradient Mesh Background */}
+      {/* Ambient Gradient Mesh Background (Hardware Accelerated, Zero CPU Load) */}
       <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-        {/* Animated Radial Orbs */}
-        <motion.div
-          animate={{
-            scale: [1, 1.15, 1],
-            x: [0, 20, 0],
-            y: [0, -15, 0],
-          }}
-          transition={{ duration: 16, repeat: Infinity, ease: "easeInOut" }}
-          className="absolute -top-32 left-1/2 -translate-x-1/2 w-[650px] h-[650px] rounded-full bg-gradient-to-tr from-blue-600/25 via-indigo-600/20 to-cyan-500/10 blur-[130px]"
-        />
-        <motion.div
-          animate={{
-            scale: [1, 1.2, 1],
-            x: [0, -25, 0],
-            y: [0, 25, 0],
-          }}
-          transition={{ duration: 20, repeat: Infinity, ease: "easeInOut" }}
-          className="absolute -bottom-40 right-1/4 w-[600px] h-[600px] rounded-full bg-gradient-to-bl from-cyan-500/20 via-blue-600/15 to-transparent blur-[130px]"
-        />
+        <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[650px] h-[650px] rounded-full bg-[radial-gradient(circle,rgba(37,99,235,0.22)_0%,rgba(99,102,241,0.14)_45%,transparent_70%)] blur-3xl will-change-transform" />
+        <div className="absolute -bottom-40 right-1/4 w-[600px] h-[600px] rounded-full bg-[radial-gradient(circle,rgba(6,182,212,0.18)_0%,rgba(37,99,235,0.10)_45%,transparent_70%)] blur-3xl will-change-transform" />
 
         {/* Subtle Geometric Grid Matrix */}
         <div

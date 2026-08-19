@@ -9,6 +9,8 @@ import { getLiveLocationWithOptions, prewarmLiveLocation } from "../utils/liveLo
 import { createSequentialBuffer } from "../services/sequentialQrBuffer";
 import { parseQrPayload, RotatingQrPayload } from "../utils/totpQrGenerator";
 
+import { loadModelsIfNeeded, computeDescriptorFromImageURL } from "../utils/faceApiLoader";
+
 const preloadCameraQrScanner = () => import("../components/CameraQrScanner");
 const CameraQrScanner = React.lazy(preloadCameraQrScanner);
 const preloadLivePhotoCapture = () => import("../components/LivePhotoCapture");
@@ -202,6 +204,10 @@ const StudentDashboard: React.FC = () => {
     mountedRef.current = true;
     void preloadCameraQrScanner();
     void preloadLivePhotoCapture();
+    void loadModelsIfNeeded();
+    if (registeredFacePhoto) {
+      void computeDescriptorFromImageURL(registeredFacePhoto);
+    }
     return () => {
       mountedRef.current = false;
       if (resetTimerRef.current) {
@@ -215,39 +221,6 @@ const StudentDashboard: React.FC = () => {
       if (faceGateTimerRef.current) window.clearTimeout(faceGateTimerRef.current);
     };
   }, [registeredFacePhoto]);
-
-  const warmStudentCamera = useCallback(async () => {
-    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) return;
-    if (cameraWarmupPromiseRef.current) return cameraWarmupPromiseRef.current;
-
-    cameraWarmupPromiseRef.current = (async () => {
-      let stream: MediaStream | null = null;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: {
-            facingMode: { ideal: "environment" },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-          },
-        });
-      } catch {
-        // Ignore warm-up permission failures here; the user can still trigger the scanner manually.
-      } finally {
-        if (stream) {
-          stream.getTracks().forEach((track) => track.stop());
-        }
-        cameraWarmupPromiseRef.current = null;
-      }
-    })();
-
-    return cameraWarmupPromiseRef.current;
-  }, []);
-
-  useEffect(() => {
-    if (!currentUser) return;
-    void warmStudentCamera();
-  }, [currentUser, warmStudentCamera]);
 
   const handleLiveFaceCaptured = useCallback((capture: {
     faceVerification?: { matched?: boolean; liveness?: string };
