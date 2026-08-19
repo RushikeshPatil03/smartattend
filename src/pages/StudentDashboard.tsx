@@ -870,23 +870,25 @@ const StudentDashboard: React.FC = () => {
         onLogout={logout}
       />
 
-      <Card className="surface-card mx-auto mb-4 flex min-h-[300px] max-w-lg items-center justify-center border border-slate-700/60 bg-gradient-to-br from-slate-900 via-slate-900 to-slate-800 text-white shadow-[0_20px_45px_-30px_rgba(2,6,23,0.75)]">
+      <div className="mx-auto mb-4 flex min-h-[310px] w-full max-w-lg items-center justify-center rounded-[24px] border border-slate-800 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-900 p-6 sm:p-8 text-white shadow-[0_24px_50px_-20px_rgba(15,23,42,0.85)]">
         {scanStep === "IDLE" && (
-          <div className="text-center">
-            <Scan size={48} className="mx-auto mb-6 text-slate-200" />
-            <h2 className="text-2xl font-bold mb-2 tracking-tight">Mark Attendance</h2>
-            <p className="text-slate-300/90 text-sm mb-5">Scan the Dynamic QR directly for a faster demo flow.</p>
-            <div className="mb-8 flex flex-wrap items-center justify-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em]">
-              <span className="rounded-full border border-slate-500/40 bg-slate-500/10 px-3 py-1 text-slate-300">
+          <div className="w-full text-center">
+            <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-800/80 text-cyan-400 border border-slate-700/60 shadow-inner">
+              <Scan size={36} />
+            </div>
+            <h2 className="text-2xl font-bold mb-2 tracking-tight text-white">Mark Attendance</h2>
+            <p className="text-slate-300 text-sm mb-5 leading-relaxed">Scan the Dynamic QR directly for a faster demo flow.</p>
+            <div className="mb-6 flex flex-wrap items-center justify-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em]">
+              <span className="rounded-full border border-slate-700 bg-slate-800/80 px-3.5 py-1 text-slate-300">
                 Camera On Tap
               </span>
-              <span className={`rounded-full border px-3 py-1 ${locationReady ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-100" : "border-slate-500/40 bg-slate-500/10 text-slate-300"}`}>
+              <span className={`rounded-full border px-3.5 py-1 ${locationReady ? "border-emerald-500/50 bg-emerald-950/60 text-emerald-300" : "border-slate-700 bg-slate-800/80 text-slate-300"}`}>
                 GPS {locationReady ? "Ready" : "Warming"}
               </span>
             </div>
             <Button
               onClick={simulateScan}
-              className="bg-teal-600 hover:bg-teal-500 active:bg-teal-700 w-full py-4 text-lg shadow-lg shadow-teal-900/30"
+              className="bg-teal-600 hover:bg-teal-500 active:bg-teal-700 w-full py-4 text-base sm:text-lg font-bold text-white shadow-lg shadow-teal-950/50 rounded-xl cursor-pointer"
               disabled={busy || !faceVerified}
             >
               <Camera size={20} /> Mark Attendance
@@ -895,17 +897,21 @@ const StudentDashboard: React.FC = () => {
         )}
 
         {scanStep === "PREPARING" && (
-          <div className="text-center">
-            <MapPin size={56} className="mx-auto text-teal-300 mb-4" />
-            <h3 className="text-lg font-semibold tracking-tight">Getting Ready</h3>
+          <div className="w-full text-center">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-teal-950/60 text-teal-400 border border-teal-500/40">
+              <MapPin size={36} />
+            </div>
+            <h3 className="text-lg font-bold tracking-tight text-white">Getting Ready</h3>
             <p className="text-xs text-slate-300 mt-2">{statusMsg || "Preparing camera and live GPS."}</p>
           </div>
         )}
 
         {scanStep === "SCANNING" && (
-          <div className="text-center">
-            <CheckCircle size={40} className="mx-auto text-green-400 mb-4" />
-            <h2 className="text-xl font-bold tracking-tight">Scan Attendance QR</h2>
+          <div className="w-full text-center">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-950/60 text-emerald-400 border border-emerald-500/40">
+              <CheckCircle size={36} />
+            </div>
+            <h2 className="text-xl font-bold tracking-tight text-white">Scan Attendance QR</h2>
             <p className="text-slate-300 text-sm mb-6 mt-1">
               Hold steady while the app captures the rotating QR pair.
             </p>
@@ -914,31 +920,37 @@ const StudentDashboard: React.FC = () => {
         )}
 
         {scanStep === "SUBMITTING" && (
-          <div className="text-center">
-            <CheckCircle size={40} className="mx-auto text-teal-300 mb-4" />
-            <h2 className="text-xl font-bold tracking-tight">Submitting</h2>
+          <div className="w-full text-center">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-teal-950/60 text-teal-400 border border-teal-500/40 animate-pulse">
+              <CheckCircle size={36} />
+            </div>
+            <h2 className="text-xl font-bold tracking-tight text-white">Submitting</h2>
             <p className="text-slate-300 text-sm mt-1">{statusMsg || "Verifying QR, device, and location."}</p>
           </div>
         )}
 
         {scanStep === "SUCCESS" && (
-          <div className="text-center">
-            <CheckCircle size={48} className="mx-auto text-green-400 mb-4" />
-            <h2 className="text-2xl font-bold tracking-tight">Present</h2>
-            <p className="text-green-100 bg-green-400/10 border border-green-300/20 rounded-lg px-3 py-2 mt-3 text-sm">{statusMsg}</p>
-            <Button onClick={resetScan} variant="secondary" className="mt-6 bg-white/95 text-slate-900 border-none hover:bg-white">Done</Button>
+          <div className="w-full text-center">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-950/60 text-emerald-400 border border-emerald-500/40">
+              <CheckCircle size={36} />
+            </div>
+            <h2 className="text-2xl font-bold tracking-tight text-white">Present</h2>
+            <p className="text-emerald-300 bg-emerald-950/60 border border-emerald-500/30 rounded-lg px-3 py-2 mt-3 text-sm">{statusMsg}</p>
+            <Button onClick={resetScan} variant="secondary" className="mt-6 bg-white text-slate-900 border-none hover:bg-slate-100 font-bold cursor-pointer">Done</Button>
           </div>
         )}
 
         {scanStep === "ERROR" && (
-          <div className="text-center">
-            <XCircle size={48} className="mx-auto text-red-400 mb-4" />
-            <h2 className="text-2xl font-bold tracking-tight">Failed</h2>
-            <p className="text-red-100 bg-red-400/10 border border-red-300/20 rounded-lg px-3 py-2 mt-3 text-sm">{statusMsg}</p>
-            <Button onClick={resetScan} variant="secondary" className="mt-6 bg-white/95 text-slate-900 border-none hover:bg-white">Try Again</Button>
+          <div className="w-full text-center">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-rose-950/60 text-rose-400 border border-rose-500/40">
+              <XCircle size={36} />
+            </div>
+            <h2 className="text-2xl font-bold tracking-tight text-white">Failed</h2>
+            <p className="text-rose-300 bg-rose-950/60 border border-rose-500/30 rounded-lg px-3 py-2 mt-3 text-sm">{statusMsg}</p>
+            <Button onClick={resetScan} variant="secondary" className="mt-6 bg-white text-slate-900 border-none hover:bg-slate-100 font-bold cursor-pointer">Try Again</Button>
           </div>
         )}
-      </Card>
+      </div>
 
       <div className="mx-auto flex w-full max-w-lg justify-center pb-8">
         <button
