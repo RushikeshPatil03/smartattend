@@ -191,16 +191,23 @@ app.use("/api/public", publicRoutes);
 app.get("/api/health", async (_req, res) => {
   const supabaseConfigured = isSupabaseConfigured();
   let supabaseReady = false;
+  let supabaseError = null;
 
   if (supabaseConfigured) {
     try {
       const client = getSupabaseClient();
       if (client) {
         const { error } = await client.from("admins").select("id").limit(1);
-        supabaseReady = !error;
+        if (error) {
+          supabaseError = error.message;
+        } else {
+          supabaseReady = true;
+        }
+      } else {
+        supabaseError = "Supabase client instance is null";
       }
-    } catch {
-      supabaseReady = false;
+    } catch (err) {
+      supabaseError = err.message;
     }
   }
 
@@ -210,6 +217,7 @@ app.get("/api/health", async (_req, res) => {
     database: "supabase-postgresql",
     supabaseConfigured,
     supabaseReady,
+    supabaseError,
     uptimeSeconds: Math.floor(process.uptime()),
     memoryUsageMB: Math.round(process.memoryUsage().rss / (1024 * 1024)),
     environment: env.NODE_ENV,
