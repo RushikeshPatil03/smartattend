@@ -90,7 +90,7 @@ const frontendUrl = normalizeOrigin(process.env.FRONTEND_URL || "https://smartat
 const defaultCorsOrigins = [
   "https://smartattend.app",
   "https://www.smartattend.app",
-  "https://smartattend-qt1x.onrender.com",
+  "https://smartattend-api-lpbx.onrender.com",
   "http://localhost:5173",
   "http://localhost:3000",
   "http://127.0.0.1:5173",
@@ -130,16 +130,14 @@ const env = {
   SSL_KEY_PATH: clean(process.env.SSL_KEY_PATH),
   SSL_CERT_PATH: clean(process.env.SSL_CERT_PATH),
   
-  // Supabase Configuration
-  SUPABASE_URL:
-    clean(process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL) ||
-    "https://zjgsnwjbxxkzrquclugv.supabase.co",
-  SUPABASE_SERVICE_ROLE_KEY:
-    clean(process.env.SUPABASE_SERVICE_ROLE_KEY) ||
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpqZ3Nud2pieHhrenJxdWNsdWd2Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzA3NTUwMSwiZXhwIjoyMTAyNjUxNTAxfQ.NQYGQ0pZIMZDE5EpMANkWCNqOIG0MbUigA-Q2N0f3G4",
-  SUPABASE_ANON_KEY:
-    clean(process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY) ||
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpqZ3Nud2pieHhrenJxdWNsdWd2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcwNzU1MDEsImV4cCI6MjEwMjY1MTUwMX0.RKmyLaQb3Tvvgk6VRq6UsvlqVByg24d8nyB7zZRRvfI",
+  // Supabase Configuration (Mumbai ap-south-1 / Project Env)
+  SUPABASE_URL: clean(process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL),
+  SUPABASE_SERVICE_ROLE_KEY: clean(process.env.SUPABASE_SERVICE_ROLE_KEY),
+  SUPABASE_ANON_KEY: clean(process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY),
+
+  // Supabase Connection Pooler (Transaction Mode, Port 6543)
+  DATABASE_URL: clean(process.env.DATABASE_URL),
+  DIRECT_URL: clean(process.env.DIRECT_URL),
   
   // JWT Configuration
   JWT_SECRET: requireStrongSecret("JWT_SECRET"),

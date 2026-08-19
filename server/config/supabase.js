@@ -16,14 +16,15 @@ let supabaseInstance = null;
 function getSupabaseClient() {
   if (supabaseInstance) return supabaseInstance;
 
-  const url = env.SUPABASE_URL || "https://zjgsnwjbxxkzrquclugv.supabase.co";
-  const key =
-    env.SUPABASE_SERVICE_ROLE_KEY ||
-    env.SUPABASE_ANON_KEY ||
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpqZ3Nud2pieHhrenJxdWNsdWd2Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzA3NTUwMSwiZXhwIjoyMTAyNjUxNTAxfQ.NQYGQ0pZIMZDE5EpMANkWCNqOIG0MbUigA-Q2N0f3G4";
+  const url = env.SUPABASE_URL;
+  const key = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_ANON_KEY;
 
   if (!url || !key) {
-    console.warn("⚠️ SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not configured yet.");
+    if (env.IS_PRODUCTION) {
+      console.error("❌ CRITICAL: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not configured in production environment variables.");
+    } else {
+      console.warn("⚠️ SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not configured in server/.env yet.");
+    }
     return null;
   }
 
@@ -42,10 +43,15 @@ function getSupabaseClient() {
       db: {
         schema: "public",
       },
+      global: {
+        headers: {
+          "x-application-name": "smart-attend-api-mumbai",
+        },
+      },
     });
     return supabaseInstance;
   } catch (err) {
-    console.warn("⚠️ Primary Supabase client creation failed, trying fallback:", err.message);
+    console.warn("⚠️ Primary Supabase client creation failed, trying fallback mode:", err.message);
     try {
       supabaseInstance = createClient(url, key, {
         auth: {
@@ -71,7 +77,7 @@ const supabase = new Proxy(
       const client = getSupabaseClient();
       if (!client) {
         throw new Error(
-          "Supabase client not initialized. Please set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in server/.env"
+          "Supabase client not initialized. Please configure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in server/.env (Mumbai region)."
         );
       }
       const value = client[prop];
@@ -85,8 +91,8 @@ const supabase = new Proxy(
 
 function isSupabaseConfigured() {
   return Boolean(
-    (env.SUPABASE_URL || "https://zjgsnwjbxxkzrquclugv.supabase.co") &&
-    (env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
+    env.SUPABASE_URL &&
+    (env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_ANON_KEY)
   );
 }
 

@@ -1,16 +1,19 @@
 import { createClient, SupabaseClient, RealtimeChannel } from "@supabase/supabase-js";
 
-const supabaseUrl =
-  (import.meta.env.VITE_SUPABASE_URL as string) ||
-  "https://zjgsnwjbxxkzrquclugv.supabase.co";
-const supabaseAnonKey =
-  (import.meta.env.VITE_SUPABASE_ANON_KEY as string) ||
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpqZ3Nud2pieHhrenJxdWNsdWd2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcwNzU1MDEsImV4cCI6MjEwMjY1MTUwMX0.RKmyLaQb3Tvvgk6VRq6UsvlqVByg24d8nyB7zZRRvfI";
+const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL as string)?.trim() || "";
+const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string)?.trim() || "";
 
 let clientInstance: SupabaseClient | null = null;
 
 export function getSupabase(): SupabaseClient {
   if (clientInstance) return clientInstance;
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    console.warn(
+      "⚠️ VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY is not defined. Please set them in your .env or Cloudflare Pages environment variables (Mumbai region)."
+    );
+    return createClient("https://placeholder-mumbai-project.supabase.co", "dummy-key");
+  }
 
   try {
     clientInstance = createClient(supabaseUrl, supabaseAnonKey, {
@@ -19,12 +22,16 @@ export function getSupabase(): SupabaseClient {
           eventsPerSecond: 20,
         },
       },
+      global: {
+        headers: {
+          "x-application-name": "smart-attend-frontend-mumbai",
+        },
+      },
     });
     return clientInstance;
   } catch (err) {
-    console.warn("Failed to initialize Supabase frontend client:", err);
-    // Fallback dummy client
-    return createClient("https://placeholder-project.supabase.co", "dummy-key");
+    console.error("❌ Failed to initialize Supabase frontend client:", err);
+    return createClient("https://placeholder-mumbai-project.supabase.co", "dummy-key");
   }
 }
 
@@ -76,7 +83,7 @@ export function subscribeToSessionAttendance(
     })
     .subscribe((status) => {
       if (status === "SUBSCRIBED") {
-        // Subscribed to realtime attendance updates
+        // Subscribed to realtime attendance updates in Mumbai region
       }
     });
 
