@@ -8,7 +8,8 @@ const {
   generateQRTokenWithTiming,
   clearSessionQR,
 } = require("../services/qrService");
-const { getOrCreateSessionSecret } = require("../services/totpVerification");
+const { getOrCreateSessionSecret, clearSessionSecret } = require("../services/totpVerification");
+const { removeSessionChannel } = require("../services/realtimeService");
 const { normalizeFingerprint } = require("../services/deviceFingerprint");
 const { expireIfInactive, touchSession } = require("../services/sessionLifecycle");
 const {
@@ -1235,7 +1236,7 @@ router.post("/session/:id/stop", authMiddleware, async (req, res) => {
       return res.status(403).json({ ok: false, error: "Forbidden" });
     }
 
-    const sessionId = req.params.id;
+    const sessionId = String(req.params.id);
     const supabase = getSupabaseClient();
     if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
 
@@ -1256,6 +1257,11 @@ router.post("/session/:id/stop", authMiddleware, async (req, res) => {
 
     const { data: session, error } = await updateQuery.select("*").single();
 
+    // Clean up QR, Secret, and realtime channel
+    await clearSessionQR(sessionId);
+    await clearSessionSecret(sessionId);
+    await removeSessionChannel(sessionId);
+
     if (error || !session) {
       let existingQuery = supabase.from("sessions").select("*").eq("id", sessionId);
       if (req.userRole === "FACULTY") existingQuery = existingQuery.eq("faculty", req.userId);
@@ -1270,8 +1276,6 @@ router.post("/session/:id/stop", authMiddleware, async (req, res) => {
         alreadyStopped: true,
       });
     }
-
-    await clearSessionQR(session.id);
 
     return res.json({
       ok: true,
@@ -1299,7 +1303,7 @@ router.post("/session/:id/cancel", authMiddleware, async (req, res) => {
       return res.status(403).json({ ok: false, error: "Forbidden" });
     }
 
-    const sessionId = req.params.id;
+    const sessionId = String(req.params.id);
     const supabase = getSupabaseClient();
     if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
 
@@ -1308,24 +1312,67 @@ router.post("/session/:id/cancel", authMiddleware, async (req, res) => {
     const { data: session } = await fetchQuery.single();
 
     if (!session) {
-      return res.status(404).json({ ok: false, error: "Session not found" });
+      return res.json({
+        ok: true,
+        canceled: true,
+        alreadyGone: true,
+        deletedAttendanceCount: 0,
+      });
     }
 
+    // 1. Clean in-memory and ephemeral state stores & realtime channel
     await clearSessionQR(sessionId);
+    await clearSessionSecret(sessionId);
+    await removeSessionChannel(sessionId);
 
-    // Delete attendance records from this session
-    const { data: deletedAttendances } = await supabase
-      .from("attendances")
-      .delete()
-      .eq("session", sessionId)
-      .select("id");
+    // 2. Cascade delete dependent database records in safe foreign-key order
+    try {
+      await supabase.from("attendance_audits").delete().eq("session", sessionId);
+    } catch {}
 
-    await supabase.from("sessions").delete().eq("id", sessionId);
+    try {
+      await supabase.from("scan_grants").delete().eq("session_id", sessionId);
+    } catch {}
+
+    try {
+      await supabase.from("qr_states").delete().eq("session_id", sessionId);
+    } catch {}
+
+    try {
+      await supabase.from("totp_secrets").delete().eq("session_id", sessionId);
+    } catch {}
+
+    // 3. Delete attendance records from this session
+    let deletedAttendanceCount = 0;
+    try {
+      const { data: deletedAttendances } = await supabase
+        .from("attendances")
+        .delete()
+        .eq("session", sessionId)
+        .select("id");
+      deletedAttendanceCount = (deletedAttendances || []).length;
+    } catch {}
+
+    // 4. Delete the session row itself
+    const { error: deleteError } = await supabase.from("sessions").delete().eq("id", sessionId);
+
+    // Fallback: If hard delete failed due to external constraint, mark inactive so session is never stuck
+    if (deleteError) {
+      await supabase
+        .from("sessions")
+        .update({
+          is_active: false,
+          end_time: new Date().toISOString(),
+          last_activity_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", sessionId);
+    }
 
     return res.json({
       ok: true,
       canceled: true,
-      deletedAttendanceCount: (deletedAttendances || []).length,
+      deletedAttendanceCount,
     });
   } catch (err) {
     console.error("Session cancel error:", err);

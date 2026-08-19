@@ -8,7 +8,7 @@ const crypto = require("crypto");
 const { getSupabaseClient } = require("../config/supabase");
 
 const TOTP_BLOCK_DURATION_MS = 3000;
-const TOTP_SKEW_TOLERANCE_BLOCKS = 2; // Allow slight time skew
+const TOTP_SKEW_TOLERANCE_BLOCKS = Number(process.env.TOTP_SKEW_TOLERANCE_BLOCKS || 10); // 10 * 3s = 30s window for smooth scanning
 
 const totpSecretMemoryStore = new Map();
 const presenceMemoryStore = new Map(); // sessionId -> Set of studentIds
@@ -232,10 +232,20 @@ async function isStudentPresent(sessionId, studentId) {
   return set ? set.has(String(studentId)) : false;
 }
 
-async function getPresentStudents(sessionId) {
-  if (!sessionId) return [];
-  const set = presenceMemoryStore.get(String(sessionId));
-  return set ? Array.from(set) : [];
+async function clearSessionSecret(sessionId) {
+  if (!sessionId) return;
+  const sid = String(sessionId);
+  totpSecretMemoryStore.delete(sid);
+  presenceMemoryStore.delete(sid);
+
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      await supabase.from("totp_secrets").delete().eq("session_id", sid);
+    } catch {
+      // ignore
+    }
+  }
 }
 
 module.exports = {
@@ -244,6 +254,7 @@ module.exports = {
   storeSessionSecret,
   getOrCreateSessionSecret,
   getSessionSecret,
+  clearSessionSecret,
   verifyConsecutiveTotpTokens,
   verifyTotpSequence,
   recordInstantPresence,

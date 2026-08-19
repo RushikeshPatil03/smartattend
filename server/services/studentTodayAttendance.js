@@ -72,10 +72,13 @@ async function getStudentTodayAttendance(studentId) {
 
   if (!supabase) {
     return {
+      ok: true,
       start,
       now,
       timezone: APP_TIMEZONE,
       classes: [],
+      data: [],
+      count: 0,
     };
   }
 
@@ -87,10 +90,13 @@ async function getStudentTodayAttendance(studentId) {
 
   if (!student) {
     return {
+      ok: true,
       start,
       now,
       timezone: APP_TIMEZONE,
       classes: [],
+      data: [],
+      count: 0,
     };
   }
 
@@ -112,12 +118,20 @@ async function getStudentTodayAttendance(studentId) {
     `)
     .eq("year", Number(student.year))
     .eq("semester", Number(student.semester))
-    .eq("section", normalizedSection)
-    .gte("start_time", start.toISOString())
-    .lte("start_time", now.toISOString())
     .order("start_time", { ascending: true });
 
-  const sessions = Array.isArray(rawSessions) ? rawSessions : [];
+  const allSessions = Array.isArray(rawSessions) ? rawSessions : [];
+  const sessions = allSessions.filter((s) => {
+    const sSection = String(s.section || "").trim().toUpperCase();
+    if (sSection && normalizedSection && sSection !== normalizedSection) {
+      return false;
+    }
+    const isActive = Boolean(s.is_active);
+    if (isActive) return true;
+    if (s.start_time && new Date(s.start_time) >= start) return true;
+    return false;
+  });
+
   const eligibleSessions = sessions.filter((session) =>
     isEligibleSessionForStudent(session, student)
   );
@@ -144,11 +158,16 @@ async function getStudentTodayAttendance(studentId) {
     mapSessionRow(session, attendanceBySession.get(String(session.id)))
   );
 
+  const validRows = rows.filter((row) => row.sessionId && (row.startTime || row.isActive));
+
   return {
+    ok: true,
     start,
     now,
     timezone: APP_TIMEZONE,
-    classes: rows.filter((row) => row.sessionId && row.startTime),
+    classes: validRows,
+    data: validRows,
+    count: validRows.length,
   };
 }
 

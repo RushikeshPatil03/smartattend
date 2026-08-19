@@ -238,7 +238,11 @@ async function clearSessionQR(sessionId) {
     qrMemoryStore.delete(sid);
     const supabase = getSupabaseClient();
     if (supabase) {
-      await supabase.from("qr_states").delete().eq("session_id", sid).catch(() => {});
+      try {
+        await supabase.from("qr_states").delete().eq("session_id", sid);
+      } catch {
+        // Ignore deletion error
+      }
     }
   }
 }

@@ -534,59 +534,30 @@ router.post(
 );
 
 // ----------------------------------------------------
-// 3) TOTP SUBMISSION
-// POST /api/attendance/totp-submit
+// 0) GET ATTENDANCE (GENERAL / ROSTER / FILTERED)
+// GET /api/attendance
 // ----------------------------------------------------
-router.post(
-  "/totp-submit",
-  auth(["STUDENT"]),
-  rateLimit({
-    prefix: "totp-submit",
-    windowMs: 60 * 1000,
-    max: 20,
-  }),
-  async (req, res) => {
-    try {
-      const student = req.user;
-      const {
-        sessionId,
-        sequence,
-        token1,
-        token2,
-        location,
-        fingerprint,
-        faceMatch,
-        faceMetrics,
-        faceEmbedding,
-      } = req.body || {};
+router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
+  try {
+    const {
+      sessionId,
+      includeDerivedAbsences,
+      subjectId,
+      departmentId,
+      year,
+      semester,
+      section,
+      startDate,
+      endDate,
+      date,
+      studentId,
+    } = req.query;
 
-      if (!sessionId || !fingerprint) {
-        return res.status(400).json({ ok: false, error: "Session ID & device fingerprint required" });
-      }
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
 
-      const normalizedFp = normalizeFingerprint(fingerprint);
-      if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
-        return res.status(401).json({ ok: false, error: "Device mismatch - attendance blocked" });
-      }
-
-      let totpValidation;
-      if (Array.isArray(sequence) && sequence.length === 2) {
-        totpValidation = await verifyTotpSequence(sessionId, sequence);
-      } else if (token1 && token2) {
-        totpValidation = await verifyConsecutiveTotpTokens(sessionId, token1, token2);
-      } else {
-        return res.status(400).json({ ok: false, error: "Two consecutive TOTP tokens required" });
-      }
-
-      if (!totpValidation.ok) {
-        return res.status(400).json({ ok: false, error: totpValidation.error });
-      }
-
-      await recordInstantPresence(sessionId, student.id);
-
-      const supabase = getSupabaseClient();
-      if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
-
+    // Scenario A: Fetch attendance for a specific session (Roster view)
+    if (sessionId) {
       const { data: rawSession } = await supabase
         .from("sessions")
         .select(`
@@ -597,124 +568,378 @@ router.post(
           year,
           semester,
           section,
-          location,
           is_active,
           start_time,
-          last_activity_at,
-          subj:subjects(id, name, code, created_by_admin, departments)
+          end_time,
+          created_at,
+          subj:subjects(id, name, code, created_by_admin, departments),
+          fac:faculties(id, name)
         `)
-        .eq("id", sessionId)
+        .eq("id", String(sessionId))
         .single();
 
       if (!rawSession) {
         return res.status(404).json({ ok: false, error: "Session not found" });
       }
 
-      const session = await expireIfInactive(rawSession);
-      const isRunning = Boolean(session?.is_active ?? session?.isActive);
-      if (!session || !isRunning) {
-        return res.status(400).json({ ok: false, error: "Session is no longer active" });
+      if (req.userRole === "FACULTY" && String(rawSession.faculty) !== String(req.userId)) {
+        return res.status(403).json({ ok: false, error: "Forbidden" });
       }
 
+      // Fetch all recorded attendances for this session
+      const { data: rawAttendances } = await supabase
+        .from("attendances")
+        .select(`
+          id,
+          timestamp,
+          status,
+          device_fingerprint,
+          face_verification,
+          location,
+          student:students(id, name, enrollment_no, email, profile_photo_url, department, year, semester, section)
+        `)
+        .eq("session", String(sessionId))
+        .order("timestamp", { ascending: false });
+
+      const presentStudentIds = new Set();
+      const presentEnrollmentNos = new Set();
+      const presentRecords = (rawAttendances || []).map((att) => {
+        const studentObj = att.student || {};
+        if (studentObj.id) presentStudentIds.add(String(studentObj.id));
+        if (studentObj.enrollment_no) presentEnrollmentNos.add(String(studentObj.enrollment_no).trim().toUpperCase());
+        return {
+          id: att.id,
+          _id: att.id,
+          attendanceId: att.id,
+          student: {
+            id: studentObj.id || att.student,
+            _id: studentObj.id || att.student,
+            name: studentObj.name || "Student",
+            enrollmentNo: studentObj.enrollment_no || "",
+            email: studentObj.email || "",
+            profilePhotoUrl: studentObj.profile_photo_url || "",
+          },
+          status: att.status || "present",
+          timestamp: att.timestamp,
+          markedAt: att.timestamp,
+          deviceFingerprint: att.device_fingerprint || "",
+          faceVerification: att.face_verification || null,
+          location: att.location || null,
+        };
+      });
+
+      const shouldIncludeDerived =
+        includeDerivedAbsences === "true" ||
+        includeDerivedAbsences === true ||
+        includeDerivedAbsences === "1" ||
+        req.userRole === "FACULTY" ||
+        req.userRole === "ADMIN";
+
+      let allRegisteredStudents = [];
+      if (shouldIncludeDerived) {
+        // Query students enrolled for this session's year, semester, section
+        let studentQuery = supabase
+          .from("students")
+          .select("id, name, enrollment_no, email, profile_photo_url, department, year, semester, section")
+          .eq("year", Number(rawSession.year))
+          .eq("semester", Number(rawSession.semester));
+
+        const normalizedSec = String(rawSession.section || "").trim().toUpperCase();
+        if (normalizedSec) {
+          studentQuery = studentQuery.eq("section", normalizedSec);
+        }
+
+        const adminId = rawSession.subj?.created_by_admin;
+        if (adminId) {
+          studentQuery = studentQuery.eq("created_by_admin", String(adminId));
+        }
+
+        const { data: studentsList } = await studentQuery;
+        allRegisteredStudents = (studentsList || []).filter((stu) => {
+          if (rawSession.department) {
+            return String(stu.department) === String(rawSession.department);
+          }
+          const allowedDepts = rawSession.subj?.departments || [];
+          if (allowedDepts.length > 0) {
+            return allowedDepts.some((d) => String(d) === String(stu.department));
+          }
+          return true;
+        });
+      }
+
+      // Build absent derived list for students who haven't marked attendance
+      const absentRecords = [];
+      for (const stu of allRegisteredStudents) {
+        const sid = String(stu.id);
+        const eno = String(stu.enrollment_no || "").trim().toUpperCase();
+        if (!presentStudentIds.has(sid) && (!eno || !presentEnrollmentNos.has(eno))) {
+          absentRecords.push({
+            id: `derived-absent-${stu.id}`,
+            _id: `derived-absent-${stu.id}`,
+            attendanceId: null,
+            student: {
+              id: stu.id,
+              _id: stu.id,
+              name: stu.name || "Student",
+              enrollmentNo: stu.enrollment_no || "",
+              email: stu.email || "",
+              profilePhotoUrl: stu.profile_photo_url || "",
+            },
+            status: "absent",
+            timestamp: null,
+            markedAt: null,
+            deviceFingerprint: "",
+            faceVerification: null,
+            location: null,
+          });
+        }
+      }
+
+      const fullRoster = [...presentRecords, ...absentRecords].sort((a, b) =>
+        String(a.student?.enrollmentNo || "").localeCompare(String(b.student?.enrollmentNo || ""))
+      );
+
+      return res.json({
+        ok: true,
+        sessionId: String(sessionId),
+        attendance: fullRoster,
+        attendees: presentRecords,
+        count: presentRecords.length,
+        totalStrength: fullRoster.length,
+        session: {
+          id: rawSession.id,
+          _id: rawSession.id,
+          subjectName: rawSession.subj?.name || "Subject",
+          subjectCode: rawSession.subj?.code || "",
+          facultyName: rawSession.fac?.name || "Faculty",
+          isActive: Boolean(rawSession.is_active),
+          startTime: rawSession.start_time,
+          endTime: rawSession.end_time,
+        },
+      });
+    }
+
+    // Scenario B: Query attendance across filters (subject, department, dates, etc.)
+    let query = supabase
+      .from("attendances")
+      .select(`
+        id,
+        session,
+        student,
+        faculty,
+        subject,
+        timestamp,
+        status,
+        device_fingerprint,
+        location,
+        face_verification,
+        stu:students(id, name, enrollment_no, email, profile_photo_url),
+        subj:subjects(id, name, code),
+        fac:faculties(id, name),
+        sess:sessions(id, year, semester, section, department, start_time, end_time)
+      `)
+      .order("timestamp", { ascending: false })
+      .limit(500);
+
+    if (subjectId) query = query.eq("subject", String(subjectId));
+    if (studentId) query = query.eq("student", String(studentId));
+    if (req.userRole === "FACULTY") query = query.eq("faculty", req.userId);
+    if (req.userRole === "STUDENT") query = query.eq("student", req.userId);
+
+    const targetDate = date || startDate;
+    if (targetDate) {
+      const dStart = new Date(targetDate);
+      dStart.setUTCHours(0, 0, 0, 0);
+      const dEnd = new Date(endDate || targetDate);
+      dEnd.setUTCHours(23, 59, 59, 999);
+      query = query.gte("timestamp", dStart.toISOString()).lte("timestamp", dEnd.toISOString());
+    }
+
+    const { data: rawData, error } = await query;
+    if (error) throw error;
+
+    const filtered = (rawData || []).filter((item) => {
+      if (year && Number(item.sess?.year) !== Number(year)) return false;
+      if (semester && Number(item.sess?.semester) !== Number(semester)) return false;
+      if (section && String(item.sess?.section || "").toUpperCase() !== String(section).toUpperCase()) return false;
+      if (departmentId && String(item.sess?.department || "") !== String(departmentId)) return false;
+      return true;
+    });
+
+    const records = filtered.map((item) => ({
+      id: item.id,
+      _id: item.id,
+      attendanceId: item.id,
+      sessionId: item.session,
+      student: {
+        id: item.stu?.id || item.student,
+        _id: item.stu?.id || item.student,
+        name: item.stu?.name || "Student",
+        enrollmentNo: item.stu?.enrollment_no || "",
+        email: item.stu?.email || "",
+        profilePhotoUrl: item.stu?.profile_photo_url || "",
+      },
+      subject: {
+        id: item.subj?.id || item.subject,
+        _id: item.subj?.id || item.subject,
+        name: item.subj?.name || "Subject",
+        code: item.subj?.code || "",
+      },
+      faculty: {
+        id: item.fac?.id || item.faculty,
+        _id: item.fac?.id || item.faculty,
+        name: item.fac?.name || "Faculty",
+      },
+      status: item.status || "present",
+      timestamp: item.timestamp,
+      markedAt: item.timestamp,
+    }));
+
+    return res.json({
+      ok: true,
+      attendance: records,
+      count: records.length,
+    });
+  } catch (err) {
+    console.error("Fetch attendance error:", err);
+    return res.status(500).json({ ok: false, error: "Server error" });
+  }
+});
+
+// ----------------------------------------------------
+// 3) TOTP SUBMISSION & COMPATIBLE SUBMIT ROUTES
+// POST /api/attendance/submit, /api/attendance/totp, /api/attendance/totp-submit
+// ----------------------------------------------------
+async function handleTotpAttendanceSubmission(req, res) {
+  try {
+    const student = req.user;
+    const {
+      sequence,
+      token1,
+      token2,
+      fingerprint,
+      faceMatch,
+      faceMetrics,
+      faceEmbedding,
+    } = req.body || {};
+
+    const rawSessionId =
+      req.body?.sessionId ||
+      req.body?.classId ||
+      sequence?.[0]?.classId ||
+      sequence?.[0]?.sessionId;
+
+    const location =
+      req.body?.location ||
+      (req.body?.lat != null && req.body?.lng != null
+        ? { lat: Number(req.body.lat), lng: Number(req.body.lng), accuracy: Number(req.body.accuracy || 0) }
+        : null);
+
+    if (!rawSessionId || !fingerprint) {
+      return res.status(400).json({ ok: false, error: "Session ID & device fingerprint required" });
+    }
+
+    const sessionId = String(rawSessionId);
+    const normalizedFp = normalizeFingerprint(fingerprint);
+    if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
+      return res.status(401).json({ ok: false, error: "Device mismatch - attendance blocked" });
+    }
+
+    let totpValidation;
+    if (Array.isArray(sequence) && sequence.length >= 2) {
+      totpValidation = await verifyTotpSequence(sessionId, sequence);
+    } else if (token1 && token2) {
+      totpValidation = await verifyConsecutiveTotpTokens(sessionId, token1, token2);
+    } else {
+      return res.status(400).json({ ok: false, error: "Two consecutive TOTP tokens required" });
+    }
+
+    if (!totpValidation.ok) {
+      return res.status(400).json({ ok: false, error: totpValidation.error });
+    }
+
+    await recordInstantPresence(sessionId, student.id);
+
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
+
+    const { data: rawSession } = await supabase
+      .from("sessions")
+      .select(`
+        id,
+        faculty,
+        subject,
+        department,
+        year,
+        semester,
+        section,
+        location,
+        is_active,
+        start_time,
+        last_activity_at,
+        subj:subjects(id, name, code, created_by_admin, departments)
+      `)
+      .eq("id", sessionId)
+      .single();
+
+    if (!rawSession) {
+      return res.status(404).json({ ok: false, error: "Session not found" });
+    }
+
+    const session = await expireIfInactive(rawSession);
+    const isRunning = Boolean(session?.is_active ?? session?.isActive);
+    if (!session || !isRunning) {
+      return res.status(400).json({ ok: false, error: "Session is no longer active" });
+    }
+
+    if (location && session.location) {
       const locationCheck = validateStudentLocation(location, session.location);
       if (!locationCheck.ok) {
         return res.status(403).json({ ok: false, error: locationCheck.error });
       }
+    }
 
-      let faceVerificationResult = {
-        verified: true,
-        score: Number(faceMetrics?.confidence || 1),
-        model: "totp-mediapipe-facenet512",
-      };
+    let faceVerificationResult = {
+      verified: true,
+      score: Number(faceMetrics?.confidence || 1),
+      model: "totp-mediapipe-facenet512",
+    };
 
-      if (env.REQUIRE_FACE_VERIFICATION || faceMatch != null || faceEmbedding != null) {
-        const faceEval = await verifyFaceAgainstStudent(student, {
-          faceMatch,
-          faceMetrics,
-          faceEmbedding,
-        });
-
-        if (!faceEval.ok) {
-          return res.status(403).json({ ok: false, error: faceEval.error });
-        }
-
-        faceVerificationResult = {
-          verified: true,
-          score: Number(faceEval.score || 1),
-          model: faceEval.model || "facenet512",
-        };
-      }
-
-      const { data: attendance, error: insertError } = await supabase
-        .from("attendances")
-        .insert({
-          session: sessionId,
-          student: student.id,
-          faculty: session.faculty,
-          subject: session.subject,
-          timestamp: new Date().toISOString(),
-          status: "present",
-          location: {
-            lat: Number(location.lat),
-            lng: Number(location.lng),
-          },
-          device_fingerprint: normalizedFp,
-          face_verification: faceVerificationResult,
-        })
-        .select("*")
-        .single();
-
-      if (insertError || !attendance) {
-        if (insertError?.code === "23505") {
-          return res.status(409).json({ ok: false, error: "Attendance already marked for this session" });
-        }
-        throw insertError || new Error("Failed to record attendance");
-      }
-
-      await touchSession(sessionId);
-
-      const requestMeta = getRequestMeta(req);
-      await recordAttendanceAudit({
-        attendanceId: attendance.id,
-        sessionId,
-        studentId: student.id,
-        facultyId: session.faculty,
-        subjectId: session.subject,
-        action: "MARK_PRESENT",
-        method: "QR_TOTP",
-        actorRole: "STUDENT",
-        actorId: student.id,
-        deviceFingerprint: normalizedFp,
-        location: {
-          lat: Number(location.lat),
-          lng: Number(location.lng),
-          accuracy: Number(location.accuracy || 0),
-        },
-        qr: { blockIndex: totpValidation.blockIndex },
-        faceVerification: faceVerificationResult,
-        requestMeta,
+    if (env.REQUIRE_FACE_VERIFICATION || faceMatch != null || faceEmbedding != null) {
+      const faceEval = await verifyFaceAgainstStudent(student, {
+        faceMatch,
+        faceMetrics,
+        faceEmbedding,
       });
 
-      const attendanceBroadcastPayload = {
-        id: attendance.id,
-        _id: attendance.id,
-        sessionId,
-        studentId: student.id,
-        studentName: student.name,
-        enrollmentNo: student.enrollment_no,
-        timestamp: attendance.timestamp,
-        status: "present",
-        method: "QR_TOTP",
+      if (!faceEval.ok) {
+        return res.status(403).json({ ok: false, error: faceEval.error });
+      }
+
+      faceVerificationResult = {
+        verified: true,
+        score: Number(faceEval.score || 1),
+        model: faceEval.model || "facenet512",
       };
+    }
 
-      await broadcastAttendance(sessionId, attendanceBroadcastPayload);
+    // Check if attendance already marked
+    const { data: existingAttendance } = await supabase
+      .from("attendances")
+      .select("id, timestamp")
+      .eq("session", sessionId)
+      .eq("student", student.id)
+      .single();
 
+    if (existingAttendance) {
       return res.json({
         ok: true,
-        attendanceId: attendance.id,
-        _id: attendance.id,
+        already: true,
+        alreadyMarked: true,
+        attendanceId: existingAttendance.id,
+        _id: existingAttendance.id,
         status: "present",
-        markedAt: attendance.timestamp,
+        markedAt: existingAttendance.timestamp,
         session: {
           id: session.id,
           _id: session.id,
@@ -722,12 +947,115 @@ router.post(
           subjectCode: session.subj?.code || "",
         },
       });
-    } catch (err) {
-      console.error("TOTP submit error:", err);
-      return res.status(500).json({ ok: false, error: "Server error" });
     }
+
+    const { data: attendance, error: insertError } = await supabase
+      .from("attendances")
+      .insert({
+        session: sessionId,
+        student: student.id,
+        faculty: session.faculty,
+        subject: session.subject,
+        timestamp: new Date().toISOString(),
+        status: "present",
+        location: location
+          ? {
+              lat: Number(location.lat),
+              lng: Number(location.lng),
+            }
+          : null,
+        device_fingerprint: normalizedFp,
+        face_verification: faceVerificationResult,
+      })
+      .select("*")
+      .single();
+
+    if (insertError || !attendance) {
+      if (insertError?.code === "23505") {
+        return res.json({
+          ok: true,
+          already: true,
+          alreadyMarked: true,
+          status: "present",
+          session: {
+            id: session.id,
+            _id: session.id,
+            subjectName: session.subj?.name || "Subject",
+            subjectCode: session.subj?.code || "",
+          },
+        });
+      }
+      throw insertError || new Error("Failed to record attendance");
+    }
+
+    await touchSession(sessionId);
+
+    const requestMeta = getRequestMeta(req);
+    await recordAttendanceAudit({
+      attendanceId: attendance.id,
+      sessionId,
+      studentId: student.id,
+      facultyId: session.faculty,
+      subjectId: session.subject,
+      action: "MARK_PRESENT",
+      method: "QR_TOTP",
+      actorRole: "STUDENT",
+      actorId: student.id,
+      deviceFingerprint: normalizedFp,
+      location: location
+        ? {
+            lat: Number(location.lat),
+            lng: Number(location.lng),
+            accuracy: Number(location.accuracy || 0),
+          }
+        : null,
+      qr: { blockIndex: totpValidation.blockIndex },
+      faceVerification: faceVerificationResult,
+      requestMeta,
+    });
+
+    const attendanceBroadcastPayload = {
+      id: attendance.id,
+      _id: attendance.id,
+      sessionId,
+      studentId: student.id,
+      studentName: student.name,
+      enrollmentNo: student.enrollment_no,
+      timestamp: attendance.timestamp,
+      status: "present",
+      method: "QR_TOTP",
+    };
+
+    await broadcastAttendance(sessionId, attendanceBroadcastPayload);
+
+    return res.json({
+      ok: true,
+      attendanceId: attendance.id,
+      _id: attendance.id,
+      status: "present",
+      markedAt: attendance.timestamp,
+      session: {
+        id: session.id,
+        _id: session.id,
+        subjectName: session.subj?.name || "Subject",
+        subjectCode: session.subj?.code || "",
+      },
+    });
+  } catch (err) {
+    console.error("Attendance submission error:", err);
+    return res.status(500).json({ ok: false, error: "Server error" });
   }
-);
+}
+
+const totpRateLimiter = rateLimit({
+  prefix: "totp-submit",
+  windowMs: 60 * 1000,
+  max: 30,
+});
+
+router.post("/submit", auth(["STUDENT"]), totpRateLimiter, handleTotpAttendanceSubmission);
+router.post("/totp", auth(["STUDENT"]), totpRateLimiter, handleTotpAttendanceSubmission);
+router.post("/totp-submit", auth(["STUDENT"]), totpRateLimiter, handleTotpAttendanceSubmission);
 
 // ----------------------------------------------------
 // 4) GET SESSION ATTENDEES (FACULTY / ADMIN)
@@ -797,15 +1125,18 @@ router.get("/session/:id/attendees", auth(["FACULTY", "ADMIN"]), async (req, res
 
 // ----------------------------------------------------
 // 5) MANUAL ATTENDANCE (FACULTY / ADMIN)
-// POST /api/attendance/session/:id/manual
+// POST /api/attendance/manual & POST /api/attendance/session/:id/manual
 // ----------------------------------------------------
-router.post("/session/:id/manual", auth(["FACULTY", "ADMIN"]), async (req, res) => {
+async function handleManualAttendance(req, res) {
   try {
-    const sessionId = req.params.id;
-    const { studentId, status } = req.body || {};
+    const sessionId = req.body?.sessionId || req.params?.id;
+    const { studentId, enrollmentNo, status } = req.body || {};
 
-    if (!studentId || !["present", "absent"].includes(status)) {
-      return res.status(400).json({ ok: false, error: "studentId and valid status (present/absent) required" });
+    if (!sessionId || (!studentId && !enrollmentNo) || !["present", "absent"].includes(status)) {
+      return res.status(400).json({
+        ok: false,
+        error: "sessionId, student identifier (studentId or enrollmentNo), and valid status (present/absent) required",
+      });
     }
 
     const supabase = getSupabaseClient();
@@ -814,7 +1145,7 @@ router.post("/session/:id/manual", auth(["FACULTY", "ADMIN"]), async (req, res) 
     const { data: session } = await supabase
       .from("sessions")
       .select("id, faculty, subject, department, year, semester, section")
-      .eq("id", sessionId)
+      .eq("id", String(sessionId))
       .single();
 
     if (!session) {
@@ -825,24 +1156,35 @@ router.post("/session/:id/manual", auth(["FACULTY", "ADMIN"]), async (req, res) 
       return res.status(403).json({ ok: false, error: "Forbidden" });
     }
 
-    const { data: student } = await supabase
-      .from("students")
-      .select("id, name, enrollment_no, email")
-      .eq("id", String(studentId))
-      .single();
+    let student = null;
+    if (studentId) {
+      const { data } = await supabase
+        .from("students")
+        .select("id, name, enrollment_no, email, profile_photo_url")
+        .eq("id", String(studentId))
+        .single();
+      student = data;
+    } else if (enrollmentNo) {
+      const { data } = await supabase
+        .from("students")
+        .select("id, name, enrollment_no, email, profile_photo_url")
+        .ilike("enrollment_no", String(enrollmentNo).trim())
+        .limit(1);
+      student = data?.[0] || null;
+    }
 
     if (!student) {
       return res.status(404).json({ ok: false, error: "Student not found" });
     }
 
-    let attendance;
+    let attendance = null;
     if (status === "present") {
       const { data: upserted, error } = await supabase
         .from("attendances")
         .upsert(
           {
-            session: sessionId,
-            student: student.id,
+            session: String(sessionId),
+            student: String(student.id),
             faculty: session.faculty,
             subject: session.subject,
             status: "present",
@@ -860,15 +1202,15 @@ router.post("/session/:id/manual", auth(["FACULTY", "ADMIN"]), async (req, res) 
       await supabase
         .from("attendances")
         .delete()
-        .eq("session", sessionId)
-        .eq("student", student.id);
+        .eq("session", String(sessionId))
+        .eq("student", String(student.id));
     }
 
     const requestMeta = getRequestMeta(req);
     await recordAttendanceAudit({
       attendanceId: attendance?.id || null,
-      sessionId,
-      studentId: student.id,
+      sessionId: String(sessionId),
+      studentId: String(student.id),
       facultyId: session.faculty,
       subjectId: session.subject,
       action: status === "present" ? "MANUAL_PRESENT" : "MANUAL_ABSENT",
@@ -881,8 +1223,8 @@ router.post("/session/:id/manual", auth(["FACULTY", "ADMIN"]), async (req, res) 
     const attendanceBroadcastPayload = {
       id: attendance?.id || sessionId,
       _id: attendance?.id || sessionId,
-      sessionId,
-      studentId: student.id,
+      sessionId: String(sessionId),
+      studentId: String(student.id),
       studentName: student.name,
       enrollmentNo: student.enrollment_no,
       timestamp: new Date().toISOString(),
@@ -894,15 +1236,19 @@ router.post("/session/:id/manual", auth(["FACULTY", "ADMIN"]), async (req, res) 
 
     return res.json({
       ok: true,
-      sessionId,
-      studentId: student.id,
+      sessionId: String(sessionId),
+      studentId: String(student.id),
+      enrollmentNo: student.enrollment_no,
       status,
     });
   } catch (err) {
     console.error("Manual attendance error:", err);
     return res.status(500).json({ ok: false, error: "Server error" });
   }
-});
+}
+
+router.post("/manual", auth(["FACULTY", "ADMIN"]), handleManualAttendance);
+router.post("/session/:id/manual", auth(["FACULTY", "ADMIN"]), handleManualAttendance);
 
 // ----------------------------------------------------
 // 6) ATTENDANCE AUDITS (ADMIN / FACULTY)

@@ -249,48 +249,109 @@ router.post("/register", async (req, res) => {
 });
 
 // ----------------------------------------------------
-// TODAY'S SESSIONS FOR STUDENT
-// GET /api/student/sessions/today
+// TODAY'S SESSIONS / LIVE ATTENDANCE FOR STUDENT
+// GET /api/student/sessions/today, /api/student/attendance/today-live, /api/student/live-attendance
 // ----------------------------------------------------
-router.get("/sessions/today", auth(["STUDENT"]), async (req, res) => {
-  try {
-    const payload = await getStudentTodayAttendance(req.user._id || req.user.id);
-    return res.json({ ok: true, ...payload });
-  } catch (err) {
-    console.error("Student today sessions error:", err);
-    return res.status(500).json({ ok: false, error: "Server error" });
-  }
-});
-
-// ----------------------------------------------------
-// LIVE ATTENDANCE FEED
-// GET /api/student/live-attendance
-// ----------------------------------------------------
-router.get("/live-attendance", auth(["STUDENT"]), async (req, res) => {
+const handleStudentTodayAttendance = async (req, res) => {
   try {
     const payload = await getStudentTodayAttendance(req.user._id || req.user.id);
     return res.json({
       ok: true,
+      classes: payload.classes || [],
       data: payload.classes || [],
-      count: payload.classes?.length || 0,
+      count: payload.count || (payload.classes || []).length,
+      start: payload.start,
+      now: payload.now,
       timestamp: payload.now,
       timezone: payload.timezone,
     });
   } catch (err) {
-    console.error("Live attendance error:", err);
+    console.error("Student today sessions error:", err);
+    return res.status(500).json({ ok: false, error: "Server error" });
+  }
+};
+
+router.get("/sessions/today", auth(["STUDENT"]), handleStudentTodayAttendance);
+router.get("/attendance/today-live", auth(["STUDENT"]), handleStudentTodayAttendance);
+router.get("/live-attendance", auth(["STUDENT"]), handleStudentTodayAttendance);
+
+// ----------------------------------------------------
+// ACTIVE SESSION FOR STUDENT
+// GET /api/student/session/active
+// ----------------------------------------------------
+router.get("/session/active", auth(["STUDENT"]), async (req, res) => {
+  try {
+    const student = req.user;
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
+
+    const normalizedSection = String(student.section || "").trim().toUpperCase();
+    const studentDeptId = String(student.department?.id || student.department);
+
+    const { data: rawSessions, error } = await supabase
+      .from("sessions")
+      .select(`
+        id,
+        faculty,
+        subject,
+        department,
+        year,
+        semester,
+        section,
+        location,
+        start_time,
+        is_active,
+        subj:subjects(id, name, code, created_by_admin, departments),
+        fac:faculties(id, name)
+      `)
+      .eq("year", Number(student.year))
+      .eq("semester", Number(student.semester))
+      .eq("is_active", true);
+
+    if (error) throw error;
+
+    const matchingSession = (rawSessions || []).find((s) => {
+      const sSec = String(s.section || "").trim().toUpperCase();
+      if (sSec && normalizedSection && sSec !== normalizedSection) return false;
+      if (s.department && String(s.department) !== studentDeptId) return false;
+      return true;
+    });
+
+    if (!matchingSession) {
+      return res.json({ ok: true, hasActiveSession: false, session: null });
+    }
+
+    return res.json({
+      ok: true,
+      hasActiveSession: true,
+      session: {
+        id: matchingSession.id,
+        _id: matchingSession.id,
+        subjectName: matchingSession.subj?.name || "Subject",
+        subjectCode: matchingSession.subj?.code || "",
+        facultyName: matchingSession.fac?.name || "Faculty",
+        startTime: matchingSession.start_time,
+        location: matchingSession.location,
+        isActive: true,
+      },
+    });
+  } catch (err) {
+    console.error("Student active session error:", err);
     return res.status(500).json({ ok: false, error: "Server error" });
   }
 });
 
 // ----------------------------------------------------
 // RECENT SESSIONS FOR STUDENT
-// GET /api/student/recent-sessions
+// GET /api/student/sessions/recent, /api/student/recent-sessions
 // ----------------------------------------------------
-router.get("/recent-sessions", auth(["STUDENT"]), async (req, res) => {
+const handleStudentRecentSessions = async (req, res) => {
   try {
     const studentId = req.user._id || req.user.id;
     const supabase = getSupabaseClient();
     if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
+
+    const limit = Number(req.query.limit || 20);
 
     const { data: rawAttendances, error } = await supabase
       .from("attendances")
@@ -305,7 +366,7 @@ router.get("/recent-sessions", auth(["STUDENT"]), async (req, res) => {
       `)
       .eq("student", String(studentId))
       .order("timestamp", { ascending: false })
-      .limit(12);
+      .limit(limit);
 
     if (error) throw error;
 
@@ -330,13 +391,16 @@ router.get("/recent-sessions", auth(["STUDENT"]), async (req, res) => {
     console.error("Recent sessions error:", err);
     return res.status(500).json({ ok: false, error: "Server error" });
   }
-});
+};
+
+router.get("/sessions/recent", auth(["STUDENT"]), handleStudentRecentSessions);
+router.get("/recent-sessions", auth(["STUDENT"]), handleStudentRecentSessions);
 
 // ----------------------------------------------------
 // ATTENDANCE OVERVIEW FOR STUDENT
-// GET /api/student/attendance-overview
+// GET /api/student/attendance/overview, /api/student/attendance-overview
 // ----------------------------------------------------
-router.get("/attendance-overview", auth(["STUDENT"]), async (req, res) => {
+const handleStudentAttendanceOverview = async (req, res) => {
   try {
     const student = req.user;
     const studentId = String(student.id || student._id);
@@ -467,6 +531,9 @@ router.get("/attendance-overview", auth(["STUDENT"]), async (req, res) => {
     console.error("Student attendance overview error:", err);
     return res.status(500).json({ ok: false, error: "Server error" });
   }
-});
+};
+
+router.get("/attendance/overview", auth(["STUDENT"]), handleStudentAttendanceOverview);
+router.get("/attendance-overview", auth(["STUDENT"]), handleStudentAttendanceOverview);
 
 module.exports = router;

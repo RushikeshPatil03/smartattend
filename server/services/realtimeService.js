@@ -76,7 +76,11 @@ async function removeSessionChannel(sessionId) {
   if (channel) {
     const supabase = getSupabaseClient();
     if (supabase) {
-      await supabase.removeChannel(channel).catch(() => {});
+      try {
+        await supabase.removeChannel(channel);
+      } catch {
+        // Ignore channel removal errors
+      }
     }
     channelCache.delete(channelName);
   }

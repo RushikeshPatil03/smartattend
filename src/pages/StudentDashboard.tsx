@@ -510,30 +510,45 @@ const StudentDashboard: React.FC = () => {
 
     const coords = await resolveLiveLocation();
     const fingerprint = getFingerprint();
-    const result =
-      pendingQrPairRef.current.kind === "totp"
-        ? await apiClient.post("/api/attendance/submit", {
-          sequence: pendingQrPairRef.current.sequence,
+    let result: any = null;
+
+    try {
+      if (pendingQrPairRef.current.kind === "totp") {
+        const seq = pendingQrPairRef.current.sequence;
+        const targetSessionId = seq?.[0]?.classId || (seq?.[0] as any)?.sessionId;
+        result = await apiClient.post("/api/attendance/submit", {
+          sessionId: targetSessionId,
+          sequence: seq,
           fingerprint,
           lat: coords.lat,
           lng: coords.lng,
           accuracy: coords.accuracy,
-        })
-        : await markAttendanceTwoStep(
-            pendingQrPairRef.current.first,
-            pendingQrPairRef.current.second,
-            fingerprint,
-            coords.lat,
-            coords.lng,
-            null,
-            coords.accuracy,
-            null
-          );
+          location: {
+            lat: coords.lat,
+            lng: coords.lng,
+            accuracy: coords.accuracy,
+          },
+        });
+      } else {
+        result = await markAttendanceTwoStep(
+          pendingQrPairRef.current.first,
+          pendingQrPairRef.current.second,
+          fingerprint,
+          coords.lat,
+          coords.lng,
+          null,
+          coords.accuracy,
+          null
+        );
+      }
+    } catch (err: any) {
+      result = { ok: false, error: err?.message || "Failed to submit attendance" };
+    }
 
     if (result?.ok) {
       pendingQrPairRef.current = null;
       setScanStep("SUCCESS");
-      setStatusMsg(result.already ? "Attendance already marked." : "Attendance confirmed.");
+      setStatusMsg(result.already || result.alreadyMarked ? "Attendance already marked." : "Attendance confirmed.");
       await loadStudentData();
       if (resetTimerRef.current) window.clearTimeout(resetTimerRef.current);
       resetTimerRef.current = window.setTimeout(() => {
@@ -544,12 +559,14 @@ const StudentDashboard: React.FC = () => {
       return;
     }
 
+    const rawError = typeof result === "string" ? "Network or server error" : String(result?.error || "");
+    const cleanError =
+      rawError.includes("<!DOCTYPE") || rawError.includes("<html") || rawError.includes("<pre>")
+        ? "Attendance server error. Please try again."
+        : rawError || "Attendance failed.";
+
     setScanStep("ERROR");
-    setStatusMsg(
-      String(result?.error || "").toLowerCase().includes("location")
-        ? result.error
-        : result?.error || "Attendance failed."
-    );
+    setStatusMsg(cleanError);
   }, [
     loadStudentData,
     openDynamicPairScanner,
