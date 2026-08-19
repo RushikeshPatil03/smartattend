@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import fs from "node:fs";
 
 export default defineConfig(({ mode }) => {
@@ -13,7 +14,7 @@ export default defineConfig(({ mode }) => {
       : undefined;
 
   return {
-    plugins: [react()],
+    plugins: [tailwindcss(), react()],
     build: {
       target: "es2020",
       chunkSizeWarningLimit: 1200,

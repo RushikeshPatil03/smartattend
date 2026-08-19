@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom';
 
 import App from './App';
 import { AppProvider } from './store';
+import './index.css';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {

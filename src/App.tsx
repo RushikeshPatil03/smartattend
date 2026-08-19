@@ -4,13 +4,36 @@ import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import HeaderBar from "./components/HeaderBar";
 import ProtectedRoute from "./routes/ProtectedRoute";
 
-const Login = React.lazy(() => import("./pages/Login"));
-const Register = React.lazy(() => import("./pages/Register"));
-const AdminRegister = React.lazy(() => import("./pages/AdminRegister"));
-const AdminDashboard = React.lazy(() => import("./pages/AdminDashboard"));
-const FacultyDashboard = React.lazy(() => import("./pages/FacultyDashboard"));
-const StudentDashboard = React.lazy(() => import("./pages/StudentDashboard"));
-const MobileLocationCapture = React.lazy(() => import("./pages/MobileLocationCapture"));
+// Helper to handle stale client cache / dynamic chunk loading retries
+function lazyWithRetry<T extends React.ComponentType<any>>(
+  componentImport: () => Promise<{ default: T }>
+) {
+  return React.lazy(async () => {
+    const isRefreshed = JSON.parse(
+      window.sessionStorage.getItem("retry-chunk-refreshed") || "false"
+    );
+    try {
+      const component = await componentImport();
+      window.sessionStorage.setItem("retry-chunk-refreshed", "false");
+      return component;
+    } catch (error) {
+      if (!isRefreshed) {
+        window.sessionStorage.setItem("retry-chunk-refreshed", "true");
+        window.location.reload();
+        return new Promise<{ default: T }>(() => {});
+      }
+      throw error;
+    }
+  });
+}
+
+const Login = lazyWithRetry(() => import("./pages/Login"));
+const Register = lazyWithRetry(() => import("./pages/Register"));
+const AdminRegister = lazyWithRetry(() => import("./pages/AdminRegister"));
+const AdminDashboard = lazyWithRetry(() => import("./pages/AdminDashboard"));
+const FacultyDashboard = lazyWithRetry(() => import("./pages/FacultyDashboard"));
+const StudentDashboard = lazyWithRetry(() => import("./pages/StudentDashboard"));
+const MobileLocationCapture = lazyWithRetry(() => import("./pages/MobileLocationCapture"));
 
 const Container = ({ children }: { children: React.ReactNode }) => (
   <div className="min-h-screen page-enter flex flex-col bg-[linear-gradient(180deg,_#f8fbff_0%,_#eef6ff_42%,_#f8fafc_100%)]">
