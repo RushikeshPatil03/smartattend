@@ -547,13 +547,15 @@ const Login: React.FC = () => {
 
             {/* Clean Secondary Navigation Footer */}
             <div className="mt-6 pt-5 border-t border-slate-100 space-y-3.5 text-center">
-              {/* Primary Register Link (routes to Admin Registration / Registration) */}
+              {/* Primary Register Link (Disabled as of now to avoid more admins) */}
               <div className="flex items-center justify-center gap-1.5 text-xs text-slate-500">
                 <span>New to SmartAttend?</span>
                 <button
                   type="button"
-                  onClick={goToAdminRegister}
-                  className="font-bold text-blue-600 hover:text-blue-800 hover:underline transition-colors focus:outline-none cursor-pointer"
+                  disabled
+                  aria-disabled="true"
+                  className="font-semibold text-slate-400 cursor-not-allowed opacity-60 transition-colors focus:outline-none select-none"
+                  title="Registration is currently disabled"
                 >
                   Register here
                 </button>
