@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: smart-attend-api
+    name: smartattend-qt1x
     runtime: node
     plan: free
     region: oregon
@@ -16,12 +16,14 @@ services:
       - key: FRONTEND_URL
         value: https://smartattend.app
       - key: CORS_ORIGINS
-        value: https://smartattend.app,https://www.smartattend.app
+        value: https://smartattend.app,https://www.smartattend.app,https://smartattend-qt1x.onrender.com
       - key: CORS_ORIGIN_PATTERNS
-        value: https://*.smartattend.app,https://*.pages.dev
+        value: https://*.smartattend.app,https://*.pages.dev,https://*.onrender.com
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_ANON_KEY
         sync: false
       - key: JWT_SECRET
         generateValue: true

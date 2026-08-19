@@ -90,6 +90,7 @@ const frontendUrl = normalizeOrigin(process.env.FRONTEND_URL || "https://smartat
 const defaultCorsOrigins = [
   "https://smartattend.app",
   "https://www.smartattend.app",
+  "https://smartattend-qt1x.onrender.com",
   "http://localhost:5173",
   "http://localhost:3000",
   "http://127.0.0.1:5173",
