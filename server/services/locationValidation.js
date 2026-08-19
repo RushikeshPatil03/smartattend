@@ -69,7 +69,32 @@ function validateLocationInRadius(
   return { ok: true, distanceMeters: dist, allowedMeters: effectiveRadius };
 }
 
+function validateStudentLocation(studentLocation, sessionLocation) {
+  if (
+    !sessionLocation ||
+    sessionLocation.lat == null ||
+    sessionLocation.lng == null
+  ) {
+    return { ok: true, distanceMeters: null };
+  }
+
+  if (!studentLocation) {
+    return { ok: true, distanceMeters: null };
+  }
+
+  const lat = studentLocation.lat != null ? studentLocation.lat : studentLocation.latitude;
+  const lng = studentLocation.lng != null ? studentLocation.lng : studentLocation.longitude;
+  const accuracy = studentLocation.accuracy != null ? studentLocation.accuracy : null;
+
+  if (lat == null || lng == null) {
+    return { ok: true, distanceMeters: null };
+  }
+
+  return validateLocationInRadius(sessionLocation, lat, lng, accuracy);
+}
+
 module.exports = {
   distanceMeters,
   validateLocationInRadius,
+  validateStudentLocation,
 };

@@ -528,7 +528,7 @@ router.post(
       });
     } catch (err) {
       console.error("Mark attendance error:", err);
-      return res.status(500).json({ ok: false, error: "Server error" });
+      return res.status(500).json({ ok: false, error: err?.message || "Server error" });
     }
   }
 );
@@ -971,7 +971,11 @@ async function handleTotpAttendanceSubmission(req, res) {
       .single();
 
     if (insertError || !attendance) {
-      if (insertError?.code === "23505") {
+      if (
+        insertError?.code === "23505" ||
+        String(insertError?.message || "").toLowerCase().includes("unique") ||
+        String(insertError?.message || "").toLowerCase().includes("duplicate")
+      ) {
         return res.json({
           ok: true,
           already: true,
@@ -985,48 +989,53 @@ async function handleTotpAttendanceSubmission(req, res) {
           },
         });
       }
-      throw insertError || new Error("Failed to record attendance");
+      console.error("Attendance insert error:", insertError);
+      return res.status(400).json({ ok: false, error: insertError?.message || "Failed to record attendance" });
     }
 
     await touchSession(sessionId);
 
-    const requestMeta = getRequestMeta(req);
-    await recordAttendanceAudit({
-      attendanceId: attendance.id,
-      sessionId,
-      studentId: student.id,
-      facultyId: session.faculty,
-      subjectId: session.subject,
-      action: "MARK_PRESENT",
-      method: "QR_TOTP",
-      actorRole: "STUDENT",
-      actorId: student.id,
-      deviceFingerprint: normalizedFp,
-      location: location
-        ? {
-            lat: Number(location.lat),
-            lng: Number(location.lng),
-            accuracy: Number(location.accuracy || 0),
-          }
-        : null,
-      qr: { blockIndex: totpValidation.blockIndex },
-      faceVerification: faceVerificationResult,
-      requestMeta,
-    });
+    try {
+      const requestMeta = getRequestMeta(req);
+      await recordAttendanceAudit({
+        attendanceId: attendance.id,
+        sessionId,
+        studentId: student.id,
+        facultyId: session.faculty,
+        subjectId: session.subject,
+        action: "MARK_PRESENT",
+        method: "QR_TOTP",
+        actorRole: "STUDENT",
+        actorId: student.id,
+        deviceFingerprint: normalizedFp,
+        location: location
+          ? {
+              lat: Number(location.lat),
+              lng: Number(location.lng),
+              accuracy: Number(location.accuracy || 0),
+            }
+          : null,
+        qr: { blockIndex: totpValidation.blockIndex },
+        faceVerification: faceVerificationResult,
+        requestMeta,
+      });
+    } catch {}
 
-    const attendanceBroadcastPayload = {
-      id: attendance.id,
-      _id: attendance.id,
-      sessionId,
-      studentId: student.id,
-      studentName: student.name,
-      enrollmentNo: student.enrollment_no,
-      timestamp: attendance.timestamp,
-      status: "present",
-      method: "QR_TOTP",
-    };
+    try {
+      const attendanceBroadcastPayload = {
+        id: attendance.id,
+        _id: attendance.id,
+        sessionId,
+        studentId: student.id,
+        studentName: student.name,
+        enrollmentNo: student.enrollment_no,
+        timestamp: attendance.timestamp,
+        status: "present",
+        method: "QR_TOTP",
+      };
 
-    await broadcastAttendance(sessionId, attendanceBroadcastPayload);
+      await broadcastAttendance(sessionId, attendanceBroadcastPayload);
+    } catch {}
 
     return res.json({
       ok: true,
@@ -1043,7 +1052,7 @@ async function handleTotpAttendanceSubmission(req, res) {
     });
   } catch (err) {
     console.error("Attendance submission error:", err);
-    return res.status(500).json({ ok: false, error: "Server error" });
+    return res.status(500).json({ ok: false, error: err?.message || "Server error" });
   }
 }
 
