@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom';
 
 import App from './App';
 import { AppProvider } from './store';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import './index.css';
 
 const rootElement = document.getElementById('root');
@@ -15,10 +16,12 @@ const root = createRoot(rootElement);
 
 root.render(
   <React.StrictMode>
-    <BrowserRouter>
-      <AppProvider>
-        <App />
-      </AppProvider>
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter>
+        <AppProvider>
+          <App />
+        </AppProvider>
+      </BrowserRouter>
+    </ErrorBoundary>
   </React.StrictMode>
 );
