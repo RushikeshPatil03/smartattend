@@ -248,6 +248,12 @@ async function clearSessionSecret(sessionId) {
   }
 }
 
+async function getPresentStudents(sessionId) {
+  if (!sessionId) return [];
+  const set = presenceMemoryStore.get(String(sessionId));
+  return set ? Array.from(set) : [];
+}
+
 module.exports = {
   generateTotpToken,
   getBlockIndex,
