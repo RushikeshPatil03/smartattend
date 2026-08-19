@@ -46,20 +46,23 @@ export default function AppLogo({ size = 48 }) {
       <div>
         <div
           style={{
-            fontSize: "18px",
-            fontWeight: 700,
-            color: "#0F172A",
+            fontSize: "19px",
+            fontWeight: 800,
+            background: "linear-gradient(135deg, #2563eb 0%, #0284c7 50%, #06b6d4 100%)",
+            WebkitBackgroundClip: "text",
+            WebkitTextFillColor: "transparent",
             fontFamily: "Inter, sans-serif",
-          lineHeight: 1,
-        }}
-      >
+            lineHeight: 1.1,
+            letterSpacing: "-0.02em",
+          }}
+        >
           SmartAttend
         </div>
         <div
           style={{
-            fontSize: "12px",
-            fontWeight: 500,
-            color: "#6B7280",
+            fontSize: "11px",
+            fontWeight: 600,
+            color: "#64748B",
             marginTop: "3px",
             fontFamily: "Inter, sans-serif",
             lineHeight: 1,

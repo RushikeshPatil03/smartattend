@@ -1,24 +1,152 @@
 // src/pages/Login.tsx
 import React, { useEffect, useRef, useState } from "react";
-import { Plus } from "lucide-react";
-import { UserRole } from "../types";
-import { useApp } from "../store";
-import { Button, Card, Input, Skeleton } from "../components/Common";
+import { motion, AnimatePresence } from "framer-motion";
 import {
-  UserCircle,
   Shield,
   GraduationCap,
+  Briefcase,
+  Lock,
+  Mail,
+  Eye,
+  EyeOff,
+  ArrowRight,
+  Sparkles,
+  CheckCircle2,
   AlertCircle,
   Camera,
   RefreshCw,
-  ArrowRight,
-  CheckCircle2,
-  Fingerprint,
-  Sparkles,
+  QrCode,
+  X,
+  ShieldCheck,
 } from "lucide-react";
+import { UserRole } from "../types";
+import { useApp } from "../store";
 import { getFingerprint } from "../services/attendanceClient";
 import apiClient from "../services/apiClient";
 
+// --- Role Options Configuration ---
+const ROLE_OPTIONS = [
+  {
+    role: UserRole.STUDENT,
+    label: "Student",
+    icon: GraduationCap,
+    badge: "Fast Check-in",
+    tagline: "Mark attendance via dynamic QR & geofenced verification",
+    accentColor: "#3b82f6", // Blue
+    activeGlow: "rgba(59, 130, 246, 0.35)",
+    buttonGradient: "from-blue-600 via-indigo-600 to-cyan-500",
+  },
+  {
+    role: UserRole.FACULTY,
+    label: "Faculty",
+    icon: Briefcase,
+    badge: "Session Host",
+    tagline: "Generate live dynamic QR codes & track real-time attendance",
+    accentColor: "#10b981", // Emerald
+    activeGlow: "rgba(16, 185, 129, 0.35)",
+    buttonGradient: "from-emerald-600 via-teal-600 to-cyan-600",
+  },
+  {
+    role: UserRole.ADMIN,
+    label: "Admin",
+    icon: Shield,
+    badge: "Institution",
+    tagline: "Manage departments, users, security locks & system policies",
+    accentColor: "#6366f1", // Indigo
+    activeGlow: "rgba(99, 102, 241, 0.35)",
+    buttonGradient: "from-indigo-600 via-blue-600 to-violet-600",
+  },
+] as const;
+
+// --- Floating Label Input Component ---
+interface FloatingInputProps extends React.InputHTMLAttributes<HTMLInputElement> {
+  label: string;
+  icon: React.ComponentType<{ className?: string; size?: number }>;
+  isPassword?: boolean;
+  value: string;
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  accentColor?: string;
+}
+
+const FloatingInput: React.FC<FloatingInputProps> = React.memo(({
+  label,
+  icon: Icon,
+  isPassword = false,
+  value,
+  onChange,
+  accentColor = "#3b82f6",
+  ...props
+}) => {
+  const [isFocused, setIsFocused] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const isFloating = isFocused || (value && value.length > 0);
+
+  return (
+    <div className="relative w-full group">
+      <div
+        className={`relative flex items-center w-full rounded-2xl border transition-all duration-300 bg-white/80 backdrop-blur-md ${
+          isFocused
+            ? "border-blue-500/90 bg-white ring-4 ring-blue-500/10 shadow-[0_8px_24px_-8px_rgba(59,130,246,0.25)]"
+            : "border-slate-200/90 hover:border-slate-300/90 hover:bg-white/95"
+        }`}
+      >
+        {/* Leading Icon */}
+        <div
+          className={`pl-4 pr-2 flex items-center transition-colors duration-200 ${
+            isFocused ? "text-blue-600" : "text-slate-400 group-hover:text-slate-600"
+          }`}
+        >
+          <Icon size={19} />
+        </div>
+
+        {/* Input & Floating Label */}
+        <div className="relative flex-1 py-3.5 pr-3">
+          <input
+            {...props}
+            type={isPassword ? (showPassword ? "text" : "password") : props.type}
+            value={value}
+            onChange={onChange}
+            onFocus={(e) => {
+              setIsFocused(true);
+              props.onFocus?.(e);
+            }}
+            onBlur={(e) => {
+              setIsFocused(false);
+              props.onBlur?.(e);
+            }}
+            className="w-full bg-transparent text-slate-900 text-sm font-medium focus:outline-none placeholder-transparent pt-3 pb-0"
+            placeholder={label}
+            id={props.id || label.toLowerCase().replace(/\s+/g, "-")}
+          />
+          <label
+            htmlFor={props.id || label.toLowerCase().replace(/\s+/g, "-")}
+            className={`absolute left-0 pointer-events-none transition-all duration-200 select-none ${
+              isFloating
+                ? "top-1.5 text-[11px] font-semibold tracking-wider uppercase text-blue-600"
+                : "top-3.5 text-sm font-normal text-slate-500"
+            }`}
+          >
+            {label}
+          </label>
+        </div>
+
+        {/* Trailing Password Toggle */}
+        {isPassword && (
+          <button
+            type="button"
+            onClick={() => setShowPassword(!showPassword)}
+            className="pr-4 pl-2 text-slate-400 hover:text-slate-700 transition-colors focus:outline-none cursor-pointer"
+            aria-label={showPassword ? "Hide password" : "Show password"}
+          >
+            {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+});
+
+// --- Main Centered Login Page Component ---
 const Login: React.FC = () => {
   const { login, goToAdminRegister } = useApp();
 
@@ -27,6 +155,8 @@ const Login: React.FC = () => {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // Device change modal states
   const [deviceFormOpen, setDeviceFormOpen] = useState(false);
   const [deviceEmail, setDeviceEmail] = useState("");
   const [devicePassword, setDevicePassword] = useState("");
@@ -42,35 +172,7 @@ const Login: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  const roleOptions = [
-    {
-      role: UserRole.ADMIN,
-      label: "Admin",
-      hint: "Control departments, users, and institutional setup.",
-      icon: Shield,
-      accent: "from-sky-500 to-blue-600",
-      selectedClass:
-        "border-sky-400 bg-sky-50 text-sky-700 shadow-[0_18px_40px_-28px_rgba(14,165,233,0.9)]",
-    },
-    {
-      role: UserRole.FACULTY,
-      label: "Faculty",
-      hint: "Run live sessions, track attendance, and manage devices.",
-      icon: UserCircle,
-      accent: "from-emerald-500 to-teal-600",
-      selectedClass:
-        "border-emerald-400 bg-emerald-50 text-emerald-700 shadow-[0_18px_40px_-28px_rgba(16,185,129,0.9)]",
-    },
-    {
-      role: UserRole.STUDENT,
-      label: "Student",
-      hint: "Access classes, submit attendance, and monitor progress.",
-      icon: GraduationCap,
-      accent: "from-amber-400 to-orange-500",
-      selectedClass:
-        "border-amber-400 bg-amber-50 text-amber-700 shadow-[0_18px_40px_-28px_rgba(245,158,11,0.9)]",
-    },
-  ] as const;
+  const activeRoleData = ROLE_OPTIONS.find((r) => r.role === selectedRole) || ROLE_OPTIONS[0];
 
   const stopFrontCamera = () => {
     const stream = streamRef.current;
@@ -88,23 +190,20 @@ const Login: React.FC = () => {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!email.trim() || !password) {
+      setError("Please provide both email address and password.");
+      return;
+    }
     setError(null);
     setLoading(true);
 
     try {
       const fingerprint = getFingerprint();
-
-      const res = await login(
-        selectedRole,
-        email,
-        password,
-        fingerprint
-      );
-
+      const res = await login(selectedRole, email.trim(), password, fingerprint);
       setLoading(false);
 
       if (!res || !res.ok) {
-        setError(res?.error || "Login failed");
+        setError(res?.error || "Login failed. Please verify your credentials.");
         return;
       }
 
@@ -117,7 +216,7 @@ const Login: React.FC = () => {
       }
     } catch (err: any) {
       setLoading(false);
-      setError(err?.message || "Login error");
+      setError(err?.message || "An unexpected error occurred during login.");
     }
   };
 
@@ -132,11 +231,15 @@ const Login: React.FC = () => {
 
   const verifyDeviceStudent = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!deviceEmail.trim() || !devicePassword) {
+      setDeviceError("Enter student email and password.");
+      return;
+    }
     resetDeviceRequest();
     setDeviceLoading(true);
     try {
       const res: any = await apiClient.verifyDeviceChangeStudent({
-        email: deviceEmail,
+        email: deviceEmail.trim(),
         password: devicePassword,
       });
       if (!res?.ok) {
@@ -145,7 +248,9 @@ const Login: React.FC = () => {
       }
       setDeviceVerifyToken(String(res.verifyToken || ""));
       setDeviceStudent(res.student || null);
-      setDeviceMessage("Student verified. Capture a live photo.");
+      setDeviceMessage("Student verified. Please capture a live photo.");
+    } catch (err: any) {
+      setDeviceError(err?.message || "Failed to verify student.");
     } finally {
       setDeviceLoading(false);
     }
@@ -165,9 +270,9 @@ const Login: React.FC = () => {
         audio: false,
         video: {
           facingMode: { ideal: "user" },
-          width: { ideal: 360 },
-          height: { ideal: 480 },
-          frameRate: { ideal: 15, max: 24 },
+          width: { ideal: 480 },
+          height: { ideal: 640 },
+          frameRate: { ideal: 24, max: 30 },
         },
       });
       streamRef.current = stream;
@@ -180,7 +285,7 @@ const Login: React.FC = () => {
       }
       setCameraActive(true);
     } catch (err: any) {
-      setDeviceError(err?.message || "Unable to open front camera.");
+      setDeviceError(err?.message || "Unable to open front camera. Please check permissions.");
       stopFrontCamera();
     } finally {
       setCameraStarting(false);
@@ -191,10 +296,10 @@ const Login: React.FC = () => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas || !video.videoWidth || !video.videoHeight) {
-      setDeviceError("Camera is not ready yet.");
+      setDeviceError("Camera stream is not ready yet.");
       return;
     }
-    const maxWidth = 480;
+    const maxWidth = 540;
     const scale = Math.min(1, maxWidth / video.videoWidth);
     canvas.width = Math.round(video.videoWidth * scale);
     canvas.height = Math.round(video.videoHeight * scale);
@@ -204,8 +309,8 @@ const Login: React.FC = () => {
       return;
     }
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    setDeviceSelfie(canvas.toDataURL("image/jpeg", 0.75));
-    setDeviceMessage("Live photo captured. Submit the request for faculty approval.");
+    setDeviceSelfie(canvas.toDataURL("image/jpeg", 0.82));
+    setDeviceMessage("Live verification photo captured. Submit for faculty review.");
     stopFrontCamera();
   };
 
@@ -228,239 +333,548 @@ const Login: React.FC = () => {
         return;
       }
       setDeviceMessage(
-        `Request submitted. It expires at ${new Date(res.request.expiresAt).toLocaleString()} if no faculty reviews it.`
+        `Request submitted successfully! Expires at ${new Date(
+          res.request.expiresAt
+        ).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`
       );
       setDeviceVerifyToken("");
       setDevicePassword("");
+    } catch (err: any) {
+      setDeviceError(err?.message || "Submission failed. Please try again.");
     } finally {
       setDeviceLoading(false);
     }
   };
 
   return (
-    <div className="relative min-h-screen overflow-hidden">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(14,165,233,0.18),_transparent_32%),radial-gradient(circle_at_bottom_right,_rgba(20,184,166,0.18),_transparent_28%),linear-gradient(180deg,_#f8fbff_0%,_#eef6ff_42%,_#f8fafc_100%)]" />
-      <div className="relative flex min-h-screen flex-col justify-center px-4 py-4 sm:px-6 lg:px-8">
-        <div className="mx-auto w-full max-w-2xl space-y-4">
-            <Card className="overflow-hidden rounded-[32px] border-white/70 bg-white/92 p-0 shadow-[0_34px_90px_-52px_rgba(15,23,42,0.48)] backdrop-blur">
-              <div className="border-b border-slate-100 bg-[linear-gradient(180deg,_rgba(248,250,252,0.9)_0%,_rgba(255,255,255,0.96)_100%)] p-4 text-center sm:p-5 sm:text-left">
-                <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
-                  <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                  Welcome Back
-                </div>
+    <div className="relative min-h-screen w-full overflow-x-hidden bg-[#070b14] text-slate-100 flex flex-col justify-between selection:bg-blue-500 selection:text-white">
+      {/* Ambient Gradient Mesh Background */}
+      <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
+        {/* Animated Radial Orbs */}
+        <motion.div
+          animate={{
+            scale: [1, 1.15, 1],
+            x: [0, 20, 0],
+            y: [0, -15, 0],
+          }}
+          transition={{ duration: 16, repeat: Infinity, ease: "easeInOut" }}
+          className="absolute -top-32 left-1/2 -translate-x-1/2 w-[650px] h-[650px] rounded-full bg-gradient-to-tr from-blue-600/25 via-indigo-600/20 to-cyan-500/10 blur-[130px]"
+        />
+        <motion.div
+          animate={{
+            scale: [1, 1.2, 1],
+            x: [0, -25, 0],
+            y: [0, 25, 0],
+          }}
+          transition={{ duration: 20, repeat: Infinity, ease: "easeInOut" }}
+          className="absolute -bottom-40 right-1/4 w-[600px] h-[600px] rounded-full bg-gradient-to-bl from-cyan-500/20 via-blue-600/15 to-transparent blur-[130px]"
+        />
+
+        {/* Subtle Geometric Grid Matrix */}
+        <div
+          className="absolute inset-0 opacity-[0.035]"
+          style={{
+            backgroundImage: `radial-gradient(rgba(255, 255, 255, 0.4) 1px, transparent 1px)`,
+            backgroundSize: "28px 28px",
+          }}
+        />
+      </div>
+
+      {/* Main Centered Content Container */}
+      <div className="relative z-10 mx-auto w-full max-w-lg px-4 py-8 sm:px-6 flex-1 flex flex-col justify-center items-center">
+        
+        {/* Dynamic Top Brand Identity & System Header */}
+        <motion.div
+          initial={{ opacity: 0, y: -16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+          className="flex flex-col items-center text-center mb-6 space-y-2"
+        >
+          {/* Logo Pill */}
+          <div className="flex items-center gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 via-indigo-500 to-cyan-400 p-[1.5px] shadow-[0_12px_30px_-8px_rgba(59,130,246,0.8)]">
+              <div className="flex h-full w-full items-center justify-center rounded-[14px] bg-slate-950/95 backdrop-blur">
+                <QrCode className="h-6 w-6 text-cyan-400 animate-pulse" />
+              </div>
+            </div>
+            <div className="text-left">
+              <div className="flex items-center gap-2">
+                <span className="text-2xl sm:text-3xl font-black tracking-tight font-display text-transparent bg-clip-text bg-gradient-to-r from-sky-400 via-cyan-300 to-teal-300 drop-shadow-[0_2px_12px_rgba(56,189,248,0.3)]">
+                  SmartAttend
+                </span>
+                <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-0.5 text-[10px] font-bold text-emerald-400 tracking-wide uppercase shadow-[0_0_12px_rgba(16,185,129,0.25)]">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-ping" />
+                  Live System
+                </span>
+              </div>
+              <p className="text-xs font-semibold text-slate-400 tracking-wide">QR & GPS Secured Institutional Portal</p>
+            </div>
+          </div>
+        </motion.div>
+
+        {/* Elevated Glassmorphism Authentication Form Card */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
+          className="relative w-full"
+        >
+          {/* Outer Card Ambient Glow */}
+          <div
+            className="absolute -inset-1 rounded-[36px] opacity-70 blur-xl transition-all duration-500"
+            style={{
+              background: `linear-gradient(135deg, ${activeRoleData.activeGlow}, transparent 70%)`,
+            }}
+          />
+
+          {/* Elevated Card */}
+          <div className="relative overflow-hidden rounded-[32px] border border-white/80 bg-white/95 p-6 sm:p-8 shadow-[0_25px_70px_-20px_rgba(0,0,0,0.35)] backdrop-blur-2xl text-slate-800">
+            
+            {/* Centered Form Header */}
+            <div className="text-center space-y-1.5 mb-6">
+              <div className="inline-flex items-center justify-center gap-1.5 rounded-full border border-blue-200 bg-blue-50/90 px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-blue-700 mx-auto shadow-xs">
+                <Sparkles size={13} className="text-blue-600" />
+                Portal Access
+              </div>
+              <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight pt-1">
+                Welcome Back
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-500 font-normal max-w-xs mx-auto">
+                Select your role and authenticate to access your dashboard.
+              </p>
+            </div>
+
+            {/* Role Segmented Tab Selector */}
+            <div className="relative mb-5 p-1 rounded-2xl bg-slate-100/90 border border-slate-200/80 flex items-center justify-between">
+              {ROLE_OPTIONS.map((option) => {
+                const Icon = option.icon;
+                const isSelected = selectedRole === option.role;
+
+                return (
+                  <button
+                    key={option.role}
+                    type="button"
+                    onClick={() => {
+                      setSelectedRole(option.role);
+                      setError(null);
+                    }}
+                    className={`relative z-10 flex-1 py-2.5 px-2 rounded-xl text-xs font-bold tracking-tight transition-colors duration-200 flex items-center justify-center gap-1.5 select-none cursor-pointer ${
+                      isSelected
+                        ? "text-slate-900 shadow-sm"
+                        : "text-slate-500 hover:text-slate-800"
+                    }`}
+                  >
+                    {isSelected && (
+                      <motion.div
+                        layoutId="activeRoleTab"
+                        transition={{ type: "spring", stiffness: 450, damping: 35 }}
+                        className="absolute inset-0 rounded-xl bg-white shadow-md border border-slate-200/60"
+                      />
+                    )}
+                    <span className="relative z-10 flex items-center gap-1.5">
+                      <Icon
+                        size={16}
+                        className={isSelected ? "text-blue-600" : "text-slate-400"}
+                      />
+                      {option.label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Dynamic Role Context Micro-copy */}
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={activeRoleData.role}
+                initial={{ opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 4 }}
+                transition={{ duration: 0.2 }}
+                className="mb-5 rounded-xl border border-slate-200/80 bg-slate-50/90 px-3.5 py-2.5 text-xs text-slate-600 flex items-center gap-2"
+              >
+                <div
+                  className="h-2 w-2 rounded-full shrink-0"
+                  style={{ backgroundColor: activeRoleData.accentColor }}
+                />
+                <span className="font-medium text-slate-700">{activeRoleData.tagline}</span>
+              </motion.div>
+            </AnimatePresence>
+
+            {/* Error Banner */}
+            <AnimatePresence>
+              {error && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0, y: -8 }}
+                  animate={{ opacity: 1, height: "auto", y: 0 }}
+                  exit={{ opacity: 0, height: 0, y: -8 }}
+                  className="mb-4 overflow-hidden rounded-2xl border border-red-200 bg-red-50/90 p-3.5 text-xs font-medium text-red-700 flex items-start gap-2.5 shadow-sm"
+                >
+                  <AlertCircle size={17} className="mt-0.5 shrink-0 text-red-600" />
+                  <span>{error}</span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Login Form */}
+            <form onSubmit={handleLogin} className="space-y-4">
+              <FloatingInput
+                label="Institutional Email"
+                icon={Mail}
+                type="email"
+                required
+                autoComplete="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                accentColor={activeRoleData.accentColor}
+              />
+
+              <FloatingInput
+                label="Password"
+                icon={Lock}
+                isPassword
+                required
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                accentColor={activeRoleData.accentColor}
+              />
+
+              {/* Primary CTA Submit Button */}
+              <motion.button
+                whileHover={{ scale: 1.012 }}
+                whileTap={{ scale: 0.985 }}
+                type="submit"
+                disabled={loading}
+                className={`w-full relative overflow-hidden rounded-2xl py-3.5 px-5 font-bold text-sm text-white shadow-lg transition-all duration-300 flex items-center justify-center gap-2 bg-gradient-to-r ${activeRoleData.buttonGradient} hover:shadow-xl hover:brightness-105 active:brightness-95 disabled:opacity-75 disabled:cursor-not-allowed cursor-pointer`}
+              >
+                {loading ? (
+                  <span className="flex items-center gap-2">
+                    <RefreshCw size={17} className="animate-spin text-white/90" />
+                    <span>Authenticating {activeRoleData.label}...</span>
+                  </span>
+                ) : (
+                  <>
+                    <span>Sign in as {activeRoleData.label}</span>
+                    <ArrowRight size={17} className="transition-transform group-hover:translate-x-0.5" />
+                  </>
+                )}
+              </motion.button>
+            </form>
+
+            {/* Clean Secondary Navigation Footer */}
+            <div className="mt-6 pt-5 border-t border-slate-100 space-y-3.5 text-center">
+              {/* Primary Register Link (routes to Admin Registration / Registration) */}
+              <div className="flex items-center justify-center gap-1.5 text-xs text-slate-500">
+                <span>New to SmartAttend?</span>
+                <button
+                  type="button"
+                  onClick={goToAdminRegister}
+                  className="font-bold text-blue-600 hover:text-blue-800 hover:underline transition-colors focus:outline-none cursor-pointer"
+                >
+                  Register here
+                </button>
               </div>
 
-              <div className="space-y-3 px-4 py-4 sm:px-6">
-                <div className="grid grid-cols-3 gap-2 sm:gap-3">
-                  {roleOptions.map((option) => {
-                    const Icon = option.icon;
-                    const isSelected = selectedRole === option.role;
-                    return (
-                      <button
-                        key={option.role}
-                        type="button"
-                        onClick={() => {
-                          setSelectedRole(option.role);
-                          setError(null);
-                        }}
-                        className={`min-w-0 rounded-2xl border px-2 py-3 text-center transition-all duration-200 sm:px-3 ${
-                          isSelected
-                            ? option.selectedClass
-                            : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50"
-                        }`}
-                      >
-                        <div className="flex min-w-0 flex-col items-center gap-2">
-                          <div className={`flex h-9 w-9 items-center justify-center rounded-xl sm:h-10 sm:w-10 ${
-                            isSelected ? "bg-white/75" : "bg-slate-100"
-                          }`}>
-                            <Icon size={18} />
+              {/* Centered Device Reset Request Button */}
+              <div className="flex justify-center pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeviceFormOpen(true);
+                    setDeviceError("");
+                    setDeviceMessage("");
+                  }}
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 transition-colors py-1.5 px-3.5 rounded-xl border border-slate-200 bg-slate-50/80 hover:bg-slate-100 hover:border-slate-300 shadow-sm cursor-pointer"
+                >
+                  <Camera size={14} className="text-slate-500" />
+                  <span>Device Reset Request</span>
+                </button>
+              </div>
+            </div>
+
+          </div>
+
+          {/* Bottom Security & Trust Badge */}
+          <div className="mt-5 text-center">
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-4 py-1.5 text-[11px] font-medium text-slate-400 backdrop-blur-md">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              <span>256-bit Encrypted</span>
+              <span className="text-slate-600">•</span>
+              <span>GPS Geofenced</span>
+              <span className="text-slate-600">•</span>
+              <span>Device Bound</span>
+            </div>
+          </div>
+
+        </motion.div>
+
+      </div>
+
+      {/* ======================================================== */}
+      {/* DEVICE CHANGE REQUEST MODAL (High-End Glassmorphic UX)     */}
+      {/* ======================================================== */}
+      <AnimatePresence>
+        {deviceFormOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            {/* Backdrop Blur Overlay */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => {
+                setDeviceFormOpen(false);
+                resetDeviceRequest();
+              }}
+              className="absolute inset-0 bg-slate-950/75 backdrop-blur-md"
+            />
+
+            {/* Modal Dialog Card */}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.94, y: 16 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.94, y: 16 }}
+              transition={{ type: "spring", stiffness: 350, damping: 30 }}
+              className="relative w-full max-w-lg overflow-hidden rounded-[28px] border border-white/20 bg-white shadow-2xl text-slate-900 z-10"
+            >
+              {/* Modal Header */}
+              <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4 bg-slate-50/70">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-100 text-blue-600">
+                    <Camera size={18} />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900 tracking-tight">
+                      Device Change Request
+                    </h3>
+                    <p className="text-xs text-slate-500">Live photo verification required</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeviceFormOpen(false);
+                    resetDeviceRequest();
+                  }}
+                  className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 hover:bg-slate-200/80 hover:text-slate-700 transition-colors cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Modal Content Body */}
+              <div className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
+                <div className="rounded-2xl border border-blue-100 bg-blue-50/70 p-3.5 text-xs text-blue-800 flex items-start gap-2">
+                  <ShieldCheck size={16} className="text-blue-600 mt-0.5 shrink-0" />
+                  <span>
+                    Verify your student account first, then take a live photo from your new device for faculty review and approval.
+                  </span>
+                </div>
+
+                {!deviceStudent ? (
+                  /* Step 1: Student Credentials Verification */
+                  <form onSubmit={verifyDeviceStudent} className="space-y-3.5">
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                        Student Email
+                      </label>
+                      <div className="relative flex items-center rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 shadow-sm focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-500/20">
+                        <Mail size={17} className="text-slate-400 mr-2.5" />
+                        <input
+                          type="email"
+                          required
+                          value={deviceEmail}
+                          onChange={(e) => setDeviceEmail(e.target.value)}
+                          placeholder="student@college.edu"
+                          className="w-full text-sm font-medium text-slate-900 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                        Student Password
+                      </label>
+                      <div className="relative flex items-center rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 shadow-sm focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-500/20">
+                        <Lock size={17} className="text-slate-400 mr-2.5" />
+                        <input
+                          type="password"
+                          required
+                          value={devicePassword}
+                          onChange={(e) => setDevicePassword(e.target.value)}
+                          placeholder="••••••••"
+                          className="w-full text-sm font-medium text-slate-900 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={deviceLoading}
+                      className="w-full mt-2 rounded-xl bg-blue-600 py-3 text-sm font-bold text-white shadow-md hover:bg-blue-700 active:scale-[0.99] transition-all disabled:opacity-60 flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      {deviceLoading ? (
+                        <>
+                          <RefreshCw size={16} className="animate-spin" /> Verifying Student...
+                        </>
+                      ) : (
+                        "Verify & Proceed to Photo"
+                      )}
+                    </button>
+                  </form>
+                ) : (
+                  /* Step 2: Camera Capture Flow */
+                  <div className="space-y-4">
+                    {/* Student Info Card */}
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-3.5 text-xs space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-slate-900 text-sm">{deviceStudent.name}</span>
+                        <span className="rounded-md bg-blue-100 px-2 py-0.5 font-mono text-[11px] font-bold text-blue-700">
+                          {deviceStudent.enrollmentNo}
+                        </span>
+                      </div>
+                      <p className="text-slate-600">
+                        Department: {deviceStudent.department?.name || "Assigned Department"}
+                        {deviceStudent.department?.code ? ` (${deviceStudent.department.code})` : ""}
+                      </p>
+                    </div>
+
+                    {/* Live Camera Viewfinder or Captured Preview */}
+                    {!deviceSelfie ? (
+                      <div className="space-y-3">
+                        <div
+                          className={`relative w-full aspect-[4/3] overflow-hidden rounded-2xl bg-slate-950 border border-slate-800 ${
+                            cameraActive || cameraStarting ? "" : "hidden"
+                          }`}
+                        >
+                          <video
+                            ref={videoRef}
+                            className="h-full w-full object-cover -scale-x-100"
+                            autoPlay
+                            muted
+                            playsInline
+                          />
+                          {/* Face Oval Guide Alignment Overlay */}
+                          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                            <div className="h-44 w-36 rounded-[50%] border-2 border-dashed border-cyan-400/70 shadow-[0_0_15px_rgba(6,182,212,0.3)]" />
                           </div>
-                          <div className="min-w-0">
-                            <p className="truncate text-xs font-semibold sm:text-sm">{option.label}</p>
+                          <div className="absolute bottom-2 inset-x-0 text-center">
+                            <span className="rounded-full bg-black/60 px-3 py-1 text-[10px] font-medium text-white backdrop-blur">
+                              Align your face within the guide
+                            </span>
                           </div>
                         </div>
-                      </button>
-                    );
-                  })}
-                </div>
 
-                <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">
-                    Selected Role
-                  </p>
-                  <p className="mt-1 text-sm font-medium text-slate-700">
-                    {roleOptions.find((option) => option.role === selectedRole)?.hint}
-                  </p>
-                </div>
+                        {!cameraActive && !cameraStarting && (
+                          <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50 p-6 text-center text-xs text-slate-500 space-y-2">
+                            <Camera size={28} className="mx-auto text-slate-400" />
+                            <p className="font-medium text-slate-700">Camera ready to initialize</p>
+                            <p className="text-[11px] text-slate-500">
+                              Please enable camera permissions to take a live photo.
+                            </p>
+                          </div>
+                        )}
 
-                {error && (
-                  <div className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                    <AlertCircle size={18} className="mt-0.5 shrink-0" />
-                    <span>{error}</span>
+                        <canvas ref={canvasRef} className="hidden" />
+
+                        <div className="grid grid-cols-2 gap-2.5 pt-1">
+                          <button
+                            type="button"
+                            onClick={startFrontCamera}
+                            disabled={cameraActive || cameraStarting}
+                            className="rounded-xl border border-slate-200 bg-slate-100 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-200 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            {cameraStarting ? (
+                              <>
+                                <RefreshCw size={14} className="animate-spin" /> Starting...
+                              </>
+                            ) : (
+                              <>
+                                <Camera size={14} /> Open Camera
+                              </>
+                            )}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={captureSelfie}
+                            disabled={!cameraActive}
+                            className="rounded-xl bg-blue-600 py-2.5 text-xs font-bold text-white hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                          >
+                            <Camera size={14} /> Capture Photo
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      /* Captured Photo Preview */
+                      <div className="space-y-3">
+                        <div className="relative aspect-[4/3] w-full overflow-hidden rounded-2xl border border-slate-200 shadow-inner">
+                          <img
+                            src={deviceSelfie}
+                            alt="Captured Live Verification"
+                            className="h-full w-full object-cover"
+                          />
+                          <div className="absolute top-2 right-2 rounded-full bg-emerald-500/90 px-2.5 py-0.5 text-[10px] font-bold text-white backdrop-blur flex items-center gap-1">
+                            <CheckCircle2 size={11} /> Photo Captured
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2.5">
+                          <button
+                            type="button"
+                            onClick={() => setDeviceSelfie("")}
+                            className="rounded-xl border border-slate-200 bg-slate-100 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-200 transition-colors cursor-pointer"
+                          >
+                            Retake Photo
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={submitDeviceRequest}
+                            disabled={deviceLoading}
+                            className="rounded-xl bg-emerald-600 py-2.5 text-xs font-bold text-white hover:bg-emerald-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                          >
+                            {deviceLoading ? (
+                              <>
+                                <RefreshCw size={14} className="animate-spin" /> Submitting...
+                              </>
+                            ) : (
+                              "Submit Request"
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
-                <form onSubmit={handleLogin} className="space-y-3">
-                  <Input
-                    label="Email Address"
-                    type="email"
-                    placeholder="name@college.edu"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="h-12 rounded-xl"
-                  />
-
-                  <Input
-                    label="Password"
-                    type="password"
-                    placeholder="Password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="h-12 rounded-xl"
-                  />
-
-                  <Button type="submit" className="mt-2 w-full rounded-xl py-3.5 text-sm" disabled={loading}>
-                    {loading ? "Signing in..." : "Login to Dashboard"}
-                    {!loading ? <ArrowRight size={16} /> : null}
-                  </Button>
-                </form>
-              </div>
-            </Card>
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Button
-                type="button"
-                className="w-full rounded-2xl border-none bg-[linear-gradient(135deg,_#15803d_0%,_#16a34a_50%,_#22c55e_100%)] py-3.5 text-white shadow-[0_22px_45px_-28px_rgba(34,197,94,0.7)] hover:brightness-105"
-                onClick={goToAdminRegister}
-              >
-                <Plus size={16} />
-                New Admin Registration
-              </Button>
-
-              <Button
-                type="button"
-                variant="secondary"
-                className="w-full rounded-2xl py-3.5"
-                onClick={() => {
-                  setDeviceFormOpen(true);
-                  setDeviceError("");
-                  setDeviceMessage("");
-                }}
-              >
-                <Camera size={16} />
-                Device Change Request
-              </Button>
-            </div>
-
-            {deviceFormOpen ? (
-              <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 p-3 backdrop-blur-sm sm:items-center sm:p-4">
-                <div className="max-h-[88vh] w-full max-w-xl overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-[0_28px_90px_-36px_rgba(15,23,42,0.65)]">
-                  <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 sm:px-5">
-                    <h3 className="text-lg font-semibold tracking-tight text-slate-900">Device Change Request</h3>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDeviceFormOpen(false);
-                        resetDeviceRequest();
-                      }}
-                      className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-                      aria-label="Close device change request"
-                    >
-                      x
-                    </button>
+                {/* Error & Message Alerts */}
+                {deviceError && (
+                  <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700 flex items-center gap-2">
+                    <AlertCircle size={15} className="shrink-0 text-red-600" />
+                    <span>{deviceError}</span>
                   </div>
-                  <div className="max-h-[calc(88vh-58px)] overflow-y-auto p-4 sm:p-5">
-                    <div className="space-y-4">
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                    Verify the student first, then capture a live photo for faculty review. The existing approval workflow remains unchanged.
+                )}
+                {deviceMessage && (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800 flex items-center gap-2">
+                    <CheckCircle2 size={15} className="shrink-0 text-emerald-600" />
+                    <span>{deviceMessage}</span>
                   </div>
-                  {!deviceStudent ? (
-                    <form onSubmit={verifyDeviceStudent} className="space-y-3">
-                      <Input
-                        label="Student Email"
-                        type="email"
-                        placeholder="student@college.edu"
-                        value={deviceEmail}
-                        onChange={(e) => setDeviceEmail(e.target.value)}
-                        className="h-12 rounded-xl"
-                      />
-                      <Input
-                        label="Student Password"
-                        type="password"
-                        placeholder="Password"
-                        value={devicePassword}
-                        onChange={(e) => setDevicePassword(e.target.value)}
-                        className="h-12 rounded-xl"
-                      />
-                      <Button type="submit" className="w-full rounded-xl py-3" disabled={deviceLoading}>
-                        {deviceLoading ? <><RefreshCw size={16} className="animate-spin" /> Verifying...</> : "Verify Student"}
-                      </Button>
-                    </form>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
-                        <p className="font-semibold text-slate-900">{deviceStudent.name}</p>
-                        <p className="text-slate-600">{deviceStudent.enrollmentNo}</p>
-                        <p className="text-slate-500">
-                          Department: {deviceStudent.department?.name || "Assigned department"}
-                          {deviceStudent.department?.code ? ` (${deviceStudent.department.code})` : ""}
-                        </p>
-                      </div>
-
-                      {!deviceSelfie ? (
-                        <div className="space-y-3">
-                          <div className={`w-full max-w-full overflow-hidden rounded-2xl border border-slate-200 bg-black ${cameraActive || cameraStarting ? "" : "hidden"}`}>
-                            <video ref={videoRef} className="max-h-72 w-full object-cover" autoPlay muted playsInline />
-                          </div>
-                          {!cameraActive && !cameraStarting ? (
-                            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-5 text-center text-sm text-slate-500">
-                              Use the front camera for a live verification photo.
-                            </div>
-                          ) : null}
-                          <canvas ref={canvasRef} className="hidden" />
-                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                            <Button type="button" variant="secondary" onClick={startFrontCamera} disabled={cameraActive || cameraStarting}>
-                              {cameraStarting ? <><RefreshCw size={16} className="animate-spin" /> Opening...</> : <><Camera size={16} /> Open Camera</>}
-                            </Button>
-                            <Button type="button" onClick={captureSelfie} disabled={!cameraActive}>
-                              Take Photo
-                            </Button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="space-y-3">
-                          <img src={deviceSelfie} alt="Captured live verification" className="w-full max-w-full rounded-2xl border border-slate-200" />
-                          <div className="flex flex-col gap-2 sm:flex-row">
-                            <Button type="button" variant="secondary" onClick={() => setDeviceSelfie("")}>
-                              Retake
-                            </Button>
-                            <Button type="button" onClick={submitDeviceRequest} disabled={deviceLoading}>
-                              {deviceLoading ? <><RefreshCw size={16} className="animate-spin" /> Submitting...</> : "Submit Request"}
-                            </Button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {deviceError ? <p className="text-sm text-red-600">{deviceError}</p> : null}
-                  {deviceMessage ? <p className="text-sm text-green-700">{deviceMessage}</p> : null}
-                    </div>
-                  </div>
-                </div>
+                )}
               </div>
-            ) : null}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
-            {loading ? (
-              <div className="space-y-3">
-                <Skeleton className="shimmer h-4 w-32" />
-                <Skeleton className="shimmer h-20 w-full" />
-              </div>
-            ) : null}
-        </div>
-      </div>
+      {/* Footer Branding */}
+      <footer className="relative z-10 py-4 text-center text-xs text-slate-500">
+        SmartAttend Unified Campus Systems • © {new Date().getFullYear()} All Rights Reserved.
+      </footer>
     </div>
   );
 };
 
 export default Login;
+
+

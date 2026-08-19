@@ -14,6 +14,40 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    build: {
+      target: "es2020",
+      cssCodeSplit: true,
+      chunkSizeWarningLimit: 800,
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes("node_modules")) {
+              if (
+                id.includes("react/") ||
+                id.includes("react-dom/") ||
+                id.includes("react-router-dom/") ||
+                id.includes("scheduler/")
+              ) {
+                return "vendor-react";
+              }
+              if (id.includes("framer-motion")) {
+                return "vendor-motion";
+              }
+              if (id.includes("lucide-react")) {
+                return "vendor-icons";
+              }
+              if (id.includes("@mediapipe")) {
+                return "vendor-mediapipe";
+              }
+              if (id.includes("html5-qrcode") || id.includes("react-qr-code")) {
+                return "vendor-qrcode";
+              }
+              return "vendor-core";
+            }
+          },
+        },
+      },
+    },
     server: {
       host: true,
       port: 5173,

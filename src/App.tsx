@@ -26,11 +26,16 @@ const PageLoader = () => (
 
 const App = () => {
   const location = useLocation();
-  const isMobileLocationPage = location.pathname === "/mobile-location";
+  const isAuthOrMobile =
+    location.pathname === "/login" ||
+    location.pathname === "/" ||
+    location.pathname === "/admin/register" ||
+    location.pathname === "/register" ||
+    location.pathname === "/mobile-location";
 
   return (
     <Container>
-      {!isMobileLocationPage ? <HeaderBar /> : null}
+      {!isAuthOrMobile ? <HeaderBar /> : null}
       <div className="flex-1">
         <Suspense fallback={<PageLoader />}>
           <Routes>
