@@ -3,6 +3,7 @@ const router = express.Router();
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 
+const crypto = require("crypto");
 const { getSupabaseClient } = require("../config/supabase");
 const rateLimit = require("../middleware/rateLimit");
 const env = require("../config/env");
@@ -16,6 +17,13 @@ const {
   normalizeFingerprint,
   legacyFingerprintHash,
 } = require("../services/deviceFingerprint");
+
+const {
+  generateUserRegistrationOptions,
+  verifyUserRegistration,
+  generateUserAuthenticationOptions,
+  verifyUserAuthentication,
+} = require("../services/webauthnService");
 
 const DEVICE_CHANGE_REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
 const DEVICE_CHANGE_VERIFY_TTL_SECONDS = 10 * 60;
@@ -146,6 +154,187 @@ async function findRecentDeviceChangeRequest(studentId) {
   }
 }
 
+// ====================================================
+// WEBAUTHN / PASSKEY HARDWARE BINDING ENDPOINTS
+// ====================================================
+
+// POST /api/auth/webauthn/register-options
+router.post("/webauthn/register-options", async (req, res) => {
+  try {
+    const { token, email, name, role } = req.body || {};
+    let userEmail = email || "";
+    let userName = name || "";
+
+    const supabase = getSupabaseClient();
+
+    if (token) {
+      if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
+      const { data: reg } = await supabase
+        .from("registration_tokens")
+        .select("*")
+        .eq("token", String(token))
+        .single();
+
+      if (!reg || !reg.is_active || (reg.expires_at && new Date(reg.expires_at) < new Date())) {
+        return res.status(400).json({ ok: false, error: "Invalid or expired registration token" });
+      }
+    }
+
+    const challengeKey = `reg_${crypto.randomUUID()}`;
+    const { options } = await generateUserRegistrationOptions({
+      userId: null,
+      userEmail,
+      userName,
+      req,
+      challengeKey,
+    });
+
+    return res.json({ ok: true, options, challengeKey });
+  } catch (err) {
+    console.error("WebAuthn register-options error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to generate registration options" });
+  }
+});
+
+// POST /api/auth/webauthn/verify-registration
+router.post("/webauthn/verify-registration", async (req, res) => {
+  try {
+    const { response, challengeKey } = req.body || {};
+    if (!response || !challengeKey) {
+      return res.status(400).json({ ok: false, error: "Registration response and challenge key required" });
+    }
+
+    const verification = await verifyUserRegistration({
+      response,
+      challengeKey,
+      req,
+    });
+
+    if (!verification.verified) {
+      return res.status(400).json({ ok: false, error: verification.error || "WebAuthn verification failed" });
+    }
+
+    return res.json({ ok: true, credential: verification.credential });
+  } catch (err) {
+    console.error("WebAuthn verify-registration error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to verify registration" });
+  }
+});
+
+// POST /api/auth/webauthn/auth-options
+router.post("/webauthn/auth-options", async (req, res) => {
+  try {
+    const { email, role, studentId } = req.body || {};
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
+
+    let credentialId = null;
+    let transports = [];
+
+    if (email && role) {
+      const roleUpper = String(role).toUpperCase();
+      const normalizedEmail = String(email).trim().toLowerCase();
+      const table = roleUpper === "FACULTY" ? "faculties" : "students";
+      const { data: user } = await supabase
+        .from(table)
+        .select("id, credential_id, transports")
+        .eq("email", normalizedEmail)
+        .single();
+
+      if (user && user.credential_id) {
+        credentialId = user.credential_id;
+        transports = user.transports || ["internal"];
+      }
+    } else if (studentId) {
+      const { data: student } = await supabase
+        .from("students")
+        .select("id, credential_id, transports")
+        .eq("id", String(studentId))
+        .single();
+
+      if (student && student.credential_id) {
+        credentialId = student.credential_id;
+        transports = student.transports || ["internal"];
+      }
+    }
+
+    const challengeKey = `auth_${crypto.randomUUID()}`;
+    const { options } = await generateUserAuthenticationOptions({
+      credentialId,
+      transports,
+      req,
+      challengeKey,
+    });
+
+    return res.json({
+      ok: true,
+      options,
+      challengeKey,
+      hasEnrolledPasskey: Boolean(credentialId),
+    });
+  } catch (err) {
+    console.error("WebAuthn auth-options error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to generate authentication options" });
+  }
+});
+
+// POST /api/auth/webauthn/verify-auth
+router.post("/webauthn/verify-auth", async (req, res) => {
+  try {
+    const { email, role, response, challengeKey } = req.body || {};
+    if (!response || !challengeKey || !email || !role) {
+      return res.status(400).json({ ok: false, error: "Missing authentication parameters" });
+    }
+
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
+
+    const roleUpper = String(role).toUpperCase();
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const table = roleUpper === "FACULTY" ? "faculties" : "students";
+
+    const { data: user } = await supabase
+      .from(table)
+      .select("*")
+      .eq("email", normalizedEmail)
+      .single();
+
+    if (!user || !user.credential_id || !user.public_key) {
+      return res.status(404).json({ ok: false, error: "User has no hardware passkey enrolled" });
+    }
+
+    const verification = await verifyUserAuthentication({
+      response,
+      challengeKey,
+      credential: {
+        id: user.credential_id,
+        publicKey: user.public_key,
+        counter: user.counter,
+        transports: user.transports,
+      },
+      req,
+    });
+
+    if (!verification.verified) {
+      return res.status(401).json({ ok: false, error: verification.error || "Hardware verification failed" });
+    }
+
+    // Update counter
+    await supabase
+      .from(table)
+      .update({
+        counter: verification.newCounter,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", user.id);
+
+    return res.json({ ok: true, verified: true });
+  } catch (err) {
+    console.error("WebAuthn verify-auth error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to verify authentication" });
+  }
+});
+
 // POST /api/auth/login
 router.post(
   "/login",
@@ -162,7 +351,14 @@ router.post(
   }),
   async (req, res) => {
     try {
-      const { role, email, password, fingerprint } = req.body || {};
+      const {
+        role,
+        email,
+        password,
+        fingerprint,
+        webauthnAssertion,
+        challengeKey,
+      } = req.body || {};
 
       if (!role || !email || !password) {
         return res.status(400).json({ ok: false, error: "Missing credentials" });
@@ -212,36 +408,75 @@ router.post(
       }
 
       // -----------------------------------
-      // STUDENT / FACULTY (DEVICE + PASSWORD)
+      // STUDENT / FACULTY (WEBAUTHN PASSKEY / DEVICE + PASSWORD)
       // -----------------------------------
       if (roleUpper === "STUDENT" || roleUpper === "FACULTY") {
-        const shouldEnforceDevice =
-          roleUpper === "STUDENT" || user.device_lock_enabled !== false;
+        const hasPasskey = Boolean(user.credential_id && user.public_key);
+        let hardwareVerified = false;
 
-        if (shouldEnforceDevice && !fingerprint) {
-          return res.status(400).json({ ok: false, error: "Fingerprint required" });
-        }
-
-        const storedFp = user.device_fingerprint || user.deviceFingerprint;
-        if (shouldEnforceDevice && !storedFp) {
-          return res.status(403).json({
-            ok: false,
-            error: "Account not bound to a device",
+        // If WebAuthn assertion is provided, verify hardware passkey
+        if (webauthnAssertion && challengeKey && hasPasskey) {
+          const authResult = await verifyUserAuthentication({
+            response: webauthnAssertion,
+            challengeKey,
+            credential: {
+              id: user.credential_id,
+              publicKey: user.public_key,
+              counter: user.counter,
+              transports: user.transports,
+            },
+            req,
           });
-        }
 
-        if (shouldEnforceDevice) {
-          const normalizedNew = normalizeFingerprint(fingerprint);
-          const normalizedLegacy = legacyFingerprintHash(fingerprint);
-
-          const fingerprintMatch =
-            storedFp === normalizedNew || storedFp === normalizedLegacy;
-
-          if (!fingerprintMatch) {
+          if (!authResult.verified) {
             return res.status(401).json({
               ok: false,
-              error: "Device mismatch - login blocked",
+              error: authResult.error || "Hardware passkey verification failed",
             });
+          }
+
+          // Update counter
+          await supabase
+            .from(roleUpper === "FACULTY" ? "faculties" : "students")
+            .update({
+              counter: authResult.newCounter,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", user.id);
+
+          hardwareVerified = true;
+        }
+
+        // Fallback / standard device lock validation if not hardware verified
+        if (!hardwareVerified) {
+          const shouldEnforceDevice =
+            roleUpper === "STUDENT" || user.device_lock_enabled !== false;
+
+          if (shouldEnforceDevice && !fingerprint) {
+            return res.status(400).json({ ok: false, error: "Device fingerprint or passkey required" });
+          }
+
+          const storedFp = user.device_fingerprint || user.deviceFingerprint;
+          if (shouldEnforceDevice && !storedFp && !hasPasskey) {
+            return res.status(403).json({
+              ok: false,
+              error: "Account not bound to a device",
+            });
+          }
+
+          if (shouldEnforceDevice && storedFp && fingerprint) {
+            const normalizedNew = normalizeFingerprint(fingerprint);
+            const normalizedLegacy = legacyFingerprintHash(fingerprint);
+
+            const fingerprintMatch =
+              storedFp === normalizedNew || storedFp === normalizedLegacy;
+
+            if (!fingerprintMatch) {
+              return res.status(401).json({
+                ok: false,
+                error: "Device mismatch - login blocked",
+              });
+            }
           }
         }
 
@@ -487,7 +722,14 @@ router.post("/device-change/verify-student", async (req, res) => {
 // POST /api/auth/device-change/request
 router.post("/device-change/request", async (req, res) => {
   try {
-    const { verifyToken, fingerprint, selfieDataUrl } = req.body || {};
+    const {
+      verifyToken,
+      fingerprint,
+      selfieDataUrl,
+      requestedCredentialId,
+      requestedPublicKey,
+      requestedTransports,
+    } = req.body || {};
     if (!verifyToken || !fingerprint) {
       return res.status(400).json({ ok: false, error: "Verification token and device fingerprint required" });
     }
@@ -516,7 +758,7 @@ router.post("/device-change/request", async (req, res) => {
 
     const { data: student } = await supabase
       .from("students")
-      .select("id, device_fingerprint, department, created_by_admin, name, enrollment_no")
+      .select("id, device_fingerprint, credential_id, department, created_by_admin, name, enrollment_no")
       .eq("id", String(decoded.studentId))
       .single();
 
@@ -560,6 +802,9 @@ router.post("/device-change/request", async (req, res) => {
         created_by_admin: student.created_by_admin,
         old_device_fingerprint: student.device_fingerprint,
         requested_device_fingerprint: normalizedFp,
+        requested_credential_id: requestedCredentialId || null,
+        requested_public_key: requestedPublicKey || null,
+        requested_transports: Array.isArray(requestedTransports) ? requestedTransports : [],
         selfie_data_url: String(selfieDataUrl),
         status: "pending",
         expires_at: expiresAt,

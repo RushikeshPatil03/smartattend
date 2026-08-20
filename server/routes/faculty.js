@@ -270,9 +270,20 @@ router.put("/profile", authMiddleware, async (req, res) => {
 // ----------------------------------------------------
 router.post("/register", async (req, res) => {
   try {
-    const { token, name, email, password, departmentId, fingerprint } = req.body || {};
+    const {
+      token,
+      name,
+      email,
+      password,
+      departmentId,
+      fingerprint,
+      credentialId,
+      publicKey,
+      transports,
+      webauthnCredential,
+    } = req.body || {};
 
-    if (!token || !name || !email || !password || !departmentId || !fingerprint) {
+    if (!token || !name || !email || !password || !departmentId || (!fingerprint && !credentialId && !webauthnCredential?.id)) {
       return res.status(400).json({ ok: false, error: "All fields are required" });
     }
 
@@ -292,9 +303,20 @@ router.post("/register", async (req, res) => {
 
     const normalizedName = String(name || "").trim();
     const normalizedEmail = String(email || "").trim().toLowerCase();
-    const normalizedFp = normalizeFingerprint(fingerprint);
-    if (!normalizedFp) {
-      return res.status(400).json({ ok: false, error: "Invalid device fingerprint" });
+    const effectiveFp = fingerprint || (credentialId || webauthnCredential?.id ? `webauthn_${credentialId || webauthnCredential.id}` : "");
+    const normalizedFp = normalizeFingerprint(effectiveFp);
+
+    const finalCredentialId = credentialId || webauthnCredential?.id || null;
+    const finalPublicKey = publicKey || webauthnCredential?.publicKey || null;
+    const finalTransports = Array.isArray(transports)
+      ? transports
+      : Array.isArray(webauthnCredential?.transports)
+      ? webauthnCredential.transports
+      : ["internal"];
+    const finalCounter = Number(webauthnCredential?.counter || 0);
+
+    if (!normalizedFp && !finalCredentialId) {
+      return res.status(400).json({ ok: false, error: "Invalid device fingerprint or passkey" });
     }
 
     const { data: department } = await supabase
@@ -311,21 +333,31 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    const [existingFacByEmail, existingFacByFp, existingStuByFp] = await Promise.all([
+    const checks = [
       supabase.from("faculties").select("id").eq("email", normalizedEmail).limit(1),
-      supabase.from("faculties").select("id").eq("device_fingerprint", normalizedFp).limit(1),
-      supabase.from("students").select("id").eq("device_fingerprint", normalizedFp).limit(1),
-    ]);
+    ];
+    if (normalizedFp) {
+      checks.push(supabase.from("faculties").select("id").eq("device_fingerprint", normalizedFp).limit(1));
+      checks.push(supabase.from("students").select("id").eq("device_fingerprint", normalizedFp).limit(1));
+    }
+    if (finalCredentialId) {
+      checks.push(supabase.from("faculties").select("id").eq("credential_id", String(finalCredentialId)).limit(1));
+      checks.push(supabase.from("students").select("id").eq("credential_id", String(finalCredentialId)).limit(1));
+    }
+
+    const [existingFacByEmail, existingFacByFp, existingStuByFp, existingFacByCred, existingStuByCred] = await Promise.all(checks);
 
     const hasConflict =
-      (existingFacByEmail.data || []).length > 0 ||
-      (existingFacByFp.data || []).length > 0 ||
-      (existingStuByFp.data || []).length > 0;
+      (existingFacByEmail?.data || []).length > 0 ||
+      (existingFacByFp?.data || []).length > 0 ||
+      (existingStuByFp?.data || []).length > 0 ||
+      (existingFacByCred?.data || []).length > 0 ||
+      (existingStuByCred?.data || []).length > 0;
 
     if (hasConflict) {
       return res.status(400).json({
         ok: false,
-        error: "Faculty with this email or device already exists",
+        error: "Faculty with this email or device/passkey already exists",
       });
     }
 
@@ -344,7 +376,12 @@ router.post("/register", async (req, res) => {
           email: normalizedEmail,
           password_hash: passwordHash,
           department: department.id,
-          device_fingerprint: normalizedFp,
+          device_fingerprint: normalizedFp || `webauthn_${finalCredentialId}`,
+          credential_id: finalCredentialId,
+          public_key: finalPublicKey,
+          counter: finalCounter,
+          transports: finalTransports,
+          device_bound_at: finalCredentialId ? new Date().toISOString() : null,
           created_by_admin: reg.admin_id,
         })
         .select("id")
@@ -676,13 +713,28 @@ router.post("/device-change-requests/:id/review", authMiddleware, async (req, re
         });
       }
 
-      // Update student's device fingerprint
+      // Update student's device fingerprint and WebAuthn credentials
+      const studentUpdate = {
+        device_fingerprint: request.requested_device_fingerprint,
+        updated_at: new Date().toISOString(),
+      };
+
+      if (request.requested_credential_id) {
+        studentUpdate.credential_id = request.requested_credential_id;
+        studentUpdate.public_key = request.requested_public_key || null;
+        studentUpdate.counter = 0;
+        studentUpdate.transports = Array.isArray(request.requested_transports) ? request.requested_transports : ["internal"];
+        studentUpdate.device_bound_at = new Date().toISOString();
+      } else {
+        studentUpdate.credential_id = null;
+        studentUpdate.public_key = null;
+        studentUpdate.counter = 0;
+        studentUpdate.device_bound_at = null;
+      }
+
       await supabase
         .from("students")
-        .update({
-          device_fingerprint: request.requested_device_fingerprint,
-          updated_at: new Date().toISOString(),
-        })
+        .update(studentUpdate)
         .eq("id", student.id);
     }
 

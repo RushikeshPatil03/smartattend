@@ -36,7 +36,9 @@ interface AppContextValue {
     role: string,
     email: string,
     password: string,
-    fingerprint: string
+    fingerprint?: string,
+    webauthnAssertion?: any,
+    challengeKey?: string
   ) => Promise<any>;
   logout: () => Promise<void>;
   restoreSession: () => Promise<any>;
@@ -203,9 +205,18 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     role: string,
     email: string,
     password: string,
-    fingerprint: string
+    fingerprint?: string,
+    webauthnAssertion?: any,
+    challengeKey?: string
   ) => {
-    const res = await apiClient.login(role, email, password, fingerprint);
+    const res = await apiClient.login(
+      role,
+      email,
+      password,
+      fingerprint,
+      webauthnAssertion,
+      challengeKey
+    );
     if (res?.ok) {
       setCurrentUser(res.user);
       if (res.user.role === "ADMIN") {

@@ -12,6 +12,10 @@ const {
 const { validateStudentLocation } = require("../services/locationValidation");
 const { verifyFaceAgainstStudent } = require("../services/faceVerification");
 const { normalizeFingerprint } = require("../services/deviceFingerprint");
+const {
+  generateUserAuthenticationOptions,
+  verifyUserAuthentication,
+} = require("../services/webauthnService");
 const { expireIfInactive, touchSession } = require("../services/sessionLifecycle");
 const { broadcastAttendance } = require("../services/realtimeService");
 const auth = require("../middleware/auth");
@@ -175,13 +179,18 @@ router.post(
       const student = req.user;
       const { qrToken, location, fingerprint } = req.body || {};
 
-      if (!qrToken || !fingerprint) {
-        return res.status(400).json({ ok: false, error: "QR token & device fingerprint required" });
+      if (!qrToken) {
+        return res.status(400).json({ ok: false, error: "QR token required" });
       }
 
-      const normalizedFp = normalizeFingerprint(fingerprint);
-      if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
-        return res.status(401).json({ ok: false, error: "Device mismatch - unauthorized scan" });
+      const hasPasskey = Boolean(student.credential_id && student.public_key);
+      const effectiveFp = fingerprint || (student.credential_id ? `webauthn_${student.credential_id}` : "");
+      const normalizedFp = normalizeFingerprint(effectiveFp);
+
+      if (!hasPasskey) {
+        if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
+          return res.status(401).json({ ok: false, error: "Device mismatch - unauthorized scan" });
+        }
       }
 
       const precheckMaxAge =
@@ -281,8 +290,22 @@ router.post(
         token: scanGrantToken,
         studentId: student.id,
         sessionId,
-        fingerprint: normalizedFp,
+        fingerprint: normalizedFp || "webauthn_passkey",
       });
+
+      let webauthnOptions = null;
+      let webauthnChallengeKey = null;
+
+      if (hasPasskey) {
+        webauthnChallengeKey = `att_${scanGrantToken}`;
+        const generated = await generateUserAuthenticationOptions({
+          credentialId: student.credential_id,
+          transports: student.transports,
+          req,
+          challengeKey: webauthnChallengeKey,
+        });
+        webauthnOptions = generated.options;
+      }
 
       return res.json({
         ok: true,
@@ -290,6 +313,9 @@ router.post(
         firstScannedAt: Date.now(),
         nextScanWithinSeconds: QR_MAX_TWO_STEP_GAP_SECONDS,
         sessionId,
+        webauthnOptions,
+        webauthnChallengeKey,
+        hasEnrolledPasskey: hasPasskey,
         session: {
           id: session.id,
           _id: session.id,
@@ -326,18 +352,61 @@ router.post(
         secondQrToken,
         location,
         fingerprint,
+        webauthnAssertion,
+        webauthnChallengeKey,
         faceMatch,
         faceMetrics,
         faceEmbedding,
       } = req.body || {};
 
-      if (!scanGrantToken || !firstQrToken || !secondQrToken || !fingerprint) {
+      if (!scanGrantToken || !firstQrToken || !secondQrToken) {
         return res.status(400).json({ ok: false, error: "Two dynamic QR scans & grant token required" });
       }
 
-      const normalizedFp = normalizeFingerprint(fingerprint);
-      if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
-        return res.status(401).json({ ok: false, error: "Device mismatch - attendance blocked" });
+      const hasPasskey = Boolean(student.credential_id && student.public_key);
+      let hardwareVerified = false;
+
+      if (hasPasskey && webauthnAssertion) {
+        const authResult = await verifyUserAuthentication({
+          response: webauthnAssertion,
+          challengeKey: webauthnChallengeKey || `att_${scanGrantToken}`,
+          credential: {
+            id: student.credential_id,
+            publicKey: student.public_key,
+            counter: student.counter,
+            transports: student.transports,
+          },
+          req,
+        });
+
+        if (!authResult.verified) {
+          return res.status(401).json({
+            ok: false,
+            error: authResult.error || "Hardware passkey signature mismatch - attendance blocked",
+          });
+        }
+
+        const supabaseClient = getSupabaseClient();
+        if (supabaseClient) {
+          await supabaseClient
+            .from("students")
+            .update({
+              counter: authResult.newCounter,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", student.id);
+        }
+
+        hardwareVerified = true;
+      }
+
+      const effectiveFp = fingerprint || (student.credential_id ? `webauthn_${student.credential_id}` : "");
+      const normalizedFp = normalizeFingerprint(effectiveFp);
+
+      if (!hardwareVerified) {
+        if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
+          return res.status(401).json({ ok: false, error: "Device mismatch - attendance blocked" });
+        }
       }
 
       const firstVerified = verifyQRToken(firstQrToken, {
@@ -818,6 +887,8 @@ async function handleTotpAttendanceSubmission(req, res) {
       token1,
       token2,
       fingerprint,
+      webauthnAssertion,
+      webauthnChallengeKey,
       faceMatch,
       faceMetrics,
       faceEmbedding,
@@ -835,14 +906,55 @@ async function handleTotpAttendanceSubmission(req, res) {
         ? { lat: Number(req.body.lat), lng: Number(req.body.lng), accuracy: Number(req.body.accuracy || 0) }
         : null);
 
-    if (!rawSessionId || !fingerprint) {
-      return res.status(400).json({ ok: false, error: "Session ID & device fingerprint required" });
+    if (!rawSessionId) {
+      return res.status(400).json({ ok: false, error: "Session ID required" });
     }
 
     const sessionId = String(rawSessionId);
-    const normalizedFp = normalizeFingerprint(fingerprint);
-    if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
-      return res.status(401).json({ ok: false, error: "Device mismatch - attendance blocked" });
+    const hasPasskey = Boolean(student.credential_id && student.public_key);
+    let hardwareVerified = false;
+
+    if (hasPasskey && webauthnAssertion && webauthnChallengeKey) {
+      const authResult = await verifyUserAuthentication({
+        response: webauthnAssertion,
+        challengeKey: webauthnChallengeKey,
+        credential: {
+          id: student.credential_id,
+          publicKey: student.public_key,
+          counter: student.counter,
+          transports: student.transports,
+        },
+        req,
+      });
+
+      if (!authResult.verified) {
+        return res.status(401).json({
+          ok: false,
+          error: authResult.error || "Hardware passkey signature mismatch - attendance blocked",
+        });
+      }
+
+      const supabaseClient = getSupabaseClient();
+      if (supabaseClient) {
+        await supabaseClient
+          .from("students")
+          .update({
+            counter: authResult.newCounter,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", student.id);
+      }
+
+      hardwareVerified = true;
+    }
+
+    const effectiveFp = fingerprint || (student.credential_id ? `webauthn_${student.credential_id}` : "");
+    const normalizedFp = normalizeFingerprint(effectiveFp);
+
+    if (!hardwareVerified) {
+      if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
+        return res.status(401).json({ ok: false, error: "Device mismatch - attendance blocked" });
+      }
     }
 
     let totpValidation;

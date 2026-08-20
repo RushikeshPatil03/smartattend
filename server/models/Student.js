@@ -40,6 +40,30 @@ const StudentSchema = new mongoose.Schema(
       index: true,
     },
 
+    credentialId: {
+      type: String,
+      default: null,
+      unique: true,
+      sparse: true,
+      index: true,
+    },
+    publicKey: {
+      type: String,
+      default: null,
+    },
+    counter: {
+      type: Number,
+      default: 0,
+    },
+    transports: {
+      type: [String],
+      default: [],
+    },
+    deviceBoundAt: {
+      type: Date,
+      default: null,
+    },
+
     createdByAdmin: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Admin",

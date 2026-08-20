@@ -83,7 +83,9 @@ export async function markAttendanceTwoStep(
   lng?: number | null,
   scanGrant?: string | null,
   accuracy?: number | null,
-  faceVerification?: Record<string, any> | null
+  faceVerification?: Record<string, any> | null,
+  webauthnAssertion?: any,
+  webauthnChallengeKey?: string
 ) {
   try {
     const first = String(firstQrToken || "").trim();
@@ -99,7 +101,15 @@ export async function markAttendanceTwoStep(
     };
 
     if (scanGrant) {
+      payload.scanGrantToken = String(scanGrant);
       payload.scanGrant = String(scanGrant);
+    }
+
+    if (webauthnAssertion) {
+      payload.webauthnAssertion = webauthnAssertion;
+    }
+    if (webauthnChallengeKey) {
+      payload.webauthnChallengeKey = webauthnChallengeKey;
     }
 
     if (lat != null && lng != null) {

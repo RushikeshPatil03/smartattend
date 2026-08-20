@@ -4,6 +4,15 @@ export enum UserRole {
   STUDENT = "STUDENT",
 }
 
+export interface WebAuthnCredential {
+  id: string;
+  publicKey: string;
+  counter?: number;
+  transports?: string[];
+  deviceType?: string;
+  backedUp?: boolean;
+}
+
 export interface User {
   id: string;
   name: string;
@@ -11,6 +20,8 @@ export interface User {
   role: UserRole;
   department?: string;
   deviceFingerprint?: string;
+  credentialId?: string | null;
+  hasEnrolledPasskey?: boolean;
   deviceLockEnabled?: boolean;
   deviceAccessStatus?: string;
   enrollmentNo?: string | null;

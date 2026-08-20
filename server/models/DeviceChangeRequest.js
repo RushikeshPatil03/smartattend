@@ -29,6 +29,18 @@ const DeviceChangeRequestSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    requestedCredentialId: {
+      type: String,
+      default: null,
+    },
+    requestedPublicKey: {
+      type: String,
+      default: null,
+    },
+    requestedTransports: {
+      type: [String],
+      default: [],
+    },
     selfieDataUrl: {
       type: String,
       default: "",

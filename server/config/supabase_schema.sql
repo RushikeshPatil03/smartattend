@@ -62,6 +62,28 @@ CREATE INDEX IF NOT EXISTS idx_subjects_code ON subjects (code);
 CREATE INDEX IF NOT EXISTS idx_subjects_faculties ON subjects USING GIN (allotted_faculties);
 CREATE INDEX IF NOT EXISTS idx_subjects_departments ON subjects USING GIN (departments);
 
+-- ========================================================================
+-- 0. WEBAUTHN / PASSKEY MIGRATION (Execute if upgrading existing tables)
+-- ========================================================================
+ALTER TABLE IF EXISTS faculties ADD COLUMN IF NOT EXISTS credential_id VARCHAR(255) DEFAULT NULL;
+ALTER TABLE IF EXISTS faculties ADD COLUMN IF NOT EXISTS public_key TEXT DEFAULT NULL;
+ALTER TABLE IF EXISTS faculties ADD COLUMN IF NOT EXISTS counter BIGINT DEFAULT 0;
+ALTER TABLE IF EXISTS faculties ADD COLUMN IF NOT EXISTS transports TEXT[] DEFAULT '{}';
+ALTER TABLE IF EXISTS faculties ADD COLUMN IF NOT EXISTS device_bound_at TIMESTAMPTZ DEFAULT NULL;
+
+ALTER TABLE IF EXISTS students ADD COLUMN IF NOT EXISTS credential_id VARCHAR(255) DEFAULT NULL;
+ALTER TABLE IF EXISTS students ADD COLUMN IF NOT EXISTS public_key TEXT DEFAULT NULL;
+ALTER TABLE IF EXISTS students ADD COLUMN IF NOT EXISTS counter BIGINT DEFAULT 0;
+ALTER TABLE IF EXISTS students ADD COLUMN IF NOT EXISTS transports TEXT[] DEFAULT '{}';
+ALTER TABLE IF EXISTS students ADD COLUMN IF NOT EXISTS device_bound_at TIMESTAMPTZ DEFAULT NULL;
+
+ALTER TABLE IF EXISTS device_change_requests ADD COLUMN IF NOT EXISTS requested_credential_id VARCHAR(255) DEFAULT NULL;
+ALTER TABLE IF EXISTS device_change_requests ADD COLUMN IF NOT EXISTS requested_public_key TEXT DEFAULT NULL;
+ALTER TABLE IF EXISTS device_change_requests ADD COLUMN IF NOT EXISTS requested_transports TEXT[] DEFAULT '{}';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_faculties_credential_id ON faculties (credential_id) WHERE credential_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_students_credential_id ON students (credential_id) WHERE credential_id IS NOT NULL;
+
 -- 1.4 FACULTIES TABLE
 CREATE TABLE IF NOT EXISTS faculties (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -71,6 +93,11 @@ CREATE TABLE IF NOT EXISTS faculties (
     profile_photo_url TEXT DEFAULT '',
     department UUID NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
     device_fingerprint VARCHAR(128) NOT NULL,
+    credential_id VARCHAR(255) DEFAULT NULL,
+    public_key TEXT DEFAULT NULL,
+    counter BIGINT DEFAULT 0,
+    transports TEXT[] DEFAULT '{}',
+    device_bound_at TIMESTAMPTZ DEFAULT NULL,
     device_lock_enabled BOOLEAN NOT NULL DEFAULT true,
     created_by_admin UUID NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
     allotted_subjects UUID[] NOT NULL DEFAULT '{}',
@@ -95,6 +122,11 @@ CREATE TABLE IF NOT EXISTS students (
     section VARCHAR(20) NOT NULL,
     department UUID NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
     device_fingerprint VARCHAR(128) NOT NULL,
+    credential_id VARCHAR(255) DEFAULT NULL,
+    public_key TEXT DEFAULT NULL,
+    counter BIGINT DEFAULT 0,
+    transports TEXT[] DEFAULT '{}',
+    device_bound_at TIMESTAMPTZ DEFAULT NULL,
     created_by_admin UUID NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
     college_name VARCHAR(255) DEFAULT '',
     profile_photo_url TEXT DEFAULT '',

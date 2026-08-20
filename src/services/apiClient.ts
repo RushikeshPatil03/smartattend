@@ -140,13 +140,17 @@ class ApiClient {
     role: string,
     email: string,
     password: string,
-    fingerprint: string
+    fingerprint?: string,
+    webauthnAssertion?: any,
+    challengeKey?: string
   ) => {
     const res = await this.post("/api/auth/login", {
       role,
       email,
       password,
       fingerprint,
+      webauthnAssertion,
+      challengeKey,
     });
 
     if (res?.ok && (res.accessToken || res.token)) {
@@ -155,6 +159,32 @@ class ApiClient {
 
     return res;
   };
+
+  // WebAuthn Passkey Methods
+  getWebAuthnRegisterOptions = (data: {
+    token?: string;
+    email?: string;
+    name?: string;
+    role?: string;
+  }) => this.post("/api/auth/webauthn/register-options", data);
+
+  verifyWebAuthnRegistration = (data: {
+    response: any;
+    challengeKey: string;
+  }) => this.post("/api/auth/webauthn/verify-registration", data);
+
+  getWebAuthnAuthOptions = (data: {
+    email?: string;
+    role?: string;
+    studentId?: string;
+  }) => this.post("/api/auth/webauthn/auth-options", data);
+
+  verifyWebAuthnAuth = (data: {
+    email: string;
+    role: string;
+    response: any;
+    challengeKey: string;
+  }) => this.post("/api/auth/webauthn/verify-auth", data);
 
   refreshSession = async () => {
     if (this.refreshPromise) return this.refreshPromise;
@@ -182,6 +212,9 @@ class ApiClient {
     verifyToken: string;
     fingerprint: string;
     selfieDataUrl: string;
+    requestedCredentialId?: string | null;
+    requestedPublicKey?: string | null;
+    requestedTransports?: string[];
   }) => this.post("/api/auth/device-change/request", data);
 
   logout = async () => {
@@ -293,7 +326,13 @@ class ApiClient {
     lat?: number | null;
     lng?: number | null;
     accuracy?: number | null;
-    fingerprint: string;
+    fingerprint?: string;
+    scanGrantToken?: string;
+    webauthnAssertion?: any;
+    webauthnChallengeKey?: string;
+    faceMatch?: any;
+    faceMetrics?: any;
+    faceEmbedding?: any;
   }) => this.post("/api/attendance/mark", data);
 
   markAttendance = (data: {
@@ -303,6 +342,9 @@ class ApiClient {
     lng?: number | null;
     accuracy?: number | null;
     fingerprint?: string | null;
+    scanGrantToken?: string;
+    webauthnAssertion?: any;
+    webauthnChallengeKey?: string;
   }) => this.post("/api/attendance/mark", data);
 
   /**
@@ -318,6 +360,8 @@ class ApiClient {
     lng?: number | null;
     accuracy?: number | null;
     fingerprint?: string | null;
+    webauthnAssertion?: any;
+    webauthnChallengeKey?: string;
   }) => this.post("/api/attendance/totp", data);
 
   submitAttendanceSequence = (data: {
@@ -326,6 +370,8 @@ class ApiClient {
     lng?: number | null;
     accuracy?: number | null;
     fingerprint?: string | null;
+    webauthnAssertion?: any;
+    webauthnChallengeKey?: string;
   }) => this.post("/api/attendance/submit", data);
 
   manualAttendance = (data: any) =>

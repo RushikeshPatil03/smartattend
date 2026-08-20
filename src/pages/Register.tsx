@@ -19,9 +19,12 @@ import {
   Sparkles,
   ShieldCheck,
   Link2,
+  KeyRound,
+  Fingerprint,
 } from "lucide-react";
 import { useApp, View } from "../store";
 import { getFingerprint } from "../services/attendanceClient";
+import { registerDevicePasskey, isWebAuthnSupported } from "../services/deviceAuth";
 import apiClient from "../services/apiClient";
 import { Department } from "../types";
 import LivePhotoCapture from "../components/LivePhotoCapture";
@@ -277,6 +280,27 @@ const Register: React.FC = () => {
         }
 
         const fingerprint = getFingerprint();
+        let passkeyCredential: any = null;
+
+        // Register hardware-backed passkey if supported
+        if (isWebAuthnSupported()) {
+          try {
+            const passkeyRes = await registerDevicePasskey({
+              token,
+              email: email.trim(),
+              name: name.trim(),
+              role: roleType,
+            });
+
+            if (passkeyRes.ok && passkeyRes.credential) {
+              passkeyCredential = passkeyRes.credential;
+            } else if (passkeyRes.error) {
+              console.warn("Passkey registration fallback:", passkeyRes.error);
+            }
+          } catch (passkeyErr: any) {
+            console.warn("Passkey registration error:", passkeyErr);
+          }
+        }
 
         if (roleType === "student") {
           if (
@@ -308,6 +332,10 @@ const Register: React.FC = () => {
             section: section.trim().toUpperCase(),
             departmentId,
             fingerprint,
+            credentialId: passkeyCredential?.id || null,
+            publicKey: passkeyCredential?.publicKey || null,
+            transports: passkeyCredential?.transports || ["internal"],
+            webauthnCredential: passkeyCredential || undefined,
             profilePhotoUrl,
             faceSignature: faceSignatures.signature,
             faceSignatureMirror: faceSignatures.mirrorSignature,
@@ -335,6 +363,10 @@ const Register: React.FC = () => {
             password,
             departmentId,
             fingerprint,
+            credentialId: passkeyCredential?.id || null,
+            publicKey: passkeyCredential?.publicKey || null,
+            transports: passkeyCredential?.transports || ["internal"],
+            webauthnCredential: passkeyCredential || undefined,
           });
 
           if (!res?.ok) {

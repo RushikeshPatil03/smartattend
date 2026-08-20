@@ -4,6 +4,7 @@ import { Button, Card, Badge } from "../components/Common";
 import CollegeHeader from "../components/CollegeHeader";
 import { Scan, MapPin, CheckCircle, XCircle, History, Camera, LoaderCircle, X } from "lucide-react";
 import { markAttendanceTwoStep, getFingerprint } from "../services/attendanceClient";
+import { signAttendanceChallenge, isWebAuthnSupported } from "../services/deviceAuth";
 import apiClient from "../services/apiClient";
 import { getLiveLocationWithOptions, prewarmLiveLocation } from "../utils/liveLocation";
 import { createSequentialBuffer } from "../services/sequentialQrBuffer";
@@ -479,10 +480,32 @@ const StudentDashboard: React.FC = () => {
 
     pendingQrPairRef.current = pair;
     setScanStep("SUBMITTING");
-    setStatusMsg("Confirming attendance with QR, GPS, and device match...");
+    setStatusMsg("Confirming attendance with Hardware Passkey, QR, and GPS...");
 
     const coords = await resolveLiveLocation();
     const fingerprint = getFingerprint();
+    let webauthnAssertion: any = undefined;
+    let webauthnChallengeKey: string | undefined = undefined;
+
+    // Check if device supports WebAuthn and sign one-time attendance challenge
+    if (isWebAuthnSupported()) {
+      try {
+        const studentId = currentUser?.id || currentUser?._id;
+        const passkeyRes = await signAttendanceChallenge({
+          studentId: studentId ? String(studentId) : undefined,
+          email: currentUser?.email,
+          role: "STUDENT",
+        });
+
+        if (passkeyRes.ok && passkeyRes.assertion) {
+          webauthnAssertion = passkeyRes.assertion;
+          webauthnChallengeKey = passkeyRes.challengeKey;
+        }
+      } catch (passkeyErr) {
+        console.warn("Hardware passkey signing error, fallback:", passkeyErr);
+      }
+    }
+
     let result: any = null;
 
     try {
@@ -493,6 +516,8 @@ const StudentDashboard: React.FC = () => {
           sessionId: targetSessionId,
           sequence: seq,
           fingerprint,
+          webauthnAssertion,
+          webauthnChallengeKey,
           lat: coords.lat,
           lng: coords.lng,
           accuracy: coords.accuracy,
@@ -511,7 +536,9 @@ const StudentDashboard: React.FC = () => {
           coords.lng,
           null,
           coords.accuracy,
-          null
+          null,
+          webauthnAssertion,
+          webauthnChallengeKey
         );
       }
     } catch (err: any) {

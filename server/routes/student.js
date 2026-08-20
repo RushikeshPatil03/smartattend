@@ -116,6 +116,10 @@ router.post("/register", async (req, res) => {
       section,
       departmentId,
       fingerprint,
+      credentialId,
+      publicKey,
+      transports,
+      webauthnCredential,
       faceSignature,
       faceSignatureMirror,
       faceSignatureVersion,
@@ -135,7 +139,7 @@ router.post("/register", async (req, res) => {
       !semester ||
       !section ||
       !departmentId ||
-      !fingerprint
+      (!fingerprint && !credentialId && !webauthnCredential?.id)
     ) {
       return res.status(400).json({ ok: false, error: "All fields are required" });
     }
@@ -148,10 +152,20 @@ router.post("/register", async (req, res) => {
     const normalizedEnrollment = String(enrollmentNo || "").trim().toUpperCase();
     const normalizedName = String(name || "").trim();
     const normalizedSection = String(section || "").trim().toUpperCase();
-    const normalizedFp = normalizeFingerprint(fingerprint);
+    const effectiveFp = fingerprint || (credentialId || webauthnCredential?.id ? `webauthn_${credentialId || webauthnCredential.id}` : "");
+    const normalizedFp = normalizeFingerprint(effectiveFp);
 
-    if (!normalizedFp) {
-      return res.status(400).json({ ok: false, error: "Invalid device fingerprint" });
+    const finalCredentialId = credentialId || webauthnCredential?.id || null;
+    const finalPublicKey = publicKey || webauthnCredential?.publicKey || null;
+    const finalTransports = Array.isArray(transports)
+      ? transports
+      : Array.isArray(webauthnCredential?.transports)
+      ? webauthnCredential.transports
+      : ["internal"];
+    const finalCounter = Number(webauthnCredential?.counter || 0);
+
+    if (!normalizedFp && !finalCredentialId) {
+      return res.status(400).json({ ok: false, error: "Invalid device fingerprint or passkey" });
     }
 
     const supabase = getSupabaseClient();
@@ -182,21 +196,34 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    const [byEmail, byEnrollment, byStuFp, byFacFp] = await Promise.all([
+    const checks = [
       supabase.from("students").select("id").eq("email", normalizedEmail).limit(1),
       supabase.from("students").select("id").eq("enrollment_no", normalizedEnrollment).limit(1),
-      supabase.from("students").select("id").eq("device_fingerprint", normalizedFp).limit(1),
-      supabase.from("faculties").select("id").eq("device_fingerprint", normalizedFp).limit(1),
-    ]);
+    ];
+    if (normalizedFp) {
+      checks.push(supabase.from("students").select("id").eq("device_fingerprint", normalizedFp).limit(1));
+      checks.push(supabase.from("faculties").select("id").eq("device_fingerprint", normalizedFp).limit(1));
+    }
+    if (finalCredentialId) {
+      checks.push(supabase.from("students").select("id").eq("credential_id", String(finalCredentialId)).limit(1));
+      checks.push(supabase.from("faculties").select("id").eq("credential_id", String(finalCredentialId)).limit(1));
+    }
 
-    if ((byEmail.data || []).length > 0) {
+    const [byEmail, byEnrollment, byStuFp, byFacFp, byStuCred, byFacCred] = await Promise.all(checks);
+
+    if ((byEmail?.data || []).length > 0) {
       return res.status(400).json({ ok: false, error: "Student with this email already exists" });
     }
-    if ((byEnrollment.data || []).length > 0) {
+    if ((byEnrollment?.data || []).length > 0) {
       return res.status(400).json({ ok: false, error: "Student with this enrollment number already exists" });
     }
-    if ((byStuFp.data || []).length > 0 || (byFacFp.data || []).length > 0) {
-      return res.status(400).json({ ok: false, error: "This device is already linked to another account" });
+    if (
+      (byStuFp?.data || []).length > 0 ||
+      (byFacFp?.data || []).length > 0 ||
+      (byStuCred?.data || []).length > 0 ||
+      (byFacCred?.data || []).length > 0
+    ) {
+      return res.status(400).json({ ok: false, error: "This device/passkey is already linked to another account" });
     }
 
     const reservedToken = await reserveRegistrationSlot(reg.id);
@@ -218,7 +245,12 @@ router.post("/register", async (req, res) => {
           semester: Number(semester),
           section: normalizedSection,
           department: department.id,
-          device_fingerprint: normalizedFp,
+          device_fingerprint: normalizedFp || `webauthn_${finalCredentialId}`,
+          credential_id: finalCredentialId,
+          public_key: finalPublicKey,
+          counter: finalCounter,
+          transports: finalTransports,
+          device_bound_at: finalCredentialId ? new Date().toISOString() : null,
           created_by_admin: reg.admin_id,
           college_name: reg.college_name || "",
           profile_photo_url: String(profilePhotoUrl || ""),
