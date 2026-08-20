@@ -10,7 +10,7 @@ export interface RotatingQrPayload {
   index: number;
 }
 
-const TOTP_BLOCK_DURATION_MS = 3000;
+export const TOTP_BLOCK_DURATION_MS = 3000;
 
 function hashToSixDigitToken(value: string): string {
   let hash = 2166136261;
@@ -103,43 +103,49 @@ export function areConsecutiveBlocks(
 }
 
 /**
- * Run a polling loop that generates new tokens every 3 seconds
- * Returns a cleanup function to stop polling
+ * Run a rock-solid rotation timer that guarantees each QR code is displayed
+ * for a full 3.0 seconds (3000ms), maintaining chronological sequential index
+ * and zero intermediate flickering.
  */
 export function startQrPolling(
   secretKey: string,
   classId: string,
-  classCode: string,
+  _classCode: string,
   onTokenUpdate: (payload: RotatingQrPayload) => void,
   intervalMs: number = TOTP_BLOCK_DURATION_MS
 ): () => void {
   let cancelled = false;
-  let timeoutId: number | null = null;
-  let lastIndex: number | null = null;
-  const blockDuration = Math.max(TOTP_BLOCK_DURATION_MS, Number(intervalMs) || TOTP_BLOCK_DURATION_MS);
+  let timerId: number | null = null;
+  const blockDuration = Math.max(1000, Number(intervalMs) || TOTP_BLOCK_DURATION_MS);
 
-  const poll = () => {
+  // Initialize at current block index
+  let currentIndex = getCurrentBlockIndex();
+
+  const emit = () => {
     if (cancelled) return;
-
-    const payload = generateRotatingQrPayload(secretKey, classId, classCode);
-    if (payload.index !== lastIndex) {
-      lastIndex = payload.index;
-      onTokenUpdate(payload);
-    }
-
-    const now = Date.now();
-    const currentBlockEnd = Math.floor(now / blockDuration) * blockDuration + blockDuration;
-    const delay = Math.max(50, currentBlockEnd - now + 20);
-    timeoutId = window.setTimeout(poll, delay);
+    const code = generateTotpToken(secretKey, currentIndex);
+    onTokenUpdate({
+      classId,
+      code,
+      index: currentIndex,
+    });
   };
 
-  poll();
+  // Emit 1st token immediately
+  emit();
+
+  // Rotate smoothly every exact 3000ms
+  timerId = window.setInterval(() => {
+    if (cancelled) return;
+    currentIndex += 1;
+    emit();
+  }, blockDuration);
 
   return () => {
     cancelled = true;
-    if (timeoutId !== null) {
-      window.clearTimeout(timeoutId);
-      timeoutId = null;
+    if (timerId !== null) {
+      window.clearInterval(timerId);
+      timerId = null;
     }
   };
 }

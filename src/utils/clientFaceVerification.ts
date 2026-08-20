@@ -11,7 +11,7 @@ const FACE_MATCH_DISTANCE_THRESHOLD = Number.isFinite(configuredThreshold)
   ? configuredThreshold
   : 0.5;
 
-type FaceApi = {
+type ClientFaceApi = {
   nets: {
     tinyFaceDetector: { loadFromUri: (uri: string) => Promise<void> };
     faceLandmark68TinyNet: { loadFromUri: (uri: string) => Promise<void> };
@@ -30,32 +30,28 @@ type FaceApi = {
   euclideanDistance: (left: Float32Array, right: Float32Array) => number;
 };
 
-declare global {
-  interface Window {
-    faceapi?: FaceApi;
-  }
-}
-
-let faceApiPromise: Promise<FaceApi> | null = null;
-let modelPromise: Promise<FaceApi> | null = null;
+let faceApiPromise: Promise<ClientFaceApi> | null = null;
+let modelPromise: Promise<ClientFaceApi> | null = null;
 let referenceDescriptorCache: {
   imageUrl: string;
   descriptor: Promise<Float32Array>;
 } | null = null;
 
-function loadFaceApiScript(): Promise<FaceApi> {
-  if (window.faceapi) return Promise.resolve(window.faceapi);
+function loadFaceApiScript(): Promise<ClientFaceApi> {
+  const globalFaceApi = (window as any).faceapi as ClientFaceApi | undefined;
+  if (globalFaceApi) return Promise.resolve(globalFaceApi);
   if (faceApiPromise) return faceApiPromise;
 
-  faceApiPromise = new Promise<FaceApi>((resolve, reject) => {
+  faceApiPromise = new Promise<ClientFaceApi>((resolve, reject) => {
     const existing = document.querySelector<HTMLScriptElement>(
       `script[data-face-api-url="${FACE_API_SCRIPT_URL}"]`
     );
     const script = existing || document.createElement("script");
 
     const handleLoad = () => {
-      if (window.faceapi) {
-        resolve(window.faceapi);
+      const loadedApi = (window as any).faceapi as ClientFaceApi | undefined;
+      if (loadedApi) {
+        resolve(loadedApi);
       } else {
         reject(new Error("Face verification library did not initialize."));
       }
@@ -100,7 +96,7 @@ export function preloadClientFaceVerification() {
   return modelPromise;
 }
 
-async function createDescriptor(faceapi: FaceApi, imageUrl: string, label: string) {
+async function createDescriptor(faceapi: ClientFaceApi, imageUrl: string, label: string) {
   const image = await faceapi.fetchImage(imageUrl);
   const options = new faceapi.TinyFaceDetectorOptions({
     inputSize: 224,

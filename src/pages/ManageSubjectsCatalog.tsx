@@ -158,7 +158,9 @@ const ManageSubjectsCatalog: React.FC = () => {
 
   const openAllotModal = (subject: any) => {
     const existingAssignments = Array.isArray(subject?.assignments) ? subject.assignments : [];
-    const departmentIds = [...new Set(existingAssignments.map((a: any) => getId(a.department)))];
+    const departmentIds: string[] = Array.from(
+      new Set(existingAssignments.map((a: any) => String(getId(a.department) || "")).filter(Boolean))
+    );
     const nextFacultyByAssignment = existingAssignments.reduce((acc: Record<string, string>, assignment: any) => {
       const departmentId = getId(assignment.department);
       const facultyId = getId(assignment.faculty);

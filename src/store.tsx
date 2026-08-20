@@ -355,10 +355,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       locationLng: s.location?.lng,
       locationRadiusMeters: s.location?.radiusMeters || 200,
       currentDynamicToken: res.qr,
+      secretKey: res.secretKey,
     };
 
     createSessionLocal(newSession);
-    return { ok: true, session: newSession };
+    return { ok: true, session: newSession, secretKey: res.secretKey, qr: res.qr };
   };
 
   const stopSession = async (sessionId: string) => {

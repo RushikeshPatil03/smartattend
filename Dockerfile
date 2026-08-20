@@ -1,4 +1,4 @@
-FROM node:20-alpine
+FROM node:22-alpine
 
 WORKDIR /app
 
@@ -6,7 +6,7 @@ WORKDIR /app
 COPY server/package*.json ./
 
 # Install production dependencies
-RUN npm ci --only=production || npm install --production
+RUN npm ci --omit=dev || npm install --omit=dev
 
 # Copy server application code
 COPY server/ ./
