@@ -233,7 +233,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
 }) => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isReviewMode, setIsReviewMode] = useState(false);
-  const [reviewTab, setReviewTab] = useState<"present" | "absent" | "all">("present");
+  const [reviewTab, setReviewTab] = useState<"present" | "absent">("present");
   const [searchQuery, setSearchQuery] = useState("");
   const [isCancelling, setIsCancelling] = useState(false);
   const [stoppingSession, setStoppingSession] = useState(false);
@@ -275,7 +275,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
           await fullscreenContainerRef.current.requestFullscreen();
         }
       } catch {
-        // Fallback to overlay mode if fullscreen API is blocked
+        // Fallback to state-based fullscreen
       }
     }, 10);
   };
@@ -372,6 +372,12 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
   const totalCalculated = presentCount + absentCount;
   const totalCount = Math.max(effectiveTotalStudents, totalCalculated);
 
+  const attendancePercentage = useMemo(() => {
+    if (totalCount <= 0) return "0.0";
+    const pct = (presentCount / totalCount) * 100;
+    return pct % 1 === 0 ? pct.toFixed(0) : pct.toFixed(1);
+  }, [presentCount, totalCount]);
+
   const formattedStartTime = useMemo(() => {
     if (!activeSession?.startTime) return "-";
     return new Date(activeSession.startTime).toLocaleTimeString([], {
@@ -434,20 +440,6 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
       (s) => s.name.toLowerCase().includes(q) || s.enrollmentNo.toLowerCase().includes(q)
     );
   }, [absentList, searchQuery]);
-
-  const allList = useMemo(() => {
-    return [...presentList, ...absentList].sort((a, b) =>
-      a.enrollmentNo.localeCompare(b.enrollmentNo)
-    );
-  }, [presentList, absentList]);
-
-  const filteredAllList = useMemo(() => {
-    if (!searchQuery.trim()) return allList;
-    const q = searchQuery.toLowerCase().trim();
-    return allList.filter(
-      (s) => s.name.toLowerCase().includes(q) || s.enrollmentNo.toLowerCase().includes(q)
-    );
-  }, [allList, searchQuery]);
 
   return (
     <div className="space-y-6">
@@ -622,8 +614,8 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
             </div>
 
             {/* Session Stats Banner */}
-            <div className="mt-6 pt-5 border-t border-slate-100 grid grid-cols-2 gap-4 sm:grid-cols-4">
-              <div className="rounded-2xl bg-slate-50 p-3.5 border border-slate-100">
+            <div className="mt-6 pt-5 border-t border-slate-100 grid grid-cols-2 gap-3.5 sm:grid-cols-5">
+              <div className="rounded-2xl bg-slate-50 p-3.5 border border-slate-100 col-span-2 sm:col-span-1">
                 <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Subject & Section</p>
                 <p className="text-sm font-bold text-slate-900 truncate mt-0.5">
                   {selectedSubject?.name || "Subject"} ({activeSession?.section || "A"})
@@ -641,15 +633,20 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
               </div>
 
               <div className="rounded-2xl bg-slate-50 p-3.5 border border-slate-100">
-                <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Total Class Strength</p>
+                <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Total Strength</p>
                 <p className="text-xl font-mono font-black text-slate-800 mt-0.5">{totalCount}</p>
+              </div>
+
+              <div className="rounded-2xl bg-indigo-50/80 p-3.5 border border-indigo-100">
+                <p className="text-[11px] font-semibold text-indigo-800 uppercase tracking-wider">Present %</p>
+                <p className="text-xl font-mono font-black text-indigo-700 mt-0.5">{attendancePercentage}%</p>
               </div>
             </div>
           </div>
 
           {/* Full-Width Single-Line Review Stream (Presentees & Absentees Lists) */}
           <div className="rounded-3xl border border-slate-200/80 bg-white/90 p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
-            {/* Top Bar: Segmented Tabs & Search Box */}
+            {/* Top Bar: 2 Segmented Tabs & Search Box */}
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between pb-4 border-b border-slate-100">
               <div className="flex items-center gap-1.5 p-1 bg-slate-100/90 rounded-2xl w-fit">
                 <button
@@ -676,19 +673,6 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                 >
                   <UserX size={15} />
                   Absentees ({absentCount})
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setReviewTab("all")}
-                  className={`rounded-xl px-4 py-2 text-xs font-bold transition duration-150 flex items-center gap-1.5 cursor-pointer ${
-                    reviewTab === "all"
-                      ? "bg-slate-800 text-white shadow-sm"
-                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/60"
-                  }`}
-                >
-                  <Users size={15} />
-                  All ({totalCount})
                 </button>
               </div>
 
@@ -819,87 +803,6 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                         </div>
                       </motion.div>
                     ))
-                  )
-                )}
-
-                {/* 3. All Students Tab View */}
-                {reviewTab === "all" && (
-                  filteredAllList.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-16 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
-                      <Users size={28} className="mb-2 text-slate-300" />
-                      <p className="font-semibold text-slate-600">No students found</p>
-                      {searchQuery && <p className="mt-0.5">Try a different search keyword.</p>}
-                    </div>
-                  ) : (
-                    filteredAllList.map((item) => {
-                      const isPresent = item.status === "present";
-                      return (
-                        <motion.div
-                          key={item.enrollmentNo}
-                          layout
-                          initial={{ opacity: 0, y: -4 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: 4 }}
-                          className={`flex items-center justify-between rounded-2xl border p-3.5 transition duration-150 ${
-                            isPresent
-                              ? "border-emerald-200/80 bg-emerald-50/40 hover:bg-emerald-50/70"
-                              : "border-slate-200 bg-slate-50/40 hover:bg-slate-100/70"
-                          }`}
-                        >
-                          <div className="flex items-center gap-3.5 min-w-0">
-                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white border border-slate-200 overflow-hidden shadow-sm">
-                              {item.photoUrl ? (
-                                <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
-                              ) : (
-                                <span className="font-bold text-xs text-slate-700">
-                                  {item.name.slice(0, 1).toUpperCase()}
-                                </span>
-                              )}
-                            </div>
-
-                            <div className="min-w-0 flex flex-col sm:flex-row sm:items-center sm:gap-4">
-                              <p className="truncate text-sm font-bold text-slate-900">{item.name}</p>
-                              <span className="font-mono text-xs font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200/60 w-fit">
-                                {item.enrollmentNo}
-                              </span>
-                              {isPresent ? (
-                                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-md w-fit">
-                                  <Check size={12} /> Present
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-700 bg-rose-100/70 px-2 py-0.5 rounded-md w-fit">
-                                  <UserX size={12} /> Absent
-                                </span>
-                              )}
-                            </div>
-                          </div>
-
-                          <div className="flex items-center gap-2 shrink-0">
-                            {isPresent ? (
-                              <button
-                                type="button"
-                                onClick={() => onManualAttendance("absent", item.enrollmentNo)}
-                                className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100 hover:border-rose-300 active:scale-95 transition cursor-pointer shadow-sm"
-                                title="Remove from presentees"
-                              >
-                                <Trash2 size={14} className="text-rose-600" />
-                                <span>Remove</span>
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => onManualAttendance("present", item.enrollmentNo)}
-                                className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 hover:border-emerald-400 active:scale-95 transition cursor-pointer shadow-sm"
-                                title="Add to presentees"
-                              >
-                                <UserPlus size={14} className="text-emerald-700" />
-                                <span>Add to Present</span>
-                              </button>
-                            )}
-                          </div>
-                        </motion.div>
-                      );
-                    })
                   )
                 )}
               </AnimatePresence>

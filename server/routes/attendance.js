@@ -732,11 +732,9 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
       if (normalizedSec) {
         countQuery = countQuery.eq("section", normalizedSec);
       }
-      if (rawSession.subj?.created_by_admin) {
-        countQuery = countQuery.eq("created_by_admin", String(rawSession.subj.created_by_admin));
-      }
       const { count: classTotal } = await countQuery;
-      const totalStudentsCount = classTotal || allRegisteredStudents.length || presentRecords.length || 0;
+      const fullRoster = [...presentRecords, ...absentRecords];
+      const totalStudentsCount = classTotal || allRegisteredStudents.length || fullRoster.length || 0;
 
       return res.json({
         ok: true,
