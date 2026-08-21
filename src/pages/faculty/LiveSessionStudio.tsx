@@ -13,8 +13,6 @@ import {
   Sparkles,
   CheckCircle2,
   Radio,
-  Flame,
-  Award,
   Play,
   XCircle,
   Search,
@@ -35,14 +33,14 @@ interface LiveSessionStudioProps {
   sessionSecretKey?: string | null;
   liveAttendance: LiveAttendanceItem[];
   attendanceStatusMap: Record<string, "present" | "absent">;
-  attendanceDataLoaded: boolean;
-  attendeesLoading: boolean;
+  attendanceDataLoaded?: boolean;
+  attendeesLoading?: boolean;
   manualLoading: boolean;
   manualEnrollment: string;
   setManualEnrollment: (val: string) => void;
   onLoadAttendees: () => Promise<void>;
   onManualAttendance: (status: "present" | "absent", enrollmentNo?: string) => Promise<void>;
-  onToggleAttendanceItem: (item: any) => Promise<void>;
+  onToggleAttendanceItem?: (item: any) => Promise<void>;
   onStopSession: () => Promise<void>;
   onCancelSession: () => Promise<void>;
   selectedSubject?: any;
@@ -178,8 +176,6 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
 }) => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isReviewMode, setIsReviewMode] = useState(false);
-  const [liveStreamTab, setLiveStreamTab] = useState<"present" | "absent">("present");
-  const [reviewTab, setReviewTab] = useState<"present" | "absent">("present");
   const [searchQuery, setSearchQuery] = useState("");
   const fullscreenContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -227,15 +223,15 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
     setIsFullscreen(false);
   };
 
-  // Normalized Student List with Status
-  const normalizedStudents = useMemo(() => {
+  // Normalized Present Students List (Sorted by newest check-in first)
+  const presentList = useMemo(() => {
     const map = new Map<string, {
       rawItem: any;
       student: any;
       enrollmentNo: string;
       name: string;
       photoUrl: string;
-      status: "present" | "absent";
+      status: "present";
       timestamp?: any;
     }>();
 
@@ -247,50 +243,27 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
         attendanceStatusMap[enrollmentNo] ||
         (String(item?.status || "").toLowerCase() === "present" ? "present" : "absent");
 
-      map.set(enrollmentNo, {
-        rawItem: item,
-        student,
-        enrollmentNo,
-        name: student.name || item?.name || "Student",
-        photoUrl: student.profilePhotoUrl || item?.profilePhotoUrl || "",
-        status: currentStatus,
-        timestamp: item?.timestamp,
-      });
+      if (currentStatus === "present") {
+        map.set(enrollmentNo, {
+          rawItem: item,
+          student,
+          enrollmentNo,
+          name: student.name || item?.name || "Student",
+          photoUrl: student.profilePhotoUrl || item?.profilePhotoUrl || "",
+          status: "present",
+          timestamp: item?.timestamp || item?.markedAt || Date.now(),
+        });
+      }
     });
 
-    return Array.from(map.values());
+    return Array.from(map.values()).sort((a, b) => {
+      const timeA = new Date(a.timestamp || 0).getTime();
+      const timeB = new Date(b.timestamp || 0).getTime();
+      return timeB - timeA;
+    });
   }, [liveAttendance, attendanceStatusMap]);
 
-  // Filtered by active tab and search
-  const presentList = useMemo(() => {
-    return normalizedStudents
-      .filter((s) => s.status === "present")
-      .sort((a, b) => {
-        const timeA = new Date(a.timestamp || 0).getTime();
-        const timeB = new Date(b.timestamp || 0).getTime();
-        return timeB - timeA;
-      });
-  }, [normalizedStudents]);
-
-  const absentList = useMemo(() => {
-    return normalizedStudents
-      .filter((s) => s.status === "absent")
-      .sort((a, b) => a.enrollmentNo.localeCompare(b.enrollmentNo));
-  }, [normalizedStudents]);
-
-  const totalLoadedStrength = normalizedStudents.length;
   const presentCount = presentList.length;
-  const absentCount = absentList.length;
-
-  // Milestone Celebration logic
-  const attendanceRatio = totalLoadedStrength > 0 ? (presentCount / totalLoadedStrength) * 100 : 0;
-  const milestone = useMemo(() => {
-    if (totalLoadedStrength === 0) return null;
-    if (attendanceRatio >= 90) return { label: "90% Cap Reached! Outstanding Turnout", color: "from-emerald-500 to-teal-400", icon: Award };
-    if (attendanceRatio >= 75) return { label: "75% Minimum Quorum Achieved", color: "from-teal-500 to-cyan-400", icon: CheckCircle2 };
-    if (attendanceRatio >= 50) return { label: "50% Halfway Mark Crossed", color: "from-cyan-500 to-blue-400", icon: Flame };
-    return null;
-  }, [attendanceRatio, totalLoadedStrength]);
 
   const formattedStartTime = useMemo(() => {
     if (!activeSession?.startTime) return "-";
@@ -303,7 +276,6 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
 
   // Handle Stop Session -> enter Review Mode
   const handleEnterReviewMode = () => {
-    onLoadAttendees();
     setIsReviewMode(true);
   };
 
@@ -312,24 +284,14 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
     setIsReviewMode(false);
   };
 
-  // Filtered lists by search query
-  const filteredLiveList = useMemo(() => {
-    const list = liveStreamTab === "present" ? presentList : absentList;
-    if (!searchQuery.trim()) return list;
+  // Filtered present list by search query (for review mode or live stream filter)
+  const filteredPresentList = useMemo(() => {
+    if (!searchQuery.trim()) return presentList;
     const q = searchQuery.toLowerCase().trim();
-    return list.filter(
+    return presentList.filter(
       (s) => s.name.toLowerCase().includes(q) || s.enrollmentNo.toLowerCase().includes(q)
     );
-  }, [liveStreamTab, presentList, absentList, searchQuery]);
-
-  const filteredReviewList = useMemo(() => {
-    const list = reviewTab === "present" ? presentList : absentList;
-    if (!searchQuery.trim()) return list;
-    const q = searchQuery.toLowerCase().trim();
-    return list.filter(
-      (s) => s.name.toLowerCase().includes(q) || s.enrollmentNo.toLowerCase().includes(q)
-    );
-  }, [reviewTab, presentList, absentList, searchQuery]);
+  }, [presentList, searchQuery]);
 
   return (
     <div className="space-y-6">
@@ -376,7 +338,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
               <div className="flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-950/40 px-4 py-2 text-emerald-300">
                 <Users size={18} />
                 <span className="font-mono text-xl font-black">{presentCount}</span>
-                <span className="text-xs text-emerald-400/70">/ {totalLoadedStrength || "?"} checked in</span>
+                <span className="text-xs text-emerald-400/70">checked in</span>
               </div>
 
               <button
@@ -471,7 +433,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
             </div>
 
             {/* Session Stats Banner */}
-            <div className="mt-6 pt-5 border-t border-slate-100 grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <div className="mt-6 pt-5 border-t border-slate-100 grid grid-cols-2 gap-4 sm:grid-cols-3">
               <div className="rounded-2xl bg-slate-50 p-3.5 border border-slate-100">
                 <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Subject & Section</p>
                 <p className="text-sm font-bold text-slate-900 truncate mt-0.5">
@@ -479,53 +441,27 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                 </p>
               </div>
 
-              <div className="rounded-2xl bg-slate-50 p-3.5 border border-slate-100">
-                <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Total Enrolled</p>
-                <p className="text-xl font-mono font-black text-slate-900 mt-0.5">{totalLoadedStrength}</p>
-              </div>
-
               <div className="rounded-2xl bg-emerald-50/80 p-3.5 border border-emerald-100">
-                <p className="text-[11px] font-semibold text-emerald-800 uppercase tracking-wider">Presentees</p>
+                <p className="text-[11px] font-semibold text-emerald-800 uppercase tracking-wider">Verified Presentees</p>
                 <p className="text-xl font-mono font-black text-emerald-700 mt-0.5">{presentCount}</p>
               </div>
 
-              <div className="rounded-2xl bg-rose-50/80 p-3.5 border border-rose-100">
-                <p className="text-[11px] font-semibold text-rose-800 uppercase tracking-wider">Absentees</p>
-                <p className="text-xl font-mono font-black text-rose-700 mt-0.5">{absentCount}</p>
+              <div className="rounded-2xl bg-slate-50 p-3.5 border border-slate-100">
+                <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Session Started</p>
+                <p className="text-sm font-mono font-bold text-slate-800 mt-0.5">{formattedStartTime}</p>
               </div>
             </div>
           </div>
 
           {/* Full-Width Single-Line Review Stream */}
           <div className="rounded-3xl border border-slate-200/80 bg-white/90 p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
-            {/* Tab Navigation & Search Bar */}
+            {/* Top Bar: Title & Search Box */}
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between pb-4 border-b border-slate-100">
               <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setReviewTab("present")}
-                  className={`rounded-xl px-4 py-2 text-xs font-bold transition duration-150 cursor-pointer flex items-center gap-2 ${
-                    reviewTab === "present"
-                      ? "bg-emerald-600 text-white shadow-md shadow-emerald-600/20"
-                      : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                  }`}
-                >
+                <span className="rounded-xl bg-emerald-600 text-white font-bold text-xs px-4 py-2 flex items-center gap-2 shadow-md shadow-emerald-600/20">
                   <CheckCircle2 size={15} />
-                  Presentees ({presentCount})
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setReviewTab("absent")}
-                  className={`rounded-xl px-4 py-2 text-xs font-bold transition duration-150 cursor-pointer flex items-center gap-2 ${
-                    reviewTab === "absent"
-                      ? "bg-rose-600 text-white shadow-md shadow-rose-600/20"
-                      : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                  }`}
-                >
-                  <Users size={15} />
-                  Absentees ({absentCount})
-                </button>
+                  Verified Presentees ({presentCount})
+                </span>
               </div>
 
               {/* Search Box */}
@@ -544,77 +480,56 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
             {/* Student Single-Line Rows (Scrollable) */}
             <div className="mt-4 space-y-2 max-h-[520px] overflow-y-auto pr-1">
               <AnimatePresence initial={false}>
-                {filteredReviewList.length === 0 ? (
+                {filteredPresentList.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-16 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
                     <Users size={28} className="mb-2 text-slate-300" />
-                    <p className="font-semibold text-slate-600">
-                      No students found in {reviewTab === "present" ? "Presentees" : "Absentees"}
-                    </p>
+                    <p className="font-semibold text-slate-600">No present students found</p>
                     {searchQuery && <p className="mt-0.5">Try a different search keyword.</p>}
                   </div>
                 ) : (
-                  filteredReviewList.map((item) => {
-                    const isPresent = item.status === "present";
-
-                    return (
-                      <motion.div
-                        key={`${item.enrollmentNo}-${isPresent ? "p" : "a"}`}
-                        layout
-                        initial={{ opacity: 0, y: -4 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: 4 }}
-                        className={`flex items-center justify-between rounded-2xl border p-3.5 transition duration-150 ${
-                          isPresent
-                            ? "border-emerald-200/80 bg-emerald-50/40 hover:bg-emerald-50/70"
-                            : "border-slate-200 bg-slate-50/60 hover:bg-slate-50"
-                        }`}
-                      >
-                        {/* 1-Line Student Identity: Small Photo, Name, USN */}
-                        <div className="flex items-center gap-3.5 min-w-0">
-                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white border border-slate-200 overflow-hidden shadow-sm">
-                            {item.photoUrl ? (
-                              <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
-                            ) : (
-                              <span className="font-bold text-xs text-slate-700">
-                                {item.name.slice(0, 1).toUpperCase()}
-                              </span>
-                            )}
-                          </div>
-
-                          <div className="min-w-0 flex flex-col sm:flex-row sm:items-center sm:gap-4">
-                            <p className="truncate text-sm font-bold text-slate-900">{item.name}</p>
-                            <span className="font-mono text-xs font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200/60 w-fit">
-                              {item.enrollmentNo}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Action Button: Red Dustbin (from Presentees) OR +Add (to Presentees) */}
-                        <div className="flex items-center gap-2 shrink-0">
-                          {isPresent ? (
-                            <button
-                              type="button"
-                              onClick={() => onManualAttendance("absent", item.enrollmentNo)}
-                              className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100 hover:border-rose-300 active:scale-95 transition cursor-pointer shadow-sm"
-                              title="Remove from presentees"
-                            >
-                              <Trash2 size={15} className="text-rose-600" />
-                              <span>Remove</span>
-                            </button>
+                  filteredPresentList.map((item) => (
+                    <motion.div
+                      key={item.enrollmentNo}
+                      layout
+                      initial={{ opacity: 0, y: -4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 4 }}
+                      className="flex items-center justify-between rounded-2xl border border-emerald-200/80 bg-emerald-50/40 hover:bg-emerald-50/70 p-3.5 transition duration-150"
+                    >
+                      {/* 1-Line Student Identity: Small Photo, Name, USN */}
+                      <div className="flex items-center gap-3.5 min-w-0">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white border border-slate-200 overflow-hidden shadow-sm">
+                          {item.photoUrl ? (
+                            <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
                           ) : (
-                            <button
-                              type="button"
-                              onClick={() => onManualAttendance("present", item.enrollmentNo)}
-                              className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-100 px-3.5 py-1.5 text-xs font-bold text-emerald-800 hover:bg-emerald-200 active:scale-95 transition cursor-pointer shadow-sm"
-                            >
-                              <UserPlus size={15} />
-                              + Add
-                            </button>
+                            <span className="font-bold text-xs text-slate-700">
+                              {item.name.slice(0, 1).toUpperCase()}
+                            </span>
                           )}
                         </div>
-                      </motion.div>
-                    );
-                  })
+
+                        <div className="min-w-0 flex flex-col sm:flex-row sm:items-center sm:gap-4">
+                          <p className="truncate text-sm font-bold text-slate-900">{item.name}</p>
+                          <span className="font-mono text-xs font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200/60 w-fit">
+                            {item.enrollmentNo}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Action Button: Red Dustbin (Remove from Presentees) */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => onManualAttendance("absent", item.enrollmentNo)}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100 hover:border-rose-300 active:scale-95 transition cursor-pointer shadow-sm"
+                          title="Remove from presentees"
+                        >
+                          <Trash2 size={15} className="text-rose-600" />
+                          <span>Remove</span>
+                        </button>
+                      </div>
+                    </motion.div>
+                  ))
                 )}
               </AnimatePresence>
             </div>
@@ -700,17 +615,6 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
               </div>
             </div>
 
-            {/* Milestone Bar */}
-            {milestone && (
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className={`mt-5 flex items-center gap-2 rounded-2xl bg-gradient-to-r ${milestone.color} px-4 py-2 text-xs font-bold text-slate-950 shadow-md`}
-              >
-                <milestone.icon size={16} />
-                <span>{milestone.label}</span>
-              </motion.div>
-            )}
           </div>
 
           {/* Grid: Enlarged Dynamic QR (8 cols) + Beside Stream (4 cols) */}
@@ -754,176 +658,105 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
               </div>
             </div>
 
-            {/* Beside Space: Live Scan Stream (4 cols) */}
+            {/* Beside Space: Live Scan Stream (4 cols) - Pure High-Performance Read-Only Ticker */}
             <div className="lg:col-span-4 flex flex-col">
-              <div className="flex-1 rounded-3xl border border-slate-200/80 bg-white/90 p-5 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl flex flex-col justify-between">
-                <div>
-                  {/* Stream Header */}
-                  <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                    <div>
-                      <h3 className="font-bold text-slate-900 text-sm tracking-tight flex items-center gap-1.5">
-                        <Radio size={15} className="text-emerald-500 animate-pulse" />
-                        Live Scan Stream
-                      </h3>
-                      <p className="text-[11px] text-slate-500 mt-0.5">
-                        Real-time student check-ins
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <div className="font-mono text-lg font-black text-slate-900">
-                        {presentCount} <span className="text-xs font-normal text-slate-400">/ {totalLoadedStrength || "?"}</span>
-                      </div>
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-600">
-                        Present
-                      </span>
-                    </div>
+              <div className="flex-1 rounded-3xl border border-slate-200/80 bg-white/90 p-5 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl flex flex-col">
+                {/* Stream Header */}
+                <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                  <div>
+                    <h3 className="font-bold text-slate-900 text-sm tracking-tight flex items-center gap-1.5">
+                      <Radio size={15} className="text-emerald-500 animate-pulse" />
+                      Live Scan Stream
+                    </h3>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Real-time student check-ins
+                    </p>
                   </div>
-
-                  {/* Progress Quorum Bar */}
-                  {totalLoadedStrength > 0 && (
-                    <div className="mt-3">
-                      <div className="flex justify-between text-[11px] font-medium text-slate-600 mb-1">
-                        <span>Quorum Progress</span>
-                        <span className="font-mono font-bold">{Math.round(attendanceRatio)}%</span>
-                      </div>
-                      <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
-                        <div
-                          className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-400 transition-all duration-300"
-                          style={{ width: `${Math.min(100, attendanceRatio)}%` }}
-                        />
-                      </div>
+                  <div className="text-right">
+                    <div className="font-mono text-xl font-black text-emerald-600 flex items-center gap-1.5 justify-end">
+                      <Users size={17} />
+                      {presentCount}
                     </div>
-                  )}
-
-                  {/* Stream Tabs: Present | Absent */}
-                  <div className="mt-3 flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
-                    <button
-                      type="button"
-                      onClick={() => setLiveStreamTab("present")}
-                      className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition cursor-pointer flex items-center justify-center gap-1.5 ${
-                        liveStreamTab === "present"
-                          ? "bg-white text-emerald-700 shadow-sm"
-                          : "text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      <CheckCircle2 size={13} />
-                      Present ({presentCount})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setLiveStreamTab("absent")}
-                      className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition cursor-pointer flex items-center justify-center gap-1.5 ${
-                        liveStreamTab === "absent"
-                          ? "bg-white text-rose-700 shadow-sm"
-                          : "text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      <Users size={13} />
-                      Absent ({absentCount})
-                    </button>
-                  </div>
-
-                  {/* Live Stream List (Scrollable) */}
-                  <div className="mt-3 space-y-2 max-h-[320px] overflow-y-auto pr-1">
-                    <AnimatePresence initial={false}>
-                      {filteredLiveList.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center py-10 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
-                          <Users size={22} className="mb-1.5 text-slate-300" />
-                          <p className="font-semibold text-slate-600">
-                            {liveStreamTab === "present" ? "Waiting for live scans" : "No absentees remaining"}
-                          </p>
-                          <p className="mt-0.5 text-[11px]">
-                            {liveStreamTab === "present"
-                              ? "Scanned students will appear here in real-time."
-                              : "All students have scanned and checked in!"}
-                          </p>
-                        </div>
-                      ) : (
-                        filteredLiveList.map((item, idx) => {
-                          const isPresent = item.status === "present";
-                          const scanTime = item.timestamp
-                            ? new Date(item.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-                            : "Verified";
-
-                          return (
-                            <motion.div
-                              key={`${item.enrollmentNo}-${idx}`}
-                              initial={{ opacity: 0, y: -4 }}
-                              animate={{ opacity: 1, y: 0 }}
-                              className={`flex items-center justify-between rounded-xl border p-2.5 transition ${
-                                isPresent
-                                  ? "border-emerald-200/80 bg-emerald-50/40 hover:bg-emerald-50"
-                                  : "border-slate-200 bg-slate-50/60 hover:bg-slate-50"
-                              }`}
-                            >
-                              <div className="flex items-center gap-2.5 min-w-0">
-                                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white border border-slate-200 overflow-hidden shadow-sm">
-                                  {item.photoUrl ? (
-                                    <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
-                                  ) : (
-                                    <span className="font-bold text-xs text-slate-700">
-                                      {item.name.slice(0, 1).toUpperCase()}
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="min-w-0">
-                                  <p className="truncate text-xs font-bold text-slate-900">{item.name}</p>
-                                  <p className="font-mono text-[10px] text-slate-500 truncate">{item.enrollmentNo}</p>
-                                </div>
-                              </div>
-
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                {isPresent ? (
-                                  <div className="flex items-center gap-1.5">
-                                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[9px] font-bold text-emerald-800">
-                                      <Check size={10} /> {scanTime}
-                                    </span>
-                                    <button
-                                      type="button"
-                                      onClick={() => onManualAttendance("absent", item.enrollmentNo)}
-                                      className="p-1 rounded-lg text-rose-500 hover:text-rose-700 hover:bg-rose-100/70 border border-transparent hover:border-rose-200 transition cursor-pointer"
-                                      title="Remove from presentees"
-                                    >
-                                      <Trash2 size={13} />
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => onManualAttendance("present", item.enrollmentNo)}
-                                    className="inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-800 hover:bg-emerald-100 active:scale-95 transition cursor-pointer"
-                                  >
-                                    <UserPlus size={11} /> +Add
-                                  </button>
-                                )}
-                              </div>
-                            </motion.div>
-                          );
-                        })
-                      )}
-                    </AnimatePresence>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                      Checked In
+                    </span>
                   </div>
                 </div>
 
-                {/* Manual Attendance Entry Bar */}
-                <div className="mt-3 pt-3 border-t border-slate-100">
-                  <div className="flex gap-1.5">
-                    <input
-                      type="text"
-                      placeholder="Manual USN (e.g. 1RV21CS001)"
-                      value={manualEnrollment}
-                      onChange={(e) => setManualEnrollment(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && onManualAttendance("present")}
-                      className="flex-1 rounded-xl border border-slate-200 bg-slate-50/50 px-3 py-1.5 text-xs font-medium text-slate-800 focus:bg-white focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 transition"
-                    />
-                    <Button
-                      onClick={() => onManualAttendance("present")}
-                      disabled={manualLoading || !manualEnrollment.trim()}
-                      className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-3 py-1.5 rounded-xl"
-                    >
-                      <UserPlus size={13} /> Add
-                    </Button>
-                  </div>
+                {/* Live Feed Status Bar */}
+                <div className="mt-3 flex items-center justify-between rounded-xl bg-emerald-50/80 border border-emerald-100 px-3.5 py-2 text-xs">
+                  <span className="flex items-center gap-1.5 font-bold text-emerald-800">
+                    <span className="h-2 w-2 rounded-full bg-emerald-500 animate-ping" />
+                    Live Scanning Active
+                  </span>
+                  <span className="font-mono font-bold text-emerald-700">
+                    {presentCount} Present
+                  </span>
+                </div>
+
+                {/* Live Stream List (Scrollable with Hardware-Accelerated 60 FPS Containment) */}
+                <div
+                  className="mt-3 space-y-2 max-h-[390px] overflow-y-auto pr-1"
+                  style={{
+                    overscrollBehavior: "contain",
+                    transform: "translateZ(0)",
+                    WebkitOverflowScrolling: "touch",
+                  }}
+                >
+                  <AnimatePresence initial={false}>
+                    {filteredPresentList.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-14 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
+                        <Radio size={24} className="mb-2 text-emerald-400 animate-pulse" />
+                        <p className="font-semibold text-slate-700">Waiting for live scans</p>
+                        <p className="mt-1 text-[11px] text-slate-400 max-w-[200px]">
+                          Scanned students will appear here in real-time.
+                        </p>
+                      </div>
+                    ) : (
+                      filteredPresentList.map((item) => {
+                        const scanTime = item.timestamp
+                          ? new Date(item.timestamp).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                              second: "2-digit",
+                            })
+                          : "Verified";
+
+                        return (
+                          <motion.div
+                            key={item.enrollmentNo}
+                            layout
+                            initial={{ opacity: 0, y: -6 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: 6 }}
+                            className="flex items-center justify-between rounded-xl border border-emerald-200/80 bg-emerald-50/40 p-2.5 transition-colors duration-150"
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white border border-slate-200 overflow-hidden shadow-sm">
+                                {item.photoUrl ? (
+                                  <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
+                                ) : (
+                                  <span className="font-bold text-xs text-slate-700">
+                                    {item.name.slice(0, 1).toUpperCase()}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="truncate text-xs font-bold text-slate-900">{item.name}</p>
+                                <p className="font-mono text-[10px] text-slate-500 truncate">{item.enrollmentNo}</p>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100/90 border border-emerald-200 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+                                <Check size={10} className="stroke-[3]" /> {scanTime}
+                              </span>
+                            </div>
+                          </motion.div>
+                        );
+                      })
+                    )}
+                  </AnimatePresence>
                 </div>
               </div>
             </div>

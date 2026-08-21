@@ -361,231 +361,56 @@ const FacultyDashboard: React.FC = () => {
 
 
 
-  // Flush Throttled Realtime Events to State
-  const flushRealtimeQueue = useCallback(() => {
-    if (!realtimeEventQueueRef.current.length) return;
-    const events = [...realtimeEventQueueRef.current];
-    realtimeEventQueueRef.current = [];
-
-    setLiveAttendance((prev) => {
-      let nextList = [...prev];
-      events.forEach((att) => {
-        const enrollmentNo = String(att.enrollmentNo || "").trim();
-        const existingIdx = nextList.findIndex(
-          (item: any) =>
-            String(item?.student?.enrollmentNo || item?.enrollmentNo || "").trim() ===
-            enrollmentNo
-        );
-        const newRecord = {
-          _id: att.id || att._id,
-          id: att.id || att._id,
-          timestamp: att.timestamp,
-          status: att.status || "present",
-          student: {
-            name: att.studentName,
-            enrollmentNo: att.enrollmentNo,
-          },
-        };
-        if (existingIdx >= 0) {
-          nextList[existingIdx] = { ...nextList[existingIdx], ...newRecord };
-        } else {
-          nextList = [newRecord, ...nextList];
+  const persistRecentClasses = useCallback(
+    (updater: (prev: RecentClassPreset[]) => RecentClassPreset[]) => {
+      setRecentClasses((prev) => {
+        const next = updater(prev).slice(0, RECENT_CLASS_LIMIT);
+        if (facultyId) {
+          window.localStorage.setItem(
+            recentClassStorageKey(facultyId),
+            JSON.stringify(next)
+          );
         }
+        return next;
       });
-      return nextList;
-    });
+    },
+    [facultyId]
+  );
 
-    setAttendanceStatusMap((prev) => {
-      const nextMap = { ...prev };
-      events.forEach((att) => {
-        const enrollmentNo = String(att.enrollmentNo || "").trim();
-        if (enrollmentNo) {
-          nextMap[enrollmentNo] = att.status === "absent" ? "absent" : "present";
-        }
-      });
-      return nextMap;
-    });
+  const applyRecentClass = useCallback((preset: RecentClassPreset) => {
+    setFormDepartment(preset.departmentId);
+    setFormYear(preset.year);
+    setFormSem(preset.semester);
+    setFormSection(preset.section);
+    setFormSubject(preset.subjectId);
+    setFormRadius(preset.radiusMeters || String(DEFAULT_SESSION_RADIUS_METERS));
+    setLocationState(preset.location);
+    setIsLocationConfirmed(Boolean(preset.location));
+    setManualLat(
+      preset.location?.lat != null ? Number(preset.location.lat).toFixed(6) : ""
+    );
+    setManualLng(
+      preset.location?.lng != null ? Number(preset.location.lng).toFixed(6) : ""
+    );
+    setShowManualLocation(false);
+    setSessionError("");
+    setLocationError("");
   }, []);
 
-  // Supabase Realtime Attendance Subscription with 150ms Buffer
-  useEffect(() => {
-    if (!activeSessionId) return;
+  const removeRecentClass = useCallback(
+    (presetKey: string) => {
+      persistRecentClasses((prev) => prev.filter((item) => item.key !== presetKey));
+    },
+    [persistRecentClasses]
+  );
 
-    loadCurrentAttendees();
-
-    const unsubscribe = subscribeToSessionAttendance(
-      activeSessionId,
-      (payload) => {
-        if (!payload?.attendance) return;
-        realtimeEventQueueRef.current.push(payload.attendance);
-
-        if (!realtimeFlushTimerRef.current) {
-          realtimeFlushTimerRef.current = window.setTimeout(() => {
-            flushRealtimeQueue();
-            realtimeFlushTimerRef.current = null;
-          }, 150);
-        }
-      }
-    );
-
-    return () => {
-      unsubscribe();
-      if (realtimeFlushTimerRef.current) {
-        window.clearTimeout(realtimeFlushTimerRef.current);
-        realtimeFlushTimerRef.current = null;
-      }
-    };
-  }, [activeSessionId, flushRealtimeQueue]);
-
-  // Load Device Requests
-  const loadDeviceRequests = async () => {
-    setDeviceRequestsLoading(true);
-    setDeviceRequestError("");
-    try {
-      const res: any = await apiClient.getDeviceChangeRequests(
-        deviceRequestStatus
-      );
-      if (res?.ok) {
-        setDeviceRequests(Array.isArray(res.requests) ? res.requests : []);
-      } else {
-        setDeviceRequestError(res?.error || "Failed to load device requests.");
-      }
-    } finally {
-      setDeviceRequestsLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (activeTab === "DEVICE_REQUESTS") {
-      loadDeviceRequests();
-    }
-  }, [activeTab, deviceRequestStatus]);
-
-  // Subject Analytics Methods
-  const loadSubjectAnalytics = async (subjectId: string, classCode = "") => {
-    setSubjectAnalyticsLoading(true);
-    setSubjectAnalyticsError("");
-    try {
-      const res: any = await apiClient.getFacultySubjectAnalytics(subjectId, {
-        classCode: classCode || undefined,
-      });
-      if (!res?.ok) {
-        setSubjectAnalyticsError(
-          res?.error || "Failed to load subject analytics."
-        );
-        return;
-      }
-      setSubjectAnalyticsData(res as FacultySubjectAnalyticsData);
-    } catch (err: any) {
-      setSubjectAnalyticsError(
-        err?.message || "Failed to load subject analytics."
-      );
-    } finally {
-      setSubjectAnalyticsLoading(false);
-    }
-  };
-
-  const openSubjectAnalytics = async (subject: any) => {
-    const subjectId = String(subject?._id || subject?.id || "");
-    if (!subjectId) return;
-    setSubjectAnalyticsTarget(subject);
-    setAnalyticsClassCodeFilter("");
-    setAnalyticsAttendanceFilter("all");
-    setAnalyticsSearch("");
-    setSubjectAnalyticsData(null);
-    setSubjectAnalyticsOpen(true);
-    await loadSubjectAnalytics(subjectId, "");
-  };
-
-  const closeSubjectAnalytics = () => {
-    setSubjectAnalyticsOpen(false);
-    setSubjectAnalyticsLoading(false);
-    setSubjectAnalyticsError("");
-    setSubjectAnalyticsData(null);
-    setSubjectAnalyticsTarget(null);
-    setAnalyticsClassCodeFilter("");
-    setAnalyticsAttendanceFilter("all");
-    setAnalyticsSearch("");
-  };
-
-  const analyticsStudents = useMemo(() => {
-    const base = subjectAnalyticsData?.students || [];
-    return base
-      .filter((student) => {
-        if (analyticsAttendanceFilter === "below_75") {
-          return student.totalClasses > 0 && student.attendancePercentage < 75;
-        }
-        if (analyticsAttendanceFilter === "75_plus") {
-          return student.attendancePercentage >= 75;
-        }
-        if (analyticsAttendanceFilter === "90_plus") {
-          return student.attendancePercentage >= 90;
-        }
-        if (analyticsAttendanceFilter === "zero") {
-          return student.totalClasses > 0 && student.attendancePercentage === 0;
-        }
-        return true;
-      })
-      .filter((student) => {
-        const query = analyticsSearch.trim().toLowerCase();
-        if (!query) return true;
-        return (
-          String(student.name || "").toLowerCase().includes(query) ||
-          String(student.enrollmentNo || "").toLowerCase().includes(query) ||
-          String(student.classCode || "").toLowerCase().includes(query)
-        );
-      });
-  }, [subjectAnalyticsData, analyticsAttendanceFilter, analyticsSearch]);
-
-  const strongestClassInsight = useMemo(() => {
-    const items = subjectAnalyticsData?.classCodeInsights || [];
-    return (
-      [...items].sort(
-        (a, b) => b.averageAttendancePercentage - a.averageAttendancePercentage
-      )[0] || null
-    );
-  }, [subjectAnalyticsData]);
-
-  const weakestClassInsight = useMemo(() => {
-    const items = subjectAnalyticsData?.classCodeInsights || [];
-    return (
-      [...items]
-        .filter((item) => item.totalClasses > 0)
-        .sort(
-          (a, b) => a.averageAttendancePercentage - b.averageAttendancePercentage
-        )[0] || null
-    );
-  }, [subjectAnalyticsData]);
-
-  // Review Device Request
-  const reviewDeviceRequest = async (
-    requestId: string,
-    decision: "approved" | "rejected"
-  ) => {
-    const note = String(deviceRejectNote[requestId] || "").trim();
-    if (decision === "rejected" && !note) {
-      setDeviceRequestError("Please add a rejection reason before rejecting.");
-      return;
-    }
-    setDeviceReviewingId(requestId);
-    setDeviceRequestError("");
-    try {
-      const res: any = await apiClient.reviewDeviceChangeRequest(requestId, {
-        decision,
-        reviewNote: note,
-      });
-      if (!res?.ok) {
-        setDeviceRequestError(res?.error || "Failed to review request.");
-        return;
-      }
-      await loadDeviceRequests();
-    } finally {
-      setDeviceReviewingId("");
-    }
-  };
+  const resetConfirmedLocation = useCallback(() => {
+    setIsLocationConfirmed(false);
+    setSessionError("");
+  }, []);
 
   // Capture Browser Geolocation
-  const captureLocation = () => {
+  const captureLocation = useCallback(() => {
     const MAX_ACCEPTABLE_ACCURACY_METERS = 120;
     setLocating(true);
     setLocationError("");
@@ -662,9 +487,9 @@ const FacultyDashboard: React.FC = () => {
       timeout: 20000,
       maximumAge: 0,
     });
-  };
+  }, []);
 
-  const setManualLocation = () => {
+  const setManualLocation = useCallback(() => {
     const lat = Number(manualLat);
     const lng = Number(manualLng);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
@@ -681,9 +506,9 @@ const FacultyDashboard: React.FC = () => {
     setIsLocationConfirmed(true);
     setLocationError("");
     setSessionError("");
-  };
+  }, [manualLat, manualLng]);
 
-  const showManualLocationEditor = () => {
+  const showManualLocationEditor = useCallback(() => {
     if (locationState) {
       setManualLat(formatCoordinate(locationState.lat));
       setManualLng(formatCoordinate(locationState.lng));
@@ -692,24 +517,24 @@ const FacultyDashboard: React.FC = () => {
     setShowManualLocation(true);
     setSessionError("");
     setLocationError("");
-  };
+  }, [locationState]);
 
-  const stopMobileLocatePolling = () => {
+  const stopMobileLocatePolling = useCallback(() => {
     if (mobileLocatePollRef.current) {
       window.clearInterval(mobileLocatePollRef.current);
       mobileLocatePollRef.current = null;
     }
-  };
+  }, []);
 
-  const closeMobileLocate = () => {
+  const closeMobileLocate = useCallback(() => {
     stopMobileLocatePolling();
     setMobileLocateToken(null);
     setMobileLocateStatus("");
     setMobileLocateExpiresAt(null);
     setMobileLocateLoading(false);
-  };
+  }, [stopMobileLocatePolling]);
 
-  const startLocateViaMobile = async () => {
+  const startLocateViaMobile = useCallback(async () => {
     setLocationError("");
     setSessionError("");
     setMobileLocateLoading(true);
@@ -769,54 +594,10 @@ const FacultyDashboard: React.FC = () => {
 
     await poll();
     mobileLocatePollRef.current = window.setInterval(poll, 2500);
-  };
-
-  const persistRecentClasses = (
-    updater: (prev: RecentClassPreset[]) => RecentClassPreset[]
-  ) => {
-    setRecentClasses((prev) => {
-      const next = updater(prev).slice(0, RECENT_CLASS_LIMIT);
-      if (facultyId) {
-        window.localStorage.setItem(
-          recentClassStorageKey(facultyId),
-          JSON.stringify(next)
-        );
-      }
-      return next;
-    });
-  };
-
-  const applyRecentClass = (preset: RecentClassPreset) => {
-    setFormDepartment(preset.departmentId);
-    setFormYear(preset.year);
-    setFormSem(preset.semester);
-    setFormSection(preset.section);
-    setFormSubject(preset.subjectId);
-    setFormRadius(preset.radiusMeters || String(DEFAULT_SESSION_RADIUS_METERS));
-    setLocationState(preset.location);
-    setIsLocationConfirmed(Boolean(preset.location));
-    setManualLat(
-      preset.location?.lat != null ? Number(preset.location.lat).toFixed(6) : ""
-    );
-    setManualLng(
-      preset.location?.lng != null ? Number(preset.location.lng).toFixed(6) : ""
-    );
-    setShowManualLocation(false);
-    setSessionError("");
-    setLocationError("");
-  };
-
-  const removeRecentClass = (presetKey: string) => {
-    persistRecentClasses((prev) => prev.filter((item) => item.key !== presetKey));
-  };
-
-  const resetConfirmedLocation = () => {
-    setIsLocationConfirmed(false);
-    setSessionError("");
-  };
+  }, [facultyId, stopMobileLocatePolling]);
 
   // Launch Session Handler
-  const start = async () => {
+  const start = useCallback(async () => {
     setSessionError("");
     if (activeSessionId) {
       setSessionError("A session is already active.");
@@ -906,7 +687,22 @@ const FacultyDashboard: React.FC = () => {
       setSessionError(res?.error || "Failed to start session");
     }
     setStartLoading(false);
-  };
+  }, [
+    activeSessionId,
+    formSubject,
+    formDepartment,
+    formYear,
+    formSem,
+    formSection,
+    formRadius,
+    locationState,
+    isLocationConfirmed,
+    facultyId,
+    createSession,
+    selectedDepartment,
+    selectedSubject,
+    persistRecentClasses,
+  ]);
 
   const stop = useCallback(async () => {
     if (!activeSessionId) return;
@@ -935,16 +731,16 @@ const FacultyDashboard: React.FC = () => {
     setActiveSessionSecretKey(null);
     setLiveAttendance([]);
     setAttendanceStatusMap({});
-  }, [activeSessionId]);
+  }, [activeSessionId, stopSession]);
 
-  const loadCurrentAttendees = useCallback(async () => {
+  const loadCurrentAttendees = useCallback(async (includeDerived = false) => {
     if (!activeSessionId) return;
     setAttendeesLoading(true);
     setAttendanceDataLoaded(false);
     try {
       const res: any = await apiClient.fetchAttendance({
         sessionId: activeSessionId,
-        includeDerivedAbsences: true,
+        includeDerivedAbsences: includeDerived,
       });
       if (res?.ok) {
         const nextAttendance = Array.isArray(res.attendance) ? res.attendance : [];
@@ -953,7 +749,7 @@ const FacultyDashboard: React.FC = () => {
           const next: Record<string, "present" | "absent"> = {};
           nextAttendance.forEach((item: any) => {
             const enrollmentNo = String(
-              item?.student?.enrollmentNo || ""
+              item?.student?.enrollmentNo || item?.enrollmentNo || ""
             ).trim();
             if (!enrollmentNo) return;
             next[enrollmentNo] =
@@ -973,41 +769,282 @@ const FacultyDashboard: React.FC = () => {
     }
   }, [activeSessionId]);
 
-  const manual = useCallback(async (status: "present" | "absent", enrollmentNo?: string) => {
-    if (!activeSessionId) return;
-    const v = String(enrollmentNo || manualEnrollment).trim();
-    if (!v) return;
-    setManualLoading(true);
-    const res: any = await apiClient.manualAttendance({
-      sessionId: activeSessionId,
-      enrollmentNo: v,
-      status,
-    });
-    if (!res?.ok) alert(res?.error || "Manual attendance failed");
-    setAttendanceStatusMap((prev) => ({ ...prev, [v]: status }));
-    setManualEnrollment("");
-    setManualLoading(false);
-  }, [activeSessionId, manualEnrollment]);
+  const manual = useCallback(
+    async (status: "present" | "absent", enrollmentNo?: string) => {
+      if (!activeSessionId) return;
+      const v = String(enrollmentNo || manualEnrollment).trim();
+      if (!v) return;
+      setManualLoading(true);
+      const res: any = await apiClient.manualAttendance({
+        sessionId: activeSessionId,
+        enrollmentNo: v,
+        status,
+      });
+      if (!res?.ok) alert(res?.error || "Manual attendance failed");
+      setAttendanceStatusMap((prev) => ({ ...prev, [v]: status }));
+      setLiveAttendance((prev) => {
+        const idx = prev.findIndex(
+          (item: any) =>
+            String(item?.student?.enrollmentNo || item?.enrollmentNo || "").trim() === v
+        );
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = { ...next[idx], status };
+          return next;
+        }
+        return prev;
+      });
+      setManualEnrollment("");
+      setManualLoading(false);
+    },
+    [activeSessionId, manualEnrollment]
+  );
 
-  const handleAttendanceItemToggle = useCallback(async (item: any) => {
-    const enrollmentNo = String(item?.student?.enrollmentNo || "").trim();
-    if (!enrollmentNo || !activeSessionId) return;
+  const handleAttendanceItemToggle = useCallback(
+    async (item: any) => {
+      const enrollmentNo = String(
+        item?.student?.enrollmentNo || item?.enrollmentNo || ""
+      ).trim();
+      if (!enrollmentNo || !activeSessionId) return;
 
-    setAttendanceStatusMap((prev) => {
       const currentStatus =
-        prev[enrollmentNo] ||
+        attendanceStatusMap[enrollmentNo] ||
         (String(item?.status || "").toLowerCase() === "present"
           ? "present"
           : "absent");
       const nextStatus: "present" | "absent" =
         currentStatus === "present" ? "absent" : "present";
-      manual(nextStatus, enrollmentNo);
-      return { ...prev, [enrollmentNo]: nextStatus };
+
+      await manual(nextStatus, enrollmentNo);
+    },
+    [activeSessionId, manual, attendanceStatusMap]
+  );
+
+  // Flush Throttled Realtime Events to State
+  const flushRealtimeQueue = useCallback(() => {
+    if (!realtimeEventQueueRef.current.length) return;
+    const events = [...realtimeEventQueueRef.current];
+    realtimeEventQueueRef.current = [];
+
+    setLiveAttendance((prev) => {
+      let nextList = [...prev];
+      events.forEach((att) => {
+        const enrollmentNo = String(att.enrollmentNo || "").trim();
+        const existingIdx = nextList.findIndex(
+          (item: any) =>
+            String(item?.student?.enrollmentNo || item?.enrollmentNo || "").trim() ===
+            enrollmentNo
+        );
+        const newRecord = {
+          _id: att.id || att._id,
+          id: att.id || att._id,
+          timestamp: att.timestamp,
+          status: att.status || "present",
+          student: {
+            name: att.studentName,
+            enrollmentNo: att.enrollmentNo,
+          },
+        };
+        if (existingIdx >= 0) {
+          nextList[existingIdx] = { ...nextList[existingIdx], ...newRecord };
+        } else {
+          nextList = [newRecord, ...nextList];
+        }
+      });
+      return nextList;
     });
-  }, [activeSessionId, manual]);
+
+    setAttendanceStatusMap((prev) => {
+      const nextMap = { ...prev };
+      events.forEach((att) => {
+        const enrollmentNo = String(att.enrollmentNo || "").trim();
+        if (enrollmentNo) {
+          nextMap[enrollmentNo] = att.status === "absent" ? "absent" : "present";
+        }
+      });
+      return nextMap;
+    });
+  }, []);
+
+  // Supabase Realtime Attendance Subscription with 150ms Buffer
+  useEffect(() => {
+    if (!activeSessionId) return;
+
+    loadCurrentAttendees();
+
+    const unsubscribe = subscribeToSessionAttendance(
+      activeSessionId,
+      (payload) => {
+        if (!payload?.attendance) return;
+        realtimeEventQueueRef.current.push(payload.attendance);
+
+        if (!realtimeFlushTimerRef.current) {
+          realtimeFlushTimerRef.current = window.setTimeout(() => {
+            flushRealtimeQueue();
+            realtimeFlushTimerRef.current = null;
+          }, 150);
+        }
+      }
+    );
+
+    return () => {
+      unsubscribe();
+      if (realtimeFlushTimerRef.current) {
+        window.clearTimeout(realtimeFlushTimerRef.current);
+        realtimeFlushTimerRef.current = null;
+      }
+    };
+  }, [activeSessionId, flushRealtimeQueue, loadCurrentAttendees]);
+
+  // Load Device Requests
+  const loadDeviceRequests = useCallback(async () => {
+    setDeviceRequestsLoading(true);
+    setDeviceRequestError("");
+    try {
+      const res: any = await apiClient.getDeviceChangeRequests(
+        deviceRequestStatus
+      );
+      if (res?.ok) {
+        setDeviceRequests(Array.isArray(res.requests) ? res.requests : []);
+      } else {
+        setDeviceRequestError(res?.error || "Failed to load device requests.");
+      }
+    } finally {
+      setDeviceRequestsLoading(false);
+    }
+  }, [deviceRequestStatus]);
+
+  useEffect(() => {
+    if (activeTab === "DEVICE_REQUESTS") {
+      loadDeviceRequests();
+    }
+  }, [activeTab, loadDeviceRequests]);
+
+  // Subject Analytics Methods
+  const loadSubjectAnalytics = useCallback(async (subjectId: string, classCode = "") => {
+    setSubjectAnalyticsLoading(true);
+    setSubjectAnalyticsError("");
+    try {
+      const res: any = await apiClient.getFacultySubjectAnalytics(subjectId, {
+        classCode: classCode || undefined,
+      });
+      if (!res?.ok) {
+        setSubjectAnalyticsError(
+          res?.error || "Failed to load subject analytics."
+        );
+        return;
+      }
+      setSubjectAnalyticsData(res as FacultySubjectAnalyticsData);
+    } catch (err: any) {
+      setSubjectAnalyticsError(
+        err?.message || "Failed to load subject analytics."
+      );
+    } finally {
+      setSubjectAnalyticsLoading(false);
+    }
+  }, []);
+
+  const openSubjectAnalytics = useCallback(async (subject: any) => {
+    const subjectId = String(subject?._id || subject?.id || "");
+    if (!subjectId) return;
+    setSubjectAnalyticsTarget(subject);
+    setAnalyticsClassCodeFilter("");
+    setAnalyticsAttendanceFilter("all");
+    setAnalyticsSearch("");
+    setSubjectAnalyticsData(null);
+    setSubjectAnalyticsOpen(true);
+    await loadSubjectAnalytics(subjectId, "");
+  }, [loadSubjectAnalytics]);
+
+  const closeSubjectAnalytics = useCallback(() => {
+    setSubjectAnalyticsOpen(false);
+    setSubjectAnalyticsLoading(false);
+    setSubjectAnalyticsError("");
+    setSubjectAnalyticsData(null);
+    setSubjectAnalyticsTarget(null);
+    setAnalyticsClassCodeFilter("");
+    setAnalyticsAttendanceFilter("all");
+    setAnalyticsSearch("");
+  }, []);
+
+  const analyticsStudents = useMemo(() => {
+    const base = subjectAnalyticsData?.students || [];
+    return base
+      .filter((student) => {
+        if (analyticsAttendanceFilter === "below_75") {
+          return student.totalClasses > 0 && student.attendancePercentage < 75;
+        }
+        if (analyticsAttendanceFilter === "75_plus") {
+          return student.attendancePercentage >= 75;
+        }
+        if (analyticsAttendanceFilter === "90_plus") {
+          return student.attendancePercentage >= 90;
+        }
+        if (analyticsAttendanceFilter === "zero") {
+          return student.totalClasses > 0 && student.attendancePercentage === 0;
+        }
+        return true;
+      })
+      .filter((student) => {
+        const query = analyticsSearch.trim().toLowerCase();
+        if (!query) return true;
+        return (
+          String(student.name || "").toLowerCase().includes(query) ||
+          String(student.enrollmentNo || "").toLowerCase().includes(query) ||
+          String(student.classCode || "").toLowerCase().includes(query)
+        );
+      });
+  }, [subjectAnalyticsData, analyticsAttendanceFilter, analyticsSearch]);
+
+  const strongestClassInsight = useMemo(() => {
+    const items = subjectAnalyticsData?.classCodeInsights || [];
+    return (
+      [...items].sort(
+        (a, b) => b.averageAttendancePercentage - a.averageAttendancePercentage
+      )[0] || null
+    );
+  }, [subjectAnalyticsData]);
+
+  const weakestClassInsight = useMemo(() => {
+    const items = subjectAnalyticsData?.classCodeInsights || [];
+    return (
+      [...items]
+        .filter((item) => item.totalClasses > 0)
+        .sort(
+          (a, b) => a.averageAttendancePercentage - b.averageAttendancePercentage
+        )[0] || null
+    );
+  }, [subjectAnalyticsData]);
+
+  // Review Device Request
+  const reviewDeviceRequest = useCallback(async (
+    requestId: string,
+    decision: "approved" | "rejected"
+  ) => {
+    const note = String(deviceRejectNote[requestId] || "").trim();
+    if (decision === "rejected" && !note) {
+      setDeviceRequestError("Please add a rejection reason before rejecting.");
+      return;
+    }
+    setDeviceReviewingId(requestId);
+    setDeviceRequestError("");
+    try {
+      const res: any = await apiClient.reviewDeviceChangeRequest(requestId, {
+        decision,
+        reviewNote: note,
+      });
+      if (!res?.ok) {
+        setDeviceRequestError(res?.error || "Failed to review request.");
+        return;
+      }
+      await loadDeviceRequests();
+    } finally {
+      setDeviceReviewingId("");
+    }
+  }, [deviceRejectNote, loadDeviceRequests]);
 
   // Manage Attendance Sheet Methods
-  const loadSheet = async () => {
+  const loadSheet = useCallback(async () => {
     if (!sheetFilters.subjectId) return;
     setSheetLoading(true);
     const res: any = await apiClient.fetchAttendance({
@@ -1071,9 +1108,9 @@ const FacultyDashboard: React.FC = () => {
     setSheetColumns(columns);
     setSheetRows(rows);
     setSheetLoading(false);
-  };
+  }, [sheetFilters]);
 
-  const exportCsv = () => {
+  const exportCsv = useCallback(() => {
     if (!sheetRows.length) return;
     const esc = (v: any) => {
       const s = String(v ?? "");
@@ -1102,7 +1139,7 @@ const FacultyDashboard: React.FC = () => {
     a.download = "Attendance_Sheet.csv";
     a.click();
     window.URL.revokeObjectURL(url);
-  };
+  }, [sheetRows, sheetColumns]);
 
   const mobileLocateUrl = useMemo(() => {
     if (!mobileLocateToken) return "";
@@ -1123,10 +1160,10 @@ const FacultyDashboard: React.FC = () => {
     return buildGoogleMapsLocationUrl(locationState.lat, locationState.lng);
   }, [locationState]);
 
-  const openCapturedLocationInMaps = () => {
+  const openCapturedLocationInMaps = useCallback(() => {
     if (!capturedLocationMapUrl) return;
     window.open(capturedLocationMapUrl, "_blank", "noopener,noreferrer");
-  };
+  }, [capturedLocationMapUrl]);
 
   const pendingRequestsCount = useMemo(() => {
     return deviceRequests.filter(

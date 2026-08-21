@@ -8,6 +8,7 @@ const {
   verifyTotpSequence,
   verifyConsecutiveTotpTokens,
   recordInstantPresence,
+  isStudentPresent,
 } = require("../services/totpVerification");
 const { validateStudentLocation } = require("../services/locationValidation");
 const { verifyFaceAgainstStudent } = require("../services/faceVerification");
@@ -28,6 +29,52 @@ const QR_MAX_TWO_STEP_GAP_SECONDS = env.QR_MAX_TWO_STEP_GAP_SECONDS;
 const QR_PRECHECK_SKEW_SECONDS = env.QR_PRECHECK_SKEW_SECONDS;
 
 const scanGrantsMemoryStore = new Map();
+const activeSessionsMemoryCache = new Map();
+const ACTIVE_SESSION_CACHE_TTL_MS = 5000;
+
+async function getCachedActiveSession(sessionId) {
+  const sid = String(sessionId);
+  const cached = activeSessionsMemoryCache.get(sid);
+  const now = Date.now();
+  if (cached && now - cached.cachedAt < ACTIVE_SESSION_CACHE_TTL_MS) {
+    return cached.session;
+  }
+
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+
+  const { data: rawSession } = await supabase
+    .from("sessions")
+    .select(`
+      id,
+      faculty,
+      subject,
+      department,
+      year,
+      semester,
+      section,
+      location,
+      is_active,
+      start_time,
+      last_activity_at,
+      subj:subjects(id, name, code, created_by_admin, departments)
+    `)
+    .eq("id", sid)
+    .single();
+
+  if (!rawSession) {
+    activeSessionsMemoryCache.delete(sid);
+    return null;
+  }
+
+  const session = await expireIfInactive(rawSession);
+  if (session && (session.is_active || session.isActive)) {
+    activeSessionsMemoryCache.set(sid, { session, cachedAt: now });
+  } else {
+    activeSessionsMemoryCache.delete(sid);
+  }
+  return session;
+}
 
 function cleanupExpiredScanGrants() {
   const now = Date.now();
@@ -454,35 +501,13 @@ router.post(
         return res.status(400).json({ ok: false, error: sequenceCheck.error });
       }
 
-      const supabase = getSupabaseClient();
-      if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
-
-      const { data: rawSession } = await supabase
-        .from("sessions")
-        .select(`
-          id,
-          faculty,
-          subject,
-          department,
-          year,
-          semester,
-          section,
-          location,
-          is_active,
-          start_time,
-          last_activity_at,
-          subj:subjects(id, name, code, created_by_admin, departments)
-        `)
-        .eq("id", sessionId)
-        .single();
-
-      if (!rawSession) {
+      const session = await getCachedActiveSession(sessionId);
+      if (!session) {
         return res.status(404).json({ ok: false, error: "Session not found" });
       }
 
-      const session = await expireIfInactive(rawSession);
       const isRunning = Boolean(session?.is_active ?? session?.isActive);
-      if (!session || !isRunning) {
+      if (!isRunning) {
         return res.status(400).json({ ok: false, error: "Session is no longer active" });
       }
 
@@ -700,9 +725,7 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
       const shouldIncludeDerived =
         includeDerivedAbsences === "true" ||
         includeDerivedAbsences === true ||
-        includeDerivedAbsences === "1" ||
-        req.userRole === "FACULTY" ||
-        req.userRole === "ADMIN";
+        includeDerivedAbsences === "1";
 
       let allRegisteredStudents = [];
       if (shouldIncludeDerived) {
@@ -970,37 +993,28 @@ async function handleTotpAttendanceSubmission(req, res) {
       return res.status(400).json({ ok: false, error: totpValidation.error });
     }
 
-    await recordInstantPresence(sessionId, student.id);
+    // Fast-path in-memory duplicate check
+    const isAlreadyPresent = await isStudentPresent(sessionId, student.id);
+    if (isAlreadyPresent) {
+      return res.json({
+        ok: true,
+        already: true,
+        alreadyMarked: true,
+        status: "present",
+        session: {
+          id: sessionId,
+          _id: sessionId,
+        },
+      });
+    }
 
-    const supabase = getSupabaseClient();
-    if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
-
-    const { data: rawSession } = await supabase
-      .from("sessions")
-      .select(`
-        id,
-        faculty,
-        subject,
-        department,
-        year,
-        semester,
-        section,
-        location,
-        is_active,
-        start_time,
-        last_activity_at,
-        subj:subjects(id, name, code, created_by_admin, departments)
-      `)
-      .eq("id", sessionId)
-      .single();
-
-    if (!rawSession) {
+    const session = await getCachedActiveSession(sessionId);
+    if (!session) {
       return res.status(404).json({ ok: false, error: "Session not found" });
     }
 
-    const session = await expireIfInactive(rawSession);
     const isRunning = Boolean(session?.is_active ?? session?.isActive);
-    if (!session || !isRunning) {
+    if (!isRunning) {
       return res.status(400).json({ ok: false, error: "Session is no longer active" });
     }
 
@@ -1035,32 +1049,10 @@ async function handleTotpAttendanceSubmission(req, res) {
       };
     }
 
-    // Check if attendance already marked
-    const { data: existingAttendance } = await supabase
-      .from("attendances")
-      .select("id, timestamp")
-      .eq("session", sessionId)
-      .eq("student", student.id)
-      .single();
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
 
-    if (existingAttendance) {
-      return res.json({
-        ok: true,
-        already: true,
-        alreadyMarked: true,
-        attendanceId: existingAttendance.id,
-        _id: existingAttendance.id,
-        status: "present",
-        markedAt: existingAttendance.timestamp,
-        session: {
-          id: session.id,
-          _id: session.id,
-          subjectName: session.subj?.name || "Subject",
-          subjectCode: session.subj?.code || "",
-        },
-      });
-    }
-
+    // Atomic insert into attendances table
     const { data: attendance, error: insertError } = await supabase
       .from("attendances")
       .insert({
@@ -1088,6 +1080,7 @@ async function handleTotpAttendanceSubmission(req, res) {
         String(insertError?.message || "").toLowerCase().includes("unique") ||
         String(insertError?.message || "").toLowerCase().includes("duplicate")
       ) {
+        await recordInstantPresence(sessionId, student.id);
         return res.json({
           ok: true,
           already: true,
@@ -1105,11 +1098,15 @@ async function handleTotpAttendanceSubmission(req, res) {
       return res.status(400).json({ ok: false, error: insertError?.message || "Failed to record attendance" });
     }
 
-    await touchSession(sessionId);
+    // Record presence in high-speed memory cache immediately
+    await recordInstantPresence(sessionId, student.id);
+
+    // Asynchronous non-blocking background tasks
+    touchSession(sessionId).catch(() => {});
 
     try {
       const requestMeta = getRequestMeta(req);
-      await recordAttendanceAudit({
+      recordAttendanceAudit({
         attendanceId: attendance.id,
         sessionId,
         studentId: student.id,
@@ -1130,24 +1127,22 @@ async function handleTotpAttendanceSubmission(req, res) {
         qr: { blockIndex: totpValidation.blockIndex },
         faceVerification: faceVerificationResult,
         requestMeta,
-      });
+      }).catch(() => {});
     } catch {}
 
-    try {
-      const attendanceBroadcastPayload = {
-        id: attendance.id,
-        _id: attendance.id,
-        sessionId,
-        studentId: student.id,
-        studentName: student.name,
-        enrollmentNo: student.enrollment_no,
-        timestamp: attendance.timestamp,
-        status: "present",
-        method: "QR_TOTP",
-      };
+    const attendanceBroadcastPayload = {
+      id: attendance.id,
+      _id: attendance.id,
+      sessionId,
+      studentId: student.id,
+      studentName: student.name,
+      enrollmentNo: student.enrollment_no,
+      timestamp: attendance.timestamp,
+      status: "present",
+      method: "QR_TOTP",
+    };
 
-      await broadcastAttendance(sessionId, attendanceBroadcastPayload);
-    } catch {}
+    broadcastAttendance(sessionId, attendanceBroadcastPayload).catch(() => {});
 
     return res.json({
       ok: true,
