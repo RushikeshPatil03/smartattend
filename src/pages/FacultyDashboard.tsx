@@ -77,6 +77,7 @@ const FacultyDashboard: React.FC = () => {
     departments = [],
     createSession,
     stopSession,
+    cancelSession: cancelSessionFromStore,
     updateSessionToken,
     createSessionLocal,
     logout,
@@ -130,6 +131,7 @@ const FacultyDashboard: React.FC = () => {
 
   // Live Session & Attendance States
   const [activeSessionSecretKey, setActiveSessionSecretKey] = useState<string | null>(null);
+  const [totalClassStrength, setTotalClassStrength] = useState<number>(0);
   const [liveAttendance, setLiveAttendance] = useState<LiveAttendanceItem[]>([]);
   const [attendanceStatusMap, setAttendanceStatusMap] = useState<
     Record<string, "present" | "absent">
@@ -317,11 +319,12 @@ const FacultyDashboard: React.FC = () => {
     const restore = async () => {
       const res: any = await apiClient.get("/api/faculty/session/active");
       if (cancelled || !res?.ok || !res.session) return;
-      const s = res.session;
+      const totalStudents = Number(s.totalStudents || res.totalStudents || 0);
       createSessionLocal({
         id: s._id,
         facultyId: s.faculty,
         subjectId: s.subject,
+        departmentId: s.department,
         year: s.year,
         semester: s.semester,
         section: s.section,
@@ -332,9 +335,14 @@ const FacultyDashboard: React.FC = () => {
         locationLng: s.location?.lng,
         locationRadiusMeters: s.location?.radiusMeters || 200,
         currentDynamicToken: "",
+        totalStudents,
+        totalStrength: totalStudents,
       });
       if (cancelled) return;
       setActiveSessionId(s._id);
+      if (totalStudents > 0) {
+        setTotalClassStrength(totalStudents);
+      }
       if (s.location?.lat != null && s.location?.lng != null) {
         setLocationState({
           lat: Number(s.location.lat),
@@ -681,8 +689,12 @@ const FacultyDashboard: React.FC = () => {
       ]);
       const nextId = String(res.session.id || res.session._id);
       const secretKey = res.secretKey || res.session?.secretKey;
+      const total = Number(res.totalStudents || res.session?.totalStudents || 0);
       setActiveSessionSecretKey(secretKey || null);
       setActiveSessionId(nextId);
+      if (total > 0) {
+        setTotalClassStrength(total);
+      }
     } else {
       setSessionError(res?.error || "Failed to start session");
     }
@@ -710,28 +722,29 @@ const FacultyDashboard: React.FC = () => {
     if (!res?.ok) alert(res?.error || "Failed to stop session");
     setActiveSessionId(null);
     setActiveSessionSecretKey(null);
+    setTotalClassStrength(0);
     setLiveAttendance([]);
     setAttendanceStatusMap({});
   }, [activeSessionId, stopSession]);
 
   const cancelSession = useCallback(async () => {
     if (!activeSessionId) return;
-    const ok = window.confirm(
-      "Cancel this session? This is for accidental start and will end the live session now."
-    );
-    if (!ok) return;
-    const res: any = await apiClient.post(
-      `/api/faculty/session/${activeSessionId}/cancel`
-    );
-    if (!res?.ok) {
-      alert(res?.error || "Failed to cancel session");
-      return;
+    try {
+      const res: any = await cancelSessionFromStore(activeSessionId);
+      if (!res?.ok && res?.error) {
+        alert(res.error);
+        return;
+      }
+    } catch (err: any) {
+      console.error("Cancel session error:", err);
+    } finally {
+      setActiveSessionId(null);
+      setActiveSessionSecretKey(null);
+      setTotalClassStrength(0);
+      setLiveAttendance([]);
+      setAttendanceStatusMap({});
     }
-    setActiveSessionId(null);
-    setActiveSessionSecretKey(null);
-    setLiveAttendance([]);
-    setAttendanceStatusMap({});
-  }, [activeSessionId, stopSession]);
+  }, [activeSessionId, cancelSessionFromStore]);
 
   const loadCurrentAttendees = useCallback(async (includeDerived = false) => {
     if (!activeSessionId) return;
@@ -745,6 +758,10 @@ const FacultyDashboard: React.FC = () => {
       if (res?.ok) {
         const nextAttendance = Array.isArray(res.attendance) ? res.attendance : [];
         setLiveAttendance(nextAttendance);
+        const total = Number(res.totalStudents || res.totalStrength || 0);
+        if (total > 0) {
+          setTotalClassStrength(total);
+        }
         setAttendanceStatusMap(() => {
           const next: Record<string, "present" | "absent"> = {};
           nextAttendance.forEach((item: any) => {
@@ -1282,6 +1299,7 @@ const FacultyDashboard: React.FC = () => {
                 <LiveSessionStudio
                   activeSession={activeSession}
                   sessionSecretKey={activeSessionSecretKey || (activeSession as any)?.secretKey}
+                  totalClassStrength={totalClassStrength || (activeSession as any)?.totalStudents || (activeSession as any)?.totalStrength || 0}
                   liveAttendance={liveAttendance}
                   attendanceStatusMap={attendanceStatusMap}
                   attendanceDataLoaded={attendanceDataLoaded}

@@ -13,10 +13,6 @@ const {
 const { validateStudentLocation } = require("../services/locationValidation");
 const { verifyFaceAgainstStudent } = require("../services/faceVerification");
 const { normalizeFingerprint } = require("../services/deviceFingerprint");
-const {
-  generateUserAuthenticationOptions,
-  verifyUserAuthentication,
-} = require("../services/webauthnService");
 const { expireIfInactive, touchSession } = require("../services/sessionLifecycle");
 const { broadcastAttendance } = require("../services/realtimeService");
 const auth = require("../middleware/auth");
@@ -230,14 +226,9 @@ router.post(
         return res.status(400).json({ ok: false, error: "QR token required" });
       }
 
-      const hasPasskey = Boolean(student.credential_id && student.public_key);
-      const effectiveFp = fingerprint || (student.credential_id ? `webauthn_${student.credential_id}` : "");
-      const normalizedFp = normalizeFingerprint(effectiveFp);
-
-      if (!hasPasskey) {
-        if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
-          return res.status(401).json({ ok: false, error: "Device mismatch - unauthorized scan" });
-        }
+      const normalizedFp = normalizeFingerprint(fingerprint);
+      if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
+        return res.status(401).json({ ok: false, error: "Device mismatch - unauthorized scan" });
       }
 
       const precheckMaxAge =
@@ -337,22 +328,8 @@ router.post(
         token: scanGrantToken,
         studentId: student.id,
         sessionId,
-        fingerprint: normalizedFp || "webauthn_passkey",
+        fingerprint: normalizedFp,
       });
-
-      let webauthnOptions = null;
-      let webauthnChallengeKey = null;
-
-      if (hasPasskey) {
-        webauthnChallengeKey = `att_${scanGrantToken}`;
-        const generated = await generateUserAuthenticationOptions({
-          credentialId: student.credential_id,
-          transports: student.transports,
-          req,
-          challengeKey: webauthnChallengeKey,
-        });
-        webauthnOptions = generated.options;
-      }
 
       return res.json({
         ok: true,
@@ -360,9 +337,6 @@ router.post(
         firstScannedAt: Date.now(),
         nextScanWithinSeconds: QR_MAX_TWO_STEP_GAP_SECONDS,
         sessionId,
-        webauthnOptions,
-        webauthnChallengeKey,
-        hasEnrolledPasskey: hasPasskey,
         session: {
           id: session.id,
           _id: session.id,
@@ -399,8 +373,6 @@ router.post(
         secondQrToken,
         location,
         fingerprint,
-        webauthnAssertion,
-        webauthnChallengeKey,
         faceMatch,
         faceMetrics,
         faceEmbedding,
@@ -410,50 +382,9 @@ router.post(
         return res.status(400).json({ ok: false, error: "Two dynamic QR scans & grant token required" });
       }
 
-      const hasPasskey = Boolean(student.credential_id && student.public_key);
-      let hardwareVerified = false;
-
-      if (hasPasskey && webauthnAssertion) {
-        const authResult = await verifyUserAuthentication({
-          response: webauthnAssertion,
-          challengeKey: webauthnChallengeKey || `att_${scanGrantToken}`,
-          credential: {
-            id: student.credential_id,
-            publicKey: student.public_key,
-            counter: student.counter,
-            transports: student.transports,
-          },
-          req,
-        });
-
-        if (!authResult.verified) {
-          return res.status(401).json({
-            ok: false,
-            error: authResult.error || "Hardware passkey signature mismatch - attendance blocked",
-          });
-        }
-
-        const supabaseClient = getSupabaseClient();
-        if (supabaseClient) {
-          await supabaseClient
-            .from("students")
-            .update({
-              counter: authResult.newCounter,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", student.id);
-        }
-
-        hardwareVerified = true;
-      }
-
-      const effectiveFp = fingerprint || (student.credential_id ? `webauthn_${student.credential_id}` : "");
-      const normalizedFp = normalizeFingerprint(effectiveFp);
-
-      if (!hardwareVerified) {
-        if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
-          return res.status(401).json({ ok: false, error: "Device mismatch - attendance blocked" });
-        }
+      const normalizedFp = normalizeFingerprint(fingerprint);
+      if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
+        return res.status(401).json({ ok: false, error: "Device mismatch - attendance blocked" });
       }
 
       const firstVerified = verifyQRToken(firstQrToken, {
@@ -787,9 +718,25 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
         }
       }
 
-      const fullRoster = [...presentRecords, ...absentRecords].sort((a, b) =>
-        String(a.student?.enrollmentNo || "").localeCompare(String(b.student?.enrollmentNo || ""))
-      );
+      // Query exact total enrolled students for this class
+      let countQuery = supabase
+        .from("students")
+        .select("id", { count: "exact", head: true })
+        .eq("year", Number(rawSession.year))
+        .eq("semester", Number(rawSession.semester));
+
+      if (rawSession.department) {
+        countQuery = countQuery.eq("department", String(rawSession.department));
+      }
+      const normalizedSec = String(rawSession.section || "").trim().toUpperCase();
+      if (normalizedSec) {
+        countQuery = countQuery.eq("section", normalizedSec);
+      }
+      if (rawSession.subj?.created_by_admin) {
+        countQuery = countQuery.eq("created_by_admin", String(rawSession.subj.created_by_admin));
+      }
+      const { count: classTotal } = await countQuery;
+      const totalStudentsCount = classTotal || allRegisteredStudents.length || presentRecords.length || 0;
 
       return res.json({
         ok: true,
@@ -797,7 +744,8 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
         attendance: fullRoster,
         attendees: presentRecords,
         count: presentRecords.length,
-        totalStrength: fullRoster.length,
+        totalStudents: totalStudentsCount,
+        totalStrength: totalStudentsCount,
         session: {
           id: rawSession.id,
           _id: rawSession.id,
@@ -807,6 +755,8 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
           isActive: Boolean(rawSession.is_active),
           startTime: rawSession.start_time,
           endTime: rawSession.end_time,
+          totalStudents: totalStudentsCount,
+          totalStrength: totalStudentsCount,
         },
       });
     }
@@ -910,8 +860,6 @@ async function handleTotpAttendanceSubmission(req, res) {
       token1,
       token2,
       fingerprint,
-      webauthnAssertion,
-      webauthnChallengeKey,
       faceMatch,
       faceMetrics,
       faceEmbedding,
@@ -934,50 +882,10 @@ async function handleTotpAttendanceSubmission(req, res) {
     }
 
     const sessionId = String(rawSessionId);
-    const hasPasskey = Boolean(student.credential_id && student.public_key);
-    let hardwareVerified = false;
+    const normalizedFp = normalizeFingerprint(fingerprint);
 
-    if (hasPasskey && webauthnAssertion && webauthnChallengeKey) {
-      const authResult = await verifyUserAuthentication({
-        response: webauthnAssertion,
-        challengeKey: webauthnChallengeKey,
-        credential: {
-          id: student.credential_id,
-          publicKey: student.public_key,
-          counter: student.counter,
-          transports: student.transports,
-        },
-        req,
-      });
-
-      if (!authResult.verified) {
-        return res.status(401).json({
-          ok: false,
-          error: authResult.error || "Hardware passkey signature mismatch - attendance blocked",
-        });
-      }
-
-      const supabaseClient = getSupabaseClient();
-      if (supabaseClient) {
-        await supabaseClient
-          .from("students")
-          .update({
-            counter: authResult.newCounter,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", student.id);
-      }
-
-      hardwareVerified = true;
-    }
-
-    const effectiveFp = fingerprint || (student.credential_id ? `webauthn_${student.credential_id}` : "");
-    const normalizedFp = normalizeFingerprint(effectiveFp);
-
-    if (!hardwareVerified) {
-      if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
-        return res.status(401).json({ ok: false, error: "Device mismatch - attendance blocked" });
-      }
+    if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
+      return res.status(401).json({ ok: false, error: "Device mismatch - attendance blocked" });
     }
 
     let totpValidation;
@@ -1227,10 +1135,29 @@ router.get("/session/:id/attendees", auth(["FACULTY", "ADMIN"]), async (req, res
       location: att.location || null,
     }));
 
+    // Query exact total enrolled students for this class
+    let countQuery = supabase
+      .from("students")
+      .select("id", { count: "exact", head: true })
+      .eq("year", Number(session.year))
+      .eq("semester", Number(session.semester));
+
+    if (session.department) {
+      countQuery = countQuery.eq("department", String(session.department));
+    }
+    const normalizedSec = String(session.section || "").trim().toUpperCase();
+    if (normalizedSec) {
+      countQuery = countQuery.eq("section", normalizedSec);
+    }
+    const { count: classTotal } = await countQuery;
+    const totalStudents = classTotal || 0;
+
     return res.json({
       ok: true,
       sessionId,
       count: attendees.length,
+      totalStudents,
+      totalStrength: totalStudents,
       attendees,
     });
   } catch (err) {

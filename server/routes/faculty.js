@@ -277,13 +277,9 @@ router.post("/register", async (req, res) => {
       password,
       departmentId,
       fingerprint,
-      credentialId,
-      publicKey,
-      transports,
-      webauthnCredential,
     } = req.body || {};
 
-    if (!token || !name || !email || !password || !departmentId || (!fingerprint && !credentialId && !webauthnCredential?.id)) {
+    if (!token || !name || !email || !password || !departmentId || !fingerprint) {
       return res.status(400).json({ ok: false, error: "All fields are required" });
     }
 
@@ -303,20 +299,10 @@ router.post("/register", async (req, res) => {
 
     const normalizedName = String(name || "").trim();
     const normalizedEmail = String(email || "").trim().toLowerCase();
-    const effectiveFp = fingerprint || (credentialId || webauthnCredential?.id ? `webauthn_${credentialId || webauthnCredential.id}` : "");
-    const normalizedFp = normalizeFingerprint(effectiveFp);
+    const normalizedFp = normalizeFingerprint(fingerprint);
 
-    const finalCredentialId = credentialId || webauthnCredential?.id || null;
-    const finalPublicKey = publicKey || webauthnCredential?.publicKey || null;
-    const finalTransports = Array.isArray(transports)
-      ? transports
-      : Array.isArray(webauthnCredential?.transports)
-      ? webauthnCredential.transports
-      : ["internal"];
-    const finalCounter = Number(webauthnCredential?.counter || 0);
-
-    if (!normalizedFp && !finalCredentialId) {
-      return res.status(400).json({ ok: false, error: "Invalid device fingerprint or passkey" });
+    if (!normalizedFp) {
+      return res.status(400).json({ ok: false, error: "Invalid device fingerprint" });
     }
 
     const { data: department } = await supabase
@@ -335,29 +321,21 @@ router.post("/register", async (req, res) => {
 
     const checks = [
       supabase.from("faculties").select("id").eq("email", normalizedEmail).limit(1),
+      supabase.from("faculties").select("id").eq("device_fingerprint", normalizedFp).limit(1),
+      supabase.from("students").select("id").eq("device_fingerprint", normalizedFp).limit(1),
     ];
-    if (normalizedFp) {
-      checks.push(supabase.from("faculties").select("id").eq("device_fingerprint", normalizedFp).limit(1));
-      checks.push(supabase.from("students").select("id").eq("device_fingerprint", normalizedFp).limit(1));
-    }
-    if (finalCredentialId) {
-      checks.push(supabase.from("faculties").select("id").eq("credential_id", String(finalCredentialId)).limit(1));
-      checks.push(supabase.from("students").select("id").eq("credential_id", String(finalCredentialId)).limit(1));
-    }
 
-    const [existingFacByEmail, existingFacByFp, existingStuByFp, existingFacByCred, existingStuByCred] = await Promise.all(checks);
+    const [existingFacByEmail, existingFacByFp, existingStuByFp] = await Promise.all(checks);
 
     const hasConflict =
       (existingFacByEmail?.data || []).length > 0 ||
       (existingFacByFp?.data || []).length > 0 ||
-      (existingStuByFp?.data || []).length > 0 ||
-      (existingFacByCred?.data || []).length > 0 ||
-      (existingStuByCred?.data || []).length > 0;
+      (existingStuByFp?.data || []).length > 0;
 
     if (hasConflict) {
       return res.status(400).json({
         ok: false,
-        error: "Faculty with this email or device/passkey already exists",
+        error: "Faculty with this email or device already exists",
       });
     }
 
@@ -376,12 +354,7 @@ router.post("/register", async (req, res) => {
           email: normalizedEmail,
           password_hash: passwordHash,
           department: department.id,
-          device_fingerprint: normalizedFp || `webauthn_${finalCredentialId}`,
-          credential_id: finalCredentialId,
-          public_key: finalPublicKey,
-          counter: finalCounter,
-          transports: finalTransports,
-          device_bound_at: finalCredentialId ? new Date().toISOString() : null,
+          device_fingerprint: normalizedFp,
           created_by_admin: reg.admin_id,
         })
         .select("id")
@@ -441,6 +414,23 @@ router.get("/session/active", authMiddleware, async (req, res) => {
       return res.json({ ok: true, session: null });
     }
 
+    // Query exact total enrolled students for this class
+    let countQuery = supabase
+      .from("students")
+      .select("id", { count: "exact", head: true })
+      .eq("year", Number(active.year))
+      .eq("semester", Number(active.semester));
+
+    if (active.department) {
+      countQuery = countQuery.eq("department", String(active.department));
+    }
+    const normalizedSection = String(active.section || "").trim().toUpperCase();
+    if (normalizedSection) {
+      countQuery = countQuery.eq("section", normalizedSection);
+    }
+    const { count: totalClassStudents } = await countQuery;
+    const totalStudents = totalClassStudents || 0;
+
     const formatted = {
       ...active,
       _id: active.id,
@@ -448,9 +438,11 @@ router.get("/session/active", authMiddleware, async (req, res) => {
       startTime: active.start_time,
       endTime: active.end_time,
       lastActivityAt: active.last_activity_at,
+      totalStudents,
+      totalStrength: totalStudents,
     };
 
-    return res.json({ ok: true, session: formatted });
+    return res.json({ ok: true, session: formatted, totalStudents, totalStrength: totalStudents });
   } catch (err) {
     console.error("Fetch active session error:", err);
     return res.status(500).json({ ok: false, error: "Server error" });
@@ -713,24 +705,11 @@ router.post("/device-change-requests/:id/review", authMiddleware, async (req, re
         });
       }
 
-      // Update student's device fingerprint and WebAuthn credentials
+      // Update student's device fingerprint
       const studentUpdate = {
         device_fingerprint: request.requested_device_fingerprint,
         updated_at: new Date().toISOString(),
       };
-
-      if (request.requested_credential_id) {
-        studentUpdate.credential_id = request.requested_credential_id;
-        studentUpdate.public_key = request.requested_public_key || null;
-        studentUpdate.counter = 0;
-        studentUpdate.transports = Array.isArray(request.requested_transports) ? request.requested_transports : ["internal"];
-        studentUpdate.device_bound_at = new Date().toISOString();
-      } else {
-        studentUpdate.credential_id = null;
-        studentUpdate.public_key = null;
-        studentUpdate.counter = 0;
-        studentUpdate.device_bound_at = null;
-      }
 
       await supabase
         .from("students")
@@ -1255,12 +1234,31 @@ router.post("/session/start", authMiddleware, async (req, res) => {
       throw createError || new Error("Failed to start session");
     }
 
+    // Query exact total enrolled students for this class
+    let countQuery = supabase
+      .from("students")
+      .select("id", { count: "exact", head: true })
+      .eq("year", Number(year))
+      .eq("semester", Number(semester));
+
+    if (departmentId) {
+      countQuery = countQuery.eq("department", String(departmentId));
+    }
+    const normalizedSection = String(section || "").trim().toUpperCase();
+    if (normalizedSection) {
+      countQuery = countQuery.eq("section", normalizedSection);
+    }
+    const { count: totalClassStudents } = await countQuery;
+    const totalStudents = totalClassStudents || 0;
+
     const formattedSession = {
       ...session,
       _id: session.id,
       isActive: true,
       startTime: session.start_time,
       lastActivityAt: session.last_activity_at,
+      totalStudents,
+      totalStrength: totalStudents,
     };
 
     const qrToken = await generateQRToken({
@@ -1271,7 +1269,14 @@ router.post("/session/start", authMiddleware, async (req, res) => {
     });
     const secretKey = await getOrCreateSessionSecret(session.id);
 
-    return res.json({ ok: true, session: formattedSession, qr: qrToken, secretKey });
+    return res.json({
+      ok: true,
+      session: formattedSession,
+      qr: qrToken,
+      secretKey,
+      totalStudents,
+      totalStrength: totalStudents,
+    });
   } catch (err) {
     console.error("Session start error:", err);
     return res.status(500).json({ ok: false, error: "Server error" });

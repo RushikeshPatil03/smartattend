@@ -17,6 +17,8 @@ import {
   XCircle,
   Search,
   Check,
+  UserX,
+  UserCheck,
 } from "lucide-react";
 import { Button } from "../../components/Common";
 import { LiveAttendanceItem } from "./types";
@@ -31,6 +33,7 @@ import apiClient from "../../services/apiClient";
 interface LiveSessionStudioProps {
   activeSession: any;
   sessionSecretKey?: string | null;
+  totalClassStrength?: number;
   liveAttendance: LiveAttendanceItem[];
   attendanceStatusMap: Record<string, "present" | "absent">;
   attendanceDataLoaded?: boolean;
@@ -38,7 +41,7 @@ interface LiveSessionStudioProps {
   manualLoading: boolean;
   manualEnrollment: string;
   setManualEnrollment: (val: string) => void;
-  onLoadAttendees: () => Promise<void>;
+  onLoadAttendees: (includeDerived?: boolean) => Promise<void>;
   onManualAttendance: (status: "present" | "absent", enrollmentNo?: string) => Promise<void>;
   onToggleAttendanceItem?: (item: any) => Promise<void>;
   onStopSession: () => Promise<void>;
@@ -57,7 +60,7 @@ interface IsolatedRotatingQrEngineProps {
   sessionId: string;
   sessionSecretKey?: string | null;
   classCode?: string;
-  isActive?: boolean;
+  isActive: boolean;
   size?: number;
   isProjector?: boolean;
 }
@@ -65,94 +68,108 @@ interface IsolatedRotatingQrEngineProps {
 const IsolatedRotatingQrEngine: React.FC<IsolatedRotatingQrEngineProps> = React.memo(({
   sessionId,
   sessionSecretKey,
-  classCode = "",
-  isActive = true,
-  size = 330,
+  classCode,
+  isActive,
+  size = 320,
   isProjector = false,
 }) => {
   const [currentToken, setCurrentToken] = useState<string>("");
-  const secretKeyRef = useRef<string | null>(sessionSecretKey || null);
+  const [timeLeft, setTimeLeft] = useState<number>(3);
+  const prevTokenRef = useRef<string>("");
 
   useEffect(() => {
-    if (sessionSecretKey) {
-      secretKeyRef.current = sessionSecretKey;
-    }
-  }, [sessionSecretKey]);
-
-  useEffect(() => {
-    let stopPolling: (() => void) | null = null;
-    let cancelled = false;
-
     if (!sessionId || !isActive) {
       setCurrentToken("");
       return;
     }
 
-    const initEngine = async () => {
-      try {
-        let key = secretKeyRef.current;
-        if (!key) {
-          const res: any = await apiClient.getLiveQR(sessionId);
-          if (cancelled) return;
-          if (res?.ok && res.secretKey) {
-            key = res.secretKey;
-            secretKeyRef.current = key;
-          }
+    const payload = generateRotatingQrPayload(
+      sessionId,
+      sessionSecretKey || null,
+      classCode || ""
+    );
+    const serialized = serializeQrPayload(payload);
+    setCurrentToken(serialized);
+    prevTokenRef.current = serialized;
+
+    const cleanup = startQrPolling(
+      sessionId,
+      sessionSecretKey || null,
+      classCode || "",
+      (newPayload: RotatingQrPayload) => {
+        const nextSerialized = serializeQrPayload(newPayload);
+        if (nextSerialized !== prevTokenRef.current) {
+          prevTokenRef.current = nextSerialized;
+          setCurrentToken(nextSerialized);
         }
-
-        if (!key || cancelled) return;
-
-        // Generate immediate synchronous 1st payload on frame 0
-        const initial = generateRotatingQrPayload(key, sessionId, classCode);
-        setCurrentToken(serializeQrPayload(initial));
-
-        // Start dedicated 3000ms client-side TOTP engine in memory
-        stopPolling = startQrPolling(
-          key,
-          sessionId,
-          classCode,
-          (payload: RotatingQrPayload) => {
-            if (!cancelled) {
-              setCurrentToken(serializeQrPayload(payload));
-            }
-          },
-          3000
-        );
-      } catch (err) {
-        console.error("Isolated TOTP Engine init error:", err);
       }
-    };
-
-    initEngine();
+    );
 
     return () => {
-      cancelled = true;
-      if (stopPolling) {
-        stopPolling();
-        stopPolling = null;
-      }
+      cleanup();
     };
-  }, [sessionId, isActive, classCode]);
+  }, [sessionId, sessionSecretKey, classCode, isActive]);
 
-  const renderToken = currentToken || "smartattend://session/init";
+  useEffect(() => {
+    if (!isActive) return;
+    const interval = setInterval(() => {
+      const remaining = 3 - (Math.floor(Date.now() / 1000) % 3);
+      setTimeLeft(remaining);
+    }, 200);
+    return () => clearInterval(interval);
+  }, [isActive]);
+
+  const progressPercent = ((3 - timeLeft) / 3) * 100;
+
+  if (!isActive) {
+    return (
+      <div className="flex flex-col items-center justify-center p-8 text-center text-slate-400">
+        <p className="text-sm font-semibold">QR Code Generator Inactive</p>
+      </div>
+    );
+  }
+
+  if (!currentToken) {
+    return (
+      <div
+        style={{ width: size, height: size }}
+        className="flex flex-col items-center justify-center rounded-2xl border border-slate-200/80 bg-slate-50/50 p-4"
+      >
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent" />
+        <span className="mt-3 font-mono text-xs text-slate-500">Initializing QR Key...</span>
+      </div>
+    );
+  }
 
   return (
-    <div className="relative flex flex-col items-center justify-center">
-      {/* High-Contrast, Glare-Free, Static QR Frame (Zero Blur / Zero Scaling Jitter) */}
+    <div className="flex flex-col items-center">
       <div
-        className={`relative rounded-3xl bg-white p-6 shadow-xl border ${
-          isProjector
-            ? "border-emerald-500/60 p-8 shadow-[0_0_50px_rgba(16,185,129,0.3)]"
-            : "border-slate-200 shadow-slate-200/60"
+        className={`rounded-2xl border-4 border-white bg-white p-4 shadow-xl transition duration-200 ${
+          isProjector ? "ring-4 ring-emerald-500/30" : ""
         }`}
       >
-        {/* Crisp QR Code without animation scale distortions */}
         <QRCode
-          value={renderToken}
+          value={currentToken}
           size={size}
-          level="M"
-          style={{ width: "100%", maxWidth: size, height: "auto", display: "block" }}
+          level="H"
+          className="h-auto max-w-full"
         />
+      </div>
+
+      <div className="mt-4 w-full max-w-[280px]">
+        <div className="flex items-center justify-between text-xs font-mono font-semibold">
+          <span className="text-emerald-700 flex items-center gap-1">
+            <span className="h-2 w-2 rounded-full bg-emerald-700 animate-pulse" />
+            Rotating Token
+          </span>
+          <span className="text-slate-600">{timeLeft}s</span>
+        </div>
+        <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200/80">
+          <div
+            className="h-full bg-emerald-700 transition-all duration-200 ease-linear rounded-full"
+            style={{ width: `${progressPercent}%` }}
+          />
+        </div>
       </div>
     </div>
   );
@@ -162,6 +179,7 @@ IsolatedRotatingQrEngine.displayName = "IsolatedRotatingQrEngine";
 export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
   activeSession,
   sessionSecretKey,
+  totalClassStrength,
   liveAttendance,
   attendanceStatusMap,
   manualLoading,
@@ -176,15 +194,26 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
 }) => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isReviewMode, setIsReviewMode] = useState(false);
+  const [reviewTab, setReviewTab] = useState<"present" | "absent" | "all">("present");
   const [searchQuery, setSearchQuery] = useState("");
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [stoppingSession, setStoppingSession] = useState(false);
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const fullscreenContainerRef = useRef<HTMLDivElement | null>(null);
 
   const sessionId = String(activeSession?.id || activeSession?._id || "");
   const classCode = String(selectedSubject?.code || selectedSubject?.name || sessionId).slice(0, 12);
+  const effectiveTotalStudents = Number(
+    totalClassStrength ||
+    activeSession?.totalStudents ||
+    activeSession?.totalStrength ||
+    0
+  );
 
   // Auto-sync roster on mount or session change
   useEffect(() => {
     setIsReviewMode(false);
+    setShowCancelConfirm(false);
     onLoadAttendees();
   }, [sessionId, onLoadAttendees]);
 
@@ -263,7 +292,46 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
     });
   }, [liveAttendance, attendanceStatusMap]);
 
+  // Normalized Absent Students List (Sorted alphabetically by enrollment number)
+  const absentList = useMemo(() => {
+    const map = new Map<string, {
+      rawItem: any;
+      student: any;
+      enrollmentNo: string;
+      name: string;
+      photoUrl: string;
+      status: "absent";
+    }>();
+
+    (liveAttendance || []).forEach((item: any) => {
+      const student = item?.student || {};
+      const enrollmentNo = String(student.enrollmentNo || item?.enrollmentNo || "").trim();
+      if (!enrollmentNo) return;
+      const currentStatus =
+        attendanceStatusMap[enrollmentNo] ||
+        (String(item?.status || "").toLowerCase() === "present" ? "present" : "absent");
+
+      if (currentStatus === "absent") {
+        map.set(enrollmentNo, {
+          rawItem: item,
+          student,
+          enrollmentNo,
+          name: student.name || item?.name || "Student",
+          photoUrl: student.profilePhotoUrl || item?.profilePhotoUrl || "",
+          status: "absent",
+        });
+      }
+    });
+
+    return Array.from(map.values()).sort((a, b) =>
+      a.enrollmentNo.localeCompare(b.enrollmentNo)
+    );
+  }, [liveAttendance, attendanceStatusMap]);
+
   const presentCount = presentList.length;
+  const absentCount = absentList.length;
+  const totalCalculated = presentCount + absentCount;
+  const totalCount = Math.max(effectiveTotalStudents, totalCalculated);
 
   const formattedStartTime = useMemo(() => {
     if (!activeSession?.startTime) return "-";
@@ -274,17 +342,44 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
     });
   }, [activeSession?.startTime]);
 
-  // Handle Stop Session -> enter Review Mode
-  const handleEnterReviewMode = () => {
-    setIsReviewMode(true);
+  // Handle Stop Session -> Immediately stop session on server (stops QR generation and student scanning) and enter Review Mode with full roster
+  const handleEnterReviewMode = async () => {
+    if (stoppingSession) return;
+    setStoppingSession(true);
+    setShowCancelConfirm(false);
+    try {
+      await apiClient.stopSession(sessionId);
+      setIsReviewMode(true);
+      await onLoadAttendees(true);
+    } catch (err) {
+      console.error("Stop session error:", err);
+      setIsReviewMode(true);
+      await onLoadAttendees(true);
+    } finally {
+      setStoppingSession(false);
+    }
   };
 
   // Handle Resume Session -> exit Review Mode back to Live Dynamic QR
   const handleResumeLiveSession = () => {
+    setShowCancelConfirm(false);
     setIsReviewMode(false);
   };
 
-  // Filtered present list by search query (for review mode or live stream filter)
+  // Immediate, non-blocking Cancel Session execution
+  const handleConfirmCancel = async () => {
+    if (isCancelling) return;
+    setIsCancelling(true);
+    try {
+      await onCancelSession();
+    } finally {
+      setIsCancelling(false);
+      setShowCancelConfirm(false);
+      setIsReviewMode(false);
+    }
+  };
+
+  // Filtered lists by search query
   const filteredPresentList = useMemo(() => {
     if (!searchQuery.trim()) return presentList;
     const q = searchQuery.toLowerCase().trim();
@@ -292,6 +387,28 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
       (s) => s.name.toLowerCase().includes(q) || s.enrollmentNo.toLowerCase().includes(q)
     );
   }, [presentList, searchQuery]);
+
+  const filteredAbsentList = useMemo(() => {
+    if (!searchQuery.trim()) return absentList;
+    const q = searchQuery.toLowerCase().trim();
+    return absentList.filter(
+      (s) => s.name.toLowerCase().includes(q) || s.enrollmentNo.toLowerCase().includes(q)
+    );
+  }, [absentList, searchQuery]);
+
+  const allList = useMemo(() => {
+    return [...presentList, ...absentList].sort((a, b) =>
+      a.enrollmentNo.localeCompare(b.enrollmentNo)
+    );
+  }, [presentList, absentList]);
+
+  const filteredAllList = useMemo(() => {
+    if (!searchQuery.trim()) return allList;
+    const q = searchQuery.toLowerCase().trim();
+    return allList.filter(
+      (s) => s.name.toLowerCase().includes(q) || s.enrollmentNo.toLowerCase().includes(q)
+    );
+  }, [allList, searchQuery]);
 
   return (
     <div className="space-y-6">
@@ -337,7 +454,10 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-950/40 px-4 py-2 text-emerald-300">
                 <Users size={18} />
-                <span className="font-mono text-xl font-black">{presentCount}</span>
+                <span className="font-mono text-xl font-black">
+                  {presentCount}
+                  {effectiveTotalStudents > 0 ? ` / ${effectiveTotalStudents}` : ""}
+                </span>
                 <span className="text-xs text-emerald-400/70">checked in</span>
               </div>
 
@@ -396,34 +516,64 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
           animate={{ opacity: 1, y: 0 }}
           className="space-y-6"
         >
-          {/* Top Review Control Bar */}
+          {/* Top Review Control Bar: ONLY Cancel Session & Save Attendance at uprights */}
           <div className="rounded-3xl border border-slate-200/80 bg-white/90 p-6 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.06)] backdrop-blur-xl">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              {/* Left Action Buttons: Resume & Cancel */}
+              {/* Left Context: Session Stopped & Review Mode */}
               <div className="flex items-center gap-3">
-                <Button
-                  variant="secondary"
-                  onClick={handleResumeLiveSession}
-                  className="rounded-xl px-4 py-2.5 text-xs font-bold text-slate-800 hover:bg-slate-100 flex items-center gap-2 cursor-pointer shadow-sm"
-                >
-                  <Play size={15} className="text-emerald-600 fill-emerald-600" />
-                  Resume Session
-                </Button>
-
-                <Button
-                  variant="outline"
-                  onClick={onCancelSession}
-                  className="rounded-xl px-4 py-2.5 text-xs font-semibold text-rose-600 border-rose-200 hover:bg-rose-50 hover:border-rose-300 flex items-center gap-1.5 cursor-pointer"
-                >
-                  <XCircle size={15} />
-                  Cancel Session
-                </Button>
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-700 shadow-sm">
+                  <ShieldCheck className="h-6 w-6" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-0.5 text-[11px] font-bold text-rose-700 uppercase tracking-wide">
+                      <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
+                      Session Stopped • QR Inactive
+                    </span>
+                  </div>
+                  <h2 className="text-xl font-black text-slate-900 tracking-tight mt-0.5">
+                    Attendance Final Review
+                  </h2>
+                </div>
               </div>
 
-              {/* Right Action Button: Save Attendance */}
+              {/* Right Uprights: Only Cancel Session & Save Attendance */}
               <div className="flex items-center gap-3">
+                {showCancelConfirm ? (
+                  <div className="flex items-center gap-2 bg-rose-50 border border-rose-200 rounded-xl px-3 py-1.5 animate-in fade-in">
+                    <span className="text-xs font-bold text-rose-800">Discard session?</span>
+                    <button
+                      type="button"
+                      disabled={isCancelling}
+                      onClick={handleConfirmCancel}
+                      className="inline-flex items-center gap-1 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold text-xs px-2.5 py-1 rounded-lg cursor-pointer transition shadow-sm"
+                    >
+                      {isCancelling ? "Cancelling..." : "Yes, Cancel"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isCancelling}
+                      onClick={() => setShowCancelConfirm(false)}
+                      className="text-xs font-semibold px-2 py-1 text-slate-600 hover:bg-slate-200/60 rounded-lg cursor-pointer transition"
+                    >
+                      No
+                    </button>
+                  </div>
+                ) : (
+                  <Button
+                    variant="outline"
+                    disabled={isCancelling}
+                    onClick={() => setShowCancelConfirm(true)}
+                    className="rounded-xl px-4 py-2.5 text-xs font-semibold text-rose-600 border-rose-200 hover:bg-rose-50 hover:border-rose-300 flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <XCircle size={15} />
+                    Cancel Session
+                  </Button>
+                )}
+
                 <Button
                   onClick={onStopSession}
+                  disabled={isCancelling}
                   className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm px-7 py-2.5 rounded-xl shadow-lg shadow-emerald-600/30 flex items-center gap-2 cursor-pointer transition active:scale-95"
                 >
                   <CheckCircle2 size={18} />
@@ -433,7 +583,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
             </div>
 
             {/* Session Stats Banner */}
-            <div className="mt-6 pt-5 border-t border-slate-100 grid grid-cols-2 gap-4 sm:grid-cols-3">
+            <div className="mt-6 pt-5 border-t border-slate-100 grid grid-cols-2 gap-4 sm:grid-cols-4">
               <div className="rounded-2xl bg-slate-50 p-3.5 border border-slate-100">
                 <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Subject & Section</p>
                 <p className="text-sm font-bold text-slate-900 truncate mt-0.5">
@@ -446,22 +596,61 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                 <p className="text-xl font-mono font-black text-emerald-700 mt-0.5">{presentCount}</p>
               </div>
 
+              <div className="rounded-2xl bg-rose-50/80 p-3.5 border border-rose-100">
+                <p className="text-[11px] font-semibold text-rose-800 uppercase tracking-wider">Absentees</p>
+                <p className="text-xl font-mono font-black text-rose-700 mt-0.5">{absentCount}</p>
+              </div>
+
               <div className="rounded-2xl bg-slate-50 p-3.5 border border-slate-100">
-                <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Session Started</p>
-                <p className="text-sm font-mono font-bold text-slate-800 mt-0.5">{formattedStartTime}</p>
+                <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Total Class Strength</p>
+                <p className="text-xl font-mono font-black text-slate-800 mt-0.5">{totalCount}</p>
               </div>
             </div>
           </div>
 
-          {/* Full-Width Single-Line Review Stream */}
+          {/* Full-Width Single-Line Review Stream (Presentees & Absentees Lists) */}
           <div className="rounded-3xl border border-slate-200/80 bg-white/90 p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
-            {/* Top Bar: Title & Search Box */}
+            {/* Top Bar: Segmented Tabs & Search Box */}
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between pb-4 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <span className="rounded-xl bg-emerald-600 text-white font-bold text-xs px-4 py-2 flex items-center gap-2 shadow-md shadow-emerald-600/20">
+              <div className="flex items-center gap-1.5 p-1 bg-slate-100/90 rounded-2xl w-fit">
+                <button
+                  type="button"
+                  onClick={() => setReviewTab("present")}
+                  className={`rounded-xl px-4 py-2 text-xs font-bold transition duration-150 flex items-center gap-1.5 cursor-pointer ${
+                    reviewTab === "present"
+                      ? "bg-emerald-600 text-white shadow-sm"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/60"
+                  }`}
+                >
                   <CheckCircle2 size={15} />
-                  Verified Presentees ({presentCount})
-                </span>
+                  Presentees ({presentCount})
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setReviewTab("absent")}
+                  className={`rounded-xl px-4 py-2 text-xs font-bold transition duration-150 flex items-center gap-1.5 cursor-pointer ${
+                    reviewTab === "absent"
+                      ? "bg-rose-600 text-white shadow-sm"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/60"
+                  }`}
+                >
+                  <UserX size={15} />
+                  Absentees ({absentCount})
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setReviewTab("all")}
+                  className={`rounded-xl px-4 py-2 text-xs font-bold transition duration-150 flex items-center gap-1.5 cursor-pointer ${
+                    reviewTab === "all"
+                      ? "bg-slate-800 text-white shadow-sm"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/60"
+                  }`}
+                >
+                  <Users size={15} />
+                  All ({totalCount})
+                </button>
               </div>
 
               {/* Search Box */}
@@ -480,56 +669,199 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
             {/* Student Single-Line Rows (Scrollable) */}
             <div className="mt-4 space-y-2 max-h-[520px] overflow-y-auto pr-1">
               <AnimatePresence initial={false}>
-                {filteredPresentList.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-16 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
-                    <Users size={28} className="mb-2 text-slate-300" />
-                    <p className="font-semibold text-slate-600">No present students found</p>
-                    {searchQuery && <p className="mt-0.5">Try a different search keyword.</p>}
-                  </div>
-                ) : (
-                  filteredPresentList.map((item) => (
-                    <motion.div
-                      key={item.enrollmentNo}
-                      layout
-                      initial={{ opacity: 0, y: -4 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: 4 }}
-                      className="flex items-center justify-between rounded-2xl border border-emerald-200/80 bg-emerald-50/40 hover:bg-emerald-50/70 p-3.5 transition duration-150"
-                    >
-                      {/* 1-Line Student Identity: Small Photo, Name, USN */}
-                      <div className="flex items-center gap-3.5 min-w-0">
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white border border-slate-200 overflow-hidden shadow-sm">
-                          {item.photoUrl ? (
-                            <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
-                          ) : (
-                            <span className="font-bold text-xs text-slate-700">
-                              {item.name.slice(0, 1).toUpperCase()}
+                {/* 1. Presentees Tab View */}
+                {reviewTab === "present" && (
+                  filteredPresentList.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-16 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
+                      <Users size={28} className="mb-2 text-slate-300" />
+                      <p className="font-semibold text-slate-600">No present students found</p>
+                      {searchQuery && <p className="mt-0.5">Try a different search keyword or check Absentees.</p>}
+                    </div>
+                  ) : (
+                    filteredPresentList.map((item) => (
+                      <motion.div
+                        key={item.enrollmentNo}
+                        layout
+                        initial={{ opacity: 0, y: -4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 4 }}
+                        className="flex items-center justify-between rounded-2xl border border-emerald-200/80 bg-emerald-50/40 hover:bg-emerald-50/70 p-3.5 transition duration-150"
+                      >
+                        <div className="flex items-center gap-3.5 min-w-0">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white border border-slate-200 overflow-hidden shadow-sm">
+                            {item.photoUrl ? (
+                              <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
+                            ) : (
+                              <span className="font-bold text-xs text-slate-700">
+                                {item.name.slice(0, 1).toUpperCase()}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="min-w-0 flex flex-col sm:flex-row sm:items-center sm:gap-4">
+                            <p className="truncate text-sm font-bold text-slate-900">{item.name}</p>
+                            <span className="font-mono text-xs font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200/60 w-fit">
+                              {item.enrollmentNo}
                             </span>
-                          )}
+                            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-md w-fit">
+                              <Check size={12} /> Present
+                            </span>
+                          </div>
                         </div>
 
-                        <div className="min-w-0 flex flex-col sm:flex-row sm:items-center sm:gap-4">
-                          <p className="truncate text-sm font-bold text-slate-900">{item.name}</p>
-                          <span className="font-mono text-xs font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200/60 w-fit">
-                            {item.enrollmentNo}
-                          </span>
+                        {/* Action Button: Remove -> marks student Absent and moves them to Absentees */}
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => onManualAttendance("absent", item.enrollmentNo)}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100 hover:border-rose-300 active:scale-95 transition cursor-pointer shadow-sm"
+                            title="Remove student and mark as absent"
+                          >
+                            <Trash2 size={14} className="text-rose-600" />
+                            <span>Remove</span>
+                          </button>
                         </div>
-                      </div>
+                      </motion.div>
+                    ))
+                  )
+                )}
 
-                      {/* Action Button: Red Dustbin (Remove from Presentees) */}
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => onManualAttendance("absent", item.enrollmentNo)}
-                          className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100 hover:border-rose-300 active:scale-95 transition cursor-pointer shadow-sm"
-                          title="Remove from presentees"
+                {/* 2. Absentees Tab View */}
+                {reviewTab === "absent" && (
+                  filteredAbsentList.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-16 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
+                      <CheckCircle2 size={28} className="mb-2 text-emerald-400" />
+                      <p className="font-semibold text-slate-700">100% Attendance Recorded!</p>
+                      <p className="mt-0.5">All registered students are currently marked present.</p>
+                    </div>
+                  ) : (
+                    filteredAbsentList.map((item) => (
+                      <motion.div
+                        key={item.enrollmentNo}
+                        layout
+                        initial={{ opacity: 0, y: -4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 4 }}
+                        className="flex items-center justify-between rounded-2xl border border-rose-200/80 bg-rose-50/30 hover:bg-rose-50/60 p-3.5 transition duration-150"
+                      >
+                        <div className="flex items-center gap-3.5 min-w-0">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white border border-slate-200 overflow-hidden shadow-sm">
+                            {item.photoUrl ? (
+                              <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
+                            ) : (
+                              <span className="font-bold text-xs text-slate-500">
+                                {item.name.slice(0, 1).toUpperCase()}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="min-w-0 flex flex-col sm:flex-row sm:items-center sm:gap-4">
+                            <p className="truncate text-sm font-bold text-slate-800">{item.name}</p>
+                            <span className="font-mono text-xs font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200/60 w-fit">
+                              {item.enrollmentNo}
+                            </span>
+                            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-700 bg-rose-100/70 px-2 py-0.5 rounded-md w-fit">
+                              <UserX size={12} /> Absent
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Action Button: Add -> marks student Present and moves them to Presentees */}
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => onManualAttendance("present", item.enrollmentNo)}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 hover:border-emerald-400 active:scale-95 transition cursor-pointer shadow-sm"
+                            title="Add student to presentees"
+                          >
+                            <UserPlus size={14} className="text-emerald-700" />
+                            <span>Add to Present</span>
+                          </button>
+                        </div>
+                      </motion.div>
+                    ))
+                  )
+                )}
+
+                {/* 3. All Students Tab View */}
+                {reviewTab === "all" && (
+                  filteredAllList.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-16 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
+                      <Users size={28} className="mb-2 text-slate-300" />
+                      <p className="font-semibold text-slate-600">No students found</p>
+                      {searchQuery && <p className="mt-0.5">Try a different search keyword.</p>}
+                    </div>
+                  ) : (
+                    filteredAllList.map((item) => {
+                      const isPresent = item.status === "present";
+                      return (
+                        <motion.div
+                          key={item.enrollmentNo}
+                          layout
+                          initial={{ opacity: 0, y: -4 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: 4 }}
+                          className={`flex items-center justify-between rounded-2xl border p-3.5 transition duration-150 ${
+                            isPresent
+                              ? "border-emerald-200/80 bg-emerald-50/40 hover:bg-emerald-50/70"
+                              : "border-slate-200 bg-slate-50/40 hover:bg-slate-100/70"
+                          }`}
                         >
-                          <Trash2 size={15} className="text-rose-600" />
-                          <span>Remove</span>
-                        </button>
-                      </div>
-                    </motion.div>
-                  ))
+                          <div className="flex items-center gap-3.5 min-w-0">
+                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white border border-slate-200 overflow-hidden shadow-sm">
+                              {item.photoUrl ? (
+                                <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
+                              ) : (
+                                <span className="font-bold text-xs text-slate-700">
+                                  {item.name.slice(0, 1).toUpperCase()}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="min-w-0 flex flex-col sm:flex-row sm:items-center sm:gap-4">
+                              <p className="truncate text-sm font-bold text-slate-900">{item.name}</p>
+                              <span className="font-mono text-xs font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200/60 w-fit">
+                                {item.enrollmentNo}
+                              </span>
+                              {isPresent ? (
+                                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-md w-fit">
+                                  <Check size={12} /> Present
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-700 bg-rose-100/70 px-2 py-0.5 rounded-md w-fit">
+                                  <UserX size={12} /> Absent
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            {isPresent ? (
+                              <button
+                                type="button"
+                                onClick={() => onManualAttendance("absent", item.enrollmentNo)}
+                                className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100 hover:border-rose-300 active:scale-95 transition cursor-pointer shadow-sm"
+                                title="Remove from presentees"
+                              >
+                                <Trash2 size={14} className="text-rose-600" />
+                                <span>Remove</span>
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => onManualAttendance("present", item.enrollmentNo)}
+                                className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 hover:border-emerald-400 active:scale-95 transition cursor-pointer shadow-sm"
+                                title="Add to presentees"
+                              >
+                                <UserPlus size={14} className="text-emerald-700" />
+                                <span>Add to Present</span>
+                              </button>
+                            )}
+                          </div>
+                        </motion.div>
+                      );
+                    })
+                  )
                 )}
               </AnimatePresence>
             </div>
@@ -548,7 +880,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                 <Button
                   onClick={() => onManualAttendance("present")}
                   disabled={manualLoading || !manualEnrollment.trim()}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-4 py-2 rounded-xl"
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-4 py-2 rounded-xl flex items-center gap-1.5"
                 >
                   <UserPlus size={14} /> Add to Presentees
                 </Button>
@@ -598,19 +930,43 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                 >
                   <Maximize2 size={16} /> Projector HUD
                 </button>
+                {showCancelConfirm ? (
+                  <div className="flex items-center gap-2 bg-rose-950/80 border border-rose-500/50 rounded-xl px-3 py-1.5 animate-in fade-in">
+                    <span className="text-xs font-bold text-rose-200">Discard session?</span>
+                    <button
+                      type="button"
+                      disabled={isCancelling}
+                      onClick={handleConfirmCancel}
+                      className="inline-flex items-center gap-1 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold text-xs px-2.5 py-1 rounded-lg cursor-pointer transition shadow-sm"
+                    >
+                      {isCancelling ? "Cancelling..." : "Yes, Cancel"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isCancelling}
+                      onClick={() => setShowCancelConfirm(false)}
+                      className="text-xs font-semibold px-2 py-1 text-slate-300 hover:bg-slate-800 rounded-lg cursor-pointer transition"
+                    >
+                      No
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={isCancelling}
+                    onClick={() => setShowCancelConfirm(true)}
+                    className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800/80 px-4 py-2.5 text-xs font-semibold text-slate-300 hover:bg-slate-700 transition duration-200 cursor-pointer"
+                  >
+                    <Square size={14} /> Cancel Session
+                  </button>
+                )}
                 <button
                   type="button"
-                  onClick={onCancelSession}
-                  className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800/80 px-4 py-2.5 text-xs font-semibold text-slate-300 hover:bg-slate-700 transition duration-200 cursor-pointer"
-                >
-                  <Square size={14} /> Cancel Session
-                </button>
-                <button
-                  type="button"
+                  disabled={stoppingSession}
                   onClick={handleEnterReviewMode}
-                  className="inline-flex items-center gap-2 rounded-xl border border-rose-500/50 bg-rose-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-rose-700 active:scale-95 transition duration-200 shadow-[0_4px_16px_rgba(225,29,72,0.3)] cursor-pointer"
+                  className="inline-flex items-center gap-2 rounded-xl border border-rose-500/50 bg-rose-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-rose-700 active:scale-95 transition duration-200 shadow-[0_4px_16px_rgba(225,29,72,0.3)] cursor-pointer disabled:opacity-50"
                 >
-                  <Square size={14} /> Stop Session
+                  <Square size={14} /> {stoppingSession ? "Stopping..." : "Stop Session"}
                 </button>
               </div>
             </div>
@@ -675,7 +1031,10 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                   <div className="text-right">
                     <div className="font-mono text-xl font-black text-emerald-600 flex items-center gap-1.5 justify-end">
                       <Users size={17} />
-                      {presentCount}
+                      <span>
+                        {presentCount}
+                        {effectiveTotalStudents > 0 ? ` / ${effectiveTotalStudents}` : ""}
+                      </span>
                     </div>
                     <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
                       Checked In
@@ -690,7 +1049,8 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                     Live Scanning Active
                   </span>
                   <span className="font-mono font-bold text-emerald-700">
-                    {presentCount} Present
+                    {presentCount}
+                    {effectiveTotalStudents > 0 ? ` / ${effectiveTotalStudents}` : ""} Present
                   </span>
                 </div>
 

@@ -22,11 +22,6 @@ import {
 import { UserRole } from "../types";
 import { useApp } from "../store";
 import { getFingerprint } from "../services/attendanceClient";
-import {
-  signAttendanceChallenge,
-  registerDevicePasskey,
-  isWebAuthnSupported,
-} from "../services/deviceAuth";
 import apiClient from "../services/apiClient";
 
 // --- Role Options Configuration ---
@@ -204,36 +199,12 @@ const Login: React.FC = () => {
 
     try {
       const fingerprint = getFingerprint();
-      let webauthnAssertion: any = undefined;
-      let challengeKey: string | undefined = undefined;
-
-      // If user is STUDENT or FACULTY and browser supports WebAuthn, attempt passkey assertion
-      if (
-        (selectedRole === UserRole.STUDENT || selectedRole === UserRole.FACULTY) &&
-        isWebAuthnSupported()
-      ) {
-        try {
-          const passkeyRes = await signAttendanceChallenge({
-            email: email.trim(),
-            role: selectedRole,
-          });
-
-          if (passkeyRes.ok && passkeyRes.assertion) {
-            webauthnAssertion = passkeyRes.assertion;
-            challengeKey = passkeyRes.challengeKey;
-          }
-        } catch (passkeyErr) {
-          console.warn("Passkey login fallback:", passkeyErr);
-        }
-      }
 
       const res = await login(
         selectedRole,
         email.trim(),
         password,
-        fingerprint,
-        webauthnAssertion,
-        challengeKey
+        fingerprint
       );
       setLoading(false);
 
@@ -358,33 +329,10 @@ const Login: React.FC = () => {
     }
     setDeviceLoading(true);
     try {
-      let requestedCredentialId: string | null = null;
-      let requestedPublicKey: string | null = null;
-      let requestedTransports: string[] = ["internal"];
-
-      if (isWebAuthnSupported()) {
-        try {
-          const passkeyRes = await registerDevicePasskey({
-            email: deviceEmail.trim(),
-            role: "student",
-          });
-          if (passkeyRes.ok && passkeyRes.credential) {
-            requestedCredentialId = passkeyRes.credential.id;
-            requestedPublicKey = passkeyRes.credential.publicKey;
-            requestedTransports = passkeyRes.credential.transports || ["internal"];
-          }
-        } catch (passkeyErr) {
-          console.warn("Passkey binding on new device fallback:", passkeyErr);
-        }
-      }
-
       const res: any = await apiClient.submitDeviceChangeRequest({
         verifyToken: deviceVerifyToken,
         fingerprint: getFingerprint(),
         selfieDataUrl: deviceSelfie,
-        requestedCredentialId,
-        requestedPublicKey,
-        requestedTransports,
       });
       if (!res?.ok) {
         setDeviceError(res?.error || "Failed to submit request.");

@@ -72,7 +72,7 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
               Biometric Device Change Requests
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Review and approve hardware passkey re-bindings and student device transitions
+              Review and approve student device transitions
             </p>
           </div>
 
@@ -246,7 +246,7 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
                             className="inline-flex items-center gap-1.5 rounded-2xl bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-emerald-700 shadow-sm transition disabled:opacity-50 cursor-pointer"
                           >
                             <CheckCircle2 size={14} />
-                            <span>Approve & Reset Passkey</span>
+                            <span>Approve & Reset Device</span>
                           </button>
 
                           <button

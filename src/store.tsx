@@ -36,9 +36,7 @@ interface AppContextValue {
     role: string,
     email: string,
     password: string,
-    fingerprint?: string,
-    webauthnAssertion?: any,
-    challengeKey?: string
+    fingerprint?: string
   ) => Promise<any>;
   logout: () => Promise<void>;
   restoreSession: () => Promise<any>;
@@ -84,9 +82,11 @@ interface AppContextValue {
     section: string;
   }) => Promise<any>;
   stopSession: (sessionId: string) => Promise<any>;
+  cancelSession: (sessionId: string) => Promise<any>;
 
   createSessionLocal: (session: any) => void;
   endSessionLocal: (sessionId: string, endTime?: number) => void;
+  removeSessionLocal: (sessionId: string) => void;
   updateSessionToken: (sessionId: string, token: string) => void;
 
   submitAttendance: (
@@ -205,17 +205,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     role: string,
     email: string,
     password: string,
-    fingerprint?: string,
-    webauthnAssertion?: any,
-    challengeKey?: string
+    fingerprint?: string
   ) => {
     const res = await apiClient.login(
       role,
       email,
       password,
-      fingerprint,
-      webauthnAssertion,
-      challengeKey
+      fingerprint
     );
     if (res?.ok) {
       setCurrentUser(res.user);
@@ -330,8 +326,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const endSessionLocal = (sessionId: string, endTime = Date.now()) => {
     setSessions((prev) =>
       prev.map((s) =>
-        s.id === sessionId ? { ...s, isActive: false, endTime } : s
+        (s.id === sessionId || s._id === sessionId) ? { ...s, isActive: false, endTime } : s
       )
+    );
+  };
+
+  const removeSessionLocal = (sessionId: string) => {
+    setSessions((prev) =>
+      prev.filter((s: any) => (s.id || s._id) !== sessionId)
     );
   };
 
@@ -340,6 +342,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     if (!res?.ok) return res;
 
     const s = res.session;
+    const totalStudents = s?.totalStudents || res?.totalStudents || 0;
     const newSession = {
       id: s._id,
       facultyId: s.faculty,
@@ -356,15 +359,23 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       locationRadiusMeters: s.location?.radiusMeters || 200,
       currentDynamicToken: res.qr,
       secretKey: res.secretKey,
+      totalStudents,
+      totalStrength: totalStudents,
     };
 
     createSessionLocal(newSession);
-    return { ok: true, session: newSession, secretKey: res.secretKey, qr: res.qr };
+    return { ok: true, session: newSession, secretKey: res.secretKey, qr: res.qr, totalStudents };
   };
 
   const stopSession = async (sessionId: string) => {
     const res = await apiClient.stopSession(sessionId);
     endSessionLocal(sessionId);
+    return res;
+  };
+
+  const cancelSession = async (sessionId: string) => {
+    const res = await apiClient.cancelSession(sessionId);
+    removeSessionLocal(sessionId);
     return res;
   };
 
@@ -485,8 +496,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     createSession,
     stopSession,
+    cancelSession,
     createSessionLocal,
     endSessionLocal,
+    removeSessionLocal,
     updateSessionToken,
 
     submitAttendance,
