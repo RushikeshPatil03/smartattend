@@ -22,11 +22,17 @@ import {
 } from "lucide-react";
 import { Button } from "../../components/Common";
 import { LiveAttendanceItem } from "./types";
+import {
+  startQrPolling,
+  serializeQrPayload,
+  generateRotatingQrPayload,
+  RotatingQrPayload,
+} from "../../utils/totpQrGenerator";
+import apiClient from "../../services/apiClient";
 
 interface LiveSessionStudioProps {
   activeSession: any;
-  dynamicQrToken: string;
-  qrRotationSeconds: number;
+  sessionSecretKey?: string | null;
   liveAttendance: LiveAttendanceItem[];
   attendanceStatusMap: Record<string, "present" | "absent">;
   attendanceDataLoaded: boolean;
@@ -43,17 +49,94 @@ interface LiveSessionStudioProps {
   selectedDepartment?: any;
 }
 
-// ----------------------------------------------------
-// Isolated High-Performance Clean QR Card Component
-// Static, glare-free, maximum contrast and instant focus for mobile scanners
-// ----------------------------------------------------
-const RotatingQrDisplay: React.FC<{
-  qrToken: string;
+// ---------------------------------------------------------------------------
+// Self-Contained Leaf Dynamic QR Engine
+// Encapsulates 100% of the 3-second TOTP generation in browser memory.
+// Changes to currentToken only re-render this leaf component, causing 0 re-renders
+// in LiveSessionStudio or root FacultyDashboard.
+// ---------------------------------------------------------------------------
+interface IsolatedRotatingQrEngineProps {
+  sessionId: string;
+  sessionSecretKey?: string | null;
+  classCode?: string;
+  isActive?: boolean;
   size?: number;
   isProjector?: boolean;
-}> = React.memo(({ qrToken, size = 330, isProjector = false }) => {
-  // Safe fallback token to ensure QR is always crisp & rendered immediately
-  const renderToken = qrToken || "smartattend://session/init";
+}
+
+const IsolatedRotatingQrEngine: React.FC<IsolatedRotatingQrEngineProps> = React.memo(({
+  sessionId,
+  sessionSecretKey,
+  classCode = "",
+  isActive = true,
+  size = 330,
+  isProjector = false,
+}) => {
+  const [currentToken, setCurrentToken] = useState<string>("");
+  const secretKeyRef = useRef<string | null>(sessionSecretKey || null);
+
+  useEffect(() => {
+    if (sessionSecretKey) {
+      secretKeyRef.current = sessionSecretKey;
+    }
+  }, [sessionSecretKey]);
+
+  useEffect(() => {
+    let stopPolling: (() => void) | null = null;
+    let cancelled = false;
+
+    if (!sessionId || !isActive) {
+      setCurrentToken("");
+      return;
+    }
+
+    const initEngine = async () => {
+      try {
+        let key = secretKeyRef.current;
+        if (!key) {
+          const res: any = await apiClient.getLiveQR(sessionId);
+          if (cancelled) return;
+          if (res?.ok && res.secretKey) {
+            key = res.secretKey;
+            secretKeyRef.current = key;
+          }
+        }
+
+        if (!key || cancelled) return;
+
+        // Generate immediate synchronous 1st payload on frame 0
+        const initial = generateRotatingQrPayload(key, sessionId, classCode);
+        setCurrentToken(serializeQrPayload(initial));
+
+        // Start dedicated 3000ms client-side TOTP engine in memory
+        stopPolling = startQrPolling(
+          key,
+          sessionId,
+          classCode,
+          (payload: RotatingQrPayload) => {
+            if (!cancelled) {
+              setCurrentToken(serializeQrPayload(payload));
+            }
+          },
+          3000
+        );
+      } catch (err) {
+        console.error("Isolated TOTP Engine init error:", err);
+      }
+    };
+
+    initEngine();
+
+    return () => {
+      cancelled = true;
+      if (stopPolling) {
+        stopPolling();
+        stopPolling = null;
+      }
+    };
+  }, [sessionId, isActive, classCode]);
+
+  const renderToken = currentToken || "smartattend://session/init";
 
   return (
     <div className="relative flex flex-col items-center justify-center">
@@ -76,11 +159,11 @@ const RotatingQrDisplay: React.FC<{
     </div>
   );
 });
-RotatingQrDisplay.displayName = "RotatingQrDisplay";
+IsolatedRotatingQrEngine.displayName = "IsolatedRotatingQrEngine";
 
 export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
   activeSession,
-  dynamicQrToken,
+  sessionSecretKey,
   liveAttendance,
   attendanceStatusMap,
   manualLoading,
@@ -100,11 +183,14 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
   const [searchQuery, setSearchQuery] = useState("");
   const fullscreenContainerRef = useRef<HTMLDivElement | null>(null);
 
+  const sessionId = String(activeSession?.id || activeSession?._id || "");
+  const classCode = String(selectedSubject?.code || selectedSubject?.name || sessionId).slice(0, 12);
+
   // Auto-sync roster on mount or session change
   useEffect(() => {
     setIsReviewMode(false);
     onLoadAttendees();
-  }, [activeSession?.id, activeSession?._id]);
+  }, [sessionId, onLoadAttendees]);
 
   // Fullscreen listeners
   useEffect(() => {
@@ -306,8 +392,11 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
           {/* Projector Main QR Stage */}
           <div className="relative z-10 my-auto flex flex-col items-center justify-center py-6">
             <div className="relative rounded-3xl border border-emerald-500/40 bg-slate-900/90 p-8 shadow-[0_0_60px_rgba(16,185,129,0.2)] backdrop-blur-2xl">
-              <RotatingQrDisplay
-                qrToken={dynamicQrToken}
+              <IsolatedRotatingQrEngine
+                sessionId={sessionId}
+                sessionSecretKey={sessionSecretKey}
+                classCode={classCode}
+                isActive={!isReviewMode}
                 size={460}
                 isProjector={true}
               />
@@ -573,7 +662,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                       Live Attendance Active
                     </span>
                     <span className="font-mono text-xs text-slate-400">
-                      ID: {String(activeSession?.id || activeSession?._id || "").slice(-8)}
+                      ID: {sessionId.slice(-8)}
                     </span>
                   </div>
                   <h2 className="mt-1 text-2xl font-black tracking-tight text-white sm:text-3xl">
@@ -641,8 +730,11 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
 
                 {/* QR Studio Presentation with Enlarged High-Contrast QR */}
                 <div className="my-6 w-full flex flex-col items-center justify-center">
-                  <RotatingQrDisplay
-                    qrToken={dynamicQrToken}
+                  <IsolatedRotatingQrEngine
+                    sessionId={sessionId}
+                    sessionSecretKey={sessionSecretKey}
+                    classCode={classCode}
+                    isActive={!isReviewMode}
                     size={330}
                     isProjector={false}
                   />

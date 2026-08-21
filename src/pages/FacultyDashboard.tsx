@@ -14,7 +14,6 @@ import {
 import apiClient from "../services/apiClient";
 import CollegeHeader from "../components/CollegeHeader";
 import { subscribeToSessionAttendance } from "../services/supabaseClient";
-import { startQrPolling, serializeQrPayload, generateRotatingQrPayload, RotatingQrPayload } from "../utils/totpQrGenerator";
 
 // Modular Sub-Components
 import {
@@ -130,10 +129,7 @@ const FacultyDashboard: React.FC = () => {
   const mobileLocatePollRef = useRef<number | null>(null);
 
   // Live Session & Attendance States
-  const [dynamicQrToken, setDynamicQrToken] = useState("");
-  const [qrRotationSeconds, setQrRotationSeconds] = useState(
-    Math.round(QR_REFRESH_MS / 1000)
-  );
+  const [activeSessionSecretKey, setActiveSessionSecretKey] = useState<string | null>(null);
   const [liveAttendance, setLiveAttendance] = useState<LiveAttendanceItem[]>([]);
   const [attendanceStatusMap, setAttendanceStatusMap] = useState<
     Record<string, "present" | "absent">
@@ -180,11 +176,7 @@ const FacultyDashboard: React.FC = () => {
   const [analyticsSearch, setAnalyticsSearch] = useState("");
 
   // Refs
-  const dynamicTokenRef = useRef("");
   const updateSessionTokenRef = useRef(updateSessionToken);
-  const totpStopRef = useRef<(() => void) | null>(null);
-  const sessionSecretKeyRef = useRef<string | null>(null);
-  const qrRef = useRef<number | null>(null);
 
   // Throttled Realtime Event Queue Buffer
   const realtimeEventQueueRef = useRef<any[]>([]);
@@ -367,94 +359,7 @@ const FacultyDashboard: React.FC = () => {
     };
   }, []);
 
-  // QR Token Generation / TOTP Polling Lifecycle
-  const selectedSubjectCode = selectedSubject?.code || selectedSubject?.name || "";
-  const selectedSubjectCodeRef = useRef(selectedSubjectCode);
-  selectedSubjectCodeRef.current = selectedSubjectCode;
 
-  useEffect(() => {
-    let cancelled = false;
-    const clear = () => {
-      cancelled = true;
-      if (qrRef.current) window.clearTimeout(qrRef.current);
-      if (totpStopRef.current) totpStopRef.current();
-      qrRef.current = null;
-      totpStopRef.current = null;
-    };
-    if (!activeSessionId || !isActiveSessionRunning) {
-      sessionSecretKeyRef.current = null;
-      return clear;
-    }
-
-    const initializeTotpQr = async () => {
-      try {
-        let secretKey = sessionSecretKeyRef.current;
-        if (!secretKey) {
-          const r: any = await apiClient.getLiveQR(activeSessionId);
-          if (!r?.ok || !r.secretKey) {
-            startServerPolling();
-            return;
-          }
-          secretKey = r.secretKey;
-          sessionSecretKeyRef.current = secretKey;
-        }
-
-        const classCode = String(
-          selectedSubjectCodeRef.current || activeSessionId
-        ).slice(0, 12);
-
-        totpStopRef.current = startQrPolling(
-          secretKey,
-          activeSessionId,
-          classCode,
-          (payload: RotatingQrPayload) => {
-            const serialized = serializeQrPayload(payload);
-            if (dynamicTokenRef.current !== serialized) {
-              dynamicTokenRef.current = serialized;
-              setDynamicQrToken(serialized);
-            }
-          },
-          3000
-        );
-
-        setQrRotationSeconds(3);
-      } catch {
-        startServerPolling();
-      }
-    };
-
-    const startServerPolling = () => {
-      const scheduleQrPoll = (delayMs: number) => {
-        if (cancelled) return;
-        const safeDelay = Math.max(
-          250,
-          Math.min(Number(delayMs) || QR_REFRESH_MS, 30000)
-        );
-        qrRef.current = window.setTimeout(pollQr, safeDelay);
-      };
-      const pollQr = async () => {
-        const r: any = await apiClient.getLiveQR(activeSessionId);
-        if (r?.ok && r.qr) {
-          if (dynamicTokenRef.current !== r.qr) {
-            dynamicTokenRef.current = r.qr;
-            setDynamicQrToken(r.qr);
-          }
-          if (Number(r.qrRotationSeconds) > 0) {
-            setQrRotationSeconds(Number(r.qrRotationSeconds));
-          }
-          scheduleQrPoll(Number(r.nextRefreshInMs || QR_REFRESH_MS));
-        } else if (String(r?.error || "").toLowerCase().includes("inactive")) {
-          setActiveSessionId(null);
-        } else {
-          scheduleQrPoll(QR_REFRESH_MS);
-        }
-      };
-      pollQr();
-    };
-
-    initializeTotpQr();
-    return clear;
-  }, [activeSessionId, isActiveSessionRunning]);
 
   // Flush Throttled Realtime Events to State
   const flushRealtimeQueue = useCallback(() => {
@@ -995,22 +900,7 @@ const FacultyDashboard: React.FC = () => {
       ]);
       const nextId = String(res.session.id || res.session._id);
       const secretKey = res.secretKey || res.session?.secretKey;
-      if (secretKey) {
-        sessionSecretKeyRef.current = secretKey;
-        const classCode = String(
-          selectedSubject?.code || selectedSubject?.name || nextId
-        ).slice(0, 12);
-        const initialPayload = generateRotatingQrPayload(secretKey, nextId, classCode);
-        const initialSerialized = serializeQrPayload(initialPayload);
-        dynamicTokenRef.current = initialSerialized;
-        setDynamicQrToken(initialSerialized);
-      } else {
-        const fallbackToken = String(res.session.currentDynamicToken || res.qr || "");
-        if (fallbackToken) {
-          dynamicTokenRef.current = fallbackToken;
-          setDynamicQrToken(fallbackToken);
-        }
-      }
+      setActiveSessionSecretKey(secretKey || null);
       setActiveSessionId(nextId);
     } else {
       setSessionError(res?.error || "Failed to start session");
@@ -1018,15 +908,17 @@ const FacultyDashboard: React.FC = () => {
     setStartLoading(false);
   };
 
-  const stop = async () => {
+  const stop = useCallback(async () => {
     if (!activeSessionId) return;
     const res: any = await stopSession(activeSessionId);
     if (!res?.ok) alert(res?.error || "Failed to stop session");
     setActiveSessionId(null);
+    setActiveSessionSecretKey(null);
     setLiveAttendance([]);
-  };
+    setAttendanceStatusMap({});
+  }, [activeSessionId, stopSession]);
 
-  const cancelSession = async () => {
+  const cancelSession = useCallback(async () => {
     if (!activeSessionId) return;
     const ok = window.confirm(
       "Cancel this session? This is for accidental start and will end the live session now."
@@ -1040,11 +932,12 @@ const FacultyDashboard: React.FC = () => {
       return;
     }
     setActiveSessionId(null);
+    setActiveSessionSecretKey(null);
     setLiveAttendance([]);
-    setDynamicQrToken("");
-  };
+    setAttendanceStatusMap({});
+  }, [activeSessionId]);
 
-  const loadCurrentAttendees = async () => {
+  const loadCurrentAttendees = useCallback(async () => {
     if (!activeSessionId) return;
     setAttendeesLoading(true);
     setAttendanceDataLoaded(false);
@@ -1078,9 +971,9 @@ const FacultyDashboard: React.FC = () => {
     } finally {
       setAttendeesLoading(false);
     }
-  };
+  }, [activeSessionId]);
 
-  const manual = async (status: "present" | "absent", enrollmentNo?: string) => {
+  const manual = useCallback(async (status: "present" | "absent", enrollmentNo?: string) => {
     if (!activeSessionId) return;
     const v = String(enrollmentNo || manualEnrollment).trim();
     if (!v) return;
@@ -1094,23 +987,24 @@ const FacultyDashboard: React.FC = () => {
     setAttendanceStatusMap((prev) => ({ ...prev, [v]: status }));
     setManualEnrollment("");
     setManualLoading(false);
-  };
+  }, [activeSessionId, manualEnrollment]);
 
-  const handleAttendanceItemToggle = async (item: any) => {
+  const handleAttendanceItemToggle = useCallback(async (item: any) => {
     const enrollmentNo = String(item?.student?.enrollmentNo || "").trim();
     if (!enrollmentNo || !activeSessionId) return;
 
-    const currentStatus =
-      attendanceStatusMap[enrollmentNo] ||
-      (String(item?.status || "").toLowerCase() === "present"
-        ? "present"
-        : "absent");
-    const nextStatus: "present" | "absent" =
-      currentStatus === "present" ? "absent" : "present";
-
-    setAttendanceStatusMap((prev) => ({ ...prev, [enrollmentNo]: nextStatus }));
-    await manual(nextStatus, enrollmentNo);
-  };
+    setAttendanceStatusMap((prev) => {
+      const currentStatus =
+        prev[enrollmentNo] ||
+        (String(item?.status || "").toLowerCase() === "present"
+          ? "present"
+          : "absent");
+      const nextStatus: "present" | "absent" =
+        currentStatus === "present" ? "absent" : "present";
+      manual(nextStatus, enrollmentNo);
+      return { ...prev, [enrollmentNo]: nextStatus };
+    });
+  }, [activeSessionId, manual]);
 
   // Manage Attendance Sheet Methods
   const loadSheet = async () => {
@@ -1350,8 +1244,7 @@ const FacultyDashboard: React.FC = () => {
               {activeSessionId ? (
                 <LiveSessionStudio
                   activeSession={activeSession}
-                  dynamicQrToken={dynamicQrToken}
-                  qrRotationSeconds={qrRotationSeconds}
+                  sessionSecretKey={activeSessionSecretKey || (activeSession as any)?.secretKey}
                   liveAttendance={liveAttendance}
                   attendanceStatusMap={attendanceStatusMap}
                   attendanceDataLoaded={attendanceDataLoaded}
