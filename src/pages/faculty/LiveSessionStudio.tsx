@@ -68,7 +68,7 @@ interface IsolatedRotatingQrEngineProps {
 const IsolatedRotatingQrEngine: React.FC<IsolatedRotatingQrEngineProps> = React.memo(({
   sessionId,
   sessionSecretKey,
-  classCode,
+  classCode = "",
   isActive,
   size = 320,
   isProjector = false,
@@ -76,37 +76,76 @@ const IsolatedRotatingQrEngine: React.FC<IsolatedRotatingQrEngineProps> = React.
   const [currentToken, setCurrentToken] = useState<string>("");
   const [timeLeft, setTimeLeft] = useState<number>(3);
   const prevTokenRef = useRef<string>("");
+  const secretKeyRef = useRef<string | null>(sessionSecretKey || null);
 
   useEffect(() => {
+    if (sessionSecretKey) {
+      secretKeyRef.current = sessionSecretKey;
+    }
+  }, [sessionSecretKey]);
+
+  useEffect(() => {
+    let stopPolling: (() => void) | null = null;
+    let cancelled = false;
+
     if (!sessionId || !isActive) {
       setCurrentToken("");
       return;
     }
 
-    const payload = generateRotatingQrPayload(
-      sessionId,
-      sessionSecretKey || null,
-      classCode || ""
-    );
-    const serialized = serializeQrPayload(payload);
-    setCurrentToken(serialized);
-    prevTokenRef.current = serialized;
-
-    const cleanup = startQrPolling(
-      sessionId,
-      sessionSecretKey || null,
-      classCode || "",
-      (newPayload: RotatingQrPayload) => {
-        const nextSerialized = serializeQrPayload(newPayload);
-        if (nextSerialized !== prevTokenRef.current) {
-          prevTokenRef.current = nextSerialized;
-          setCurrentToken(nextSerialized);
+    const initEngine = async () => {
+      try {
+        let key = secretKeyRef.current;
+        if (!key) {
+          const res: any = await apiClient.getLiveQR(sessionId);
+          if (cancelled) return;
+          if (res?.ok && res.secretKey) {
+            key = res.secretKey;
+            secretKeyRef.current = key;
+          }
         }
+
+        if (!key || cancelled) return;
+
+        // 1. Generate immediate synchronous 1st payload on frame 0
+        const payload = generateRotatingQrPayload(
+          key,
+          sessionId,
+          classCode || ""
+        );
+        const serialized = serializeQrPayload(payload);
+        setCurrentToken(serialized);
+        prevTokenRef.current = serialized;
+
+        // 2. Start dedicated 3000ms client-side TOTP engine in memory
+        stopPolling = startQrPolling(
+          key,
+          sessionId,
+          classCode || "",
+          (newPayload: RotatingQrPayload) => {
+            if (!cancelled) {
+              const nextSerialized = serializeQrPayload(newPayload);
+              if (nextSerialized !== prevTokenRef.current) {
+                prevTokenRef.current = nextSerialized;
+                setCurrentToken(nextSerialized);
+              }
+            }
+          },
+          3000
+        );
+      } catch (err) {
+        console.error("Isolated TOTP Engine init error:", err);
       }
-    );
+    };
+
+    initEngine();
 
     return () => {
-      cleanup();
+      cancelled = true;
+      if (stopPolling) {
+        stopPolling();
+        stopPolling = null;
+      }
     };
   }, [sessionId, sessionSecretKey, classCode, isActive]);
 

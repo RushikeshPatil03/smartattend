@@ -82,12 +82,47 @@ async function getSessionSecret(sessionId) {
         .eq("session_id", sid)
         .single();
 
-      if (data && new Date(data.expires_at).getTime() > Date.now()) {
+      if (data?.secret_key && new Date(data.expires_at).getTime() > Date.now()) {
         totpSecretMemoryStore.set(sid, {
           secretKey: data.secret_key,
           expiresAt: new Date(data.expires_at).getTime(),
         });
         return data.secret_key;
+      }
+    } catch {
+      // Proceed to session lookup fallback
+    }
+
+    // Fallback: Check if session exists in DB and derive persistent secret
+    try {
+      const { data: session } = await supabase
+        .from("sessions")
+        .select("id, faculty, start_time, is_active")
+        .eq("id", sid)
+        .single();
+
+      if (session) {
+        const masterSalt = process.env.JWT_SECRET || "smartattend-totp-master-secret";
+        const derivedSecret = crypto
+          .createHmac("sha256", masterSalt)
+          .update(`${session.id}:${session.faculty}:${session.start_time}`)
+          .digest("base64url");
+
+        totpSecretMemoryStore.set(sid, {
+          secretKey: derivedSecret,
+          expiresAt: Date.now() + 86400000,
+        });
+
+        // Best-effort upsert to totp_secrets table
+        try {
+          await supabase.from("totp_secrets").upsert({
+            session_id: sid,
+            secret_key: derivedSecret,
+            expires_at: new Date(Date.now() + 86400000).toISOString(),
+          });
+        } catch {}
+
+        return derivedSecret;
       }
     } catch {
       return null;
@@ -97,16 +132,17 @@ async function getSessionSecret(sessionId) {
   return null;
 }
 
-async function getOrCreateSessionSecret(sessionId, ttlSeconds = 3600) {
+async function getOrCreateSessionSecret(sessionId, ttlSeconds = 86400) {
   if (!sessionId) {
     throw new Error("sessionId is required");
   }
 
-  const existing = await getSessionSecret(sessionId);
+  const sid = String(sessionId);
+  const existing = await getSessionSecret(sid);
   if (existing) return existing;
 
   const secretKey = crypto.randomBytes(24).toString("base64url");
-  await storeSessionSecret(sessionId, secretKey, ttlSeconds);
+  await storeSessionSecret(sid, secretKey, ttlSeconds);
   return secretKey;
 }
 

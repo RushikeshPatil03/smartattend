@@ -319,6 +319,8 @@ const FacultyDashboard: React.FC = () => {
     const restore = async () => {
       const res: any = await apiClient.get("/api/faculty/session/active");
       if (cancelled || !res?.ok || !res.session) return;
+      const s = res.session;
+      const secretKey = res.secretKey || s.secretKey || null;
       const totalStudents = Number(s.totalStudents || res.totalStudents || 0);
       createSessionLocal({
         id: s._id,
@@ -335,11 +337,13 @@ const FacultyDashboard: React.FC = () => {
         locationLng: s.location?.lng,
         locationRadiusMeters: s.location?.radiusMeters || 200,
         currentDynamicToken: "",
+        secretKey,
         totalStudents,
         totalStrength: totalStudents,
       });
       if (cancelled) return;
       setActiveSessionId(s._id);
+      setActiveSessionSecretKey(secretKey);
       if (totalStudents > 0) {
         setTotalClassStrength(totalStudents);
       }

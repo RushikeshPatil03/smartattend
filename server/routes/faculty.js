@@ -431,6 +431,8 @@ router.get("/session/active", authMiddleware, async (req, res) => {
     const { count: totalClassStudents } = await countQuery;
     const totalStudents = totalClassStudents || 0;
 
+    const secretKey = await getOrCreateSessionSecret(active.id);
+
     const formatted = {
       ...active,
       _id: active.id,
@@ -438,11 +440,18 @@ router.get("/session/active", authMiddleware, async (req, res) => {
       startTime: active.start_time,
       endTime: active.end_time,
       lastActivityAt: active.last_activity_at,
+      secretKey,
       totalStudents,
       totalStrength: totalStudents,
     };
 
-    return res.json({ ok: true, session: formatted, totalStudents, totalStrength: totalStudents });
+    return res.json({
+      ok: true,
+      session: formatted,
+      secretKey,
+      totalStudents,
+      totalStrength: totalStudents,
+    });
   } catch (err) {
     console.error("Fetch active session error:", err);
     return res.status(500).json({ ok: false, error: "Server error" });
