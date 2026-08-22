@@ -32,8 +32,8 @@ import FacultyAnalyticsModal from "./faculty/FacultyAnalyticsModal";
 import ManageSubjectsView from "./faculty/ManageSubjectsView";
 
 const QR_REFRESH_MS = Math.max(
-  3000,
-  Number(import.meta.env.VITE_QR_REFRESH_MS || 5000)
+  2000,
+  Number(import.meta.env.VITE_QR_REFRESH_MS || 2000)
 );
 const DEFAULT_SESSION_RADIUS_METERS = Number(
   import.meta.env.VITE_SESSION_RADIUS_METERS || 50
@@ -1220,17 +1220,27 @@ const FacultyDashboard: React.FC = () => {
   ];
 
   return (
-    <div className="relative min-h-screen w-full overflow-x-hidden bg-[#070b14]/[0.02] selection:bg-emerald-500 selection:text-white pb-16">
-      {/* Ambient Emerald/Teal Gradient Background Mesh */}
+    <div className="relative min-h-screen w-full overflow-x-hidden bg-[#f8fafc] selection:bg-emerald-500 selection:text-white pb-20">
+      {/* Ambient Gradient Mesh Background (Modern SaaS Theme) */}
       <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-        <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[700px] h-[700px] rounded-full bg-[radial-gradient(circle,rgba(16,185,129,0.12)_0%,rgba(20,184,166,0.06)_45%,transparent_70%)] blur-3xl" />
-        <div className="absolute top-1/3 right-10 w-[550px] h-[550px] rounded-full bg-[radial-gradient(circle,rgba(6,182,212,0.08)_0%,rgba(16,185,129,0.04)_45%,transparent_70%)] blur-3xl" />
+        <div className="absolute -top-32 right-0 w-[720px] h-[720px] rounded-full bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.08),transparent_50%)] blur-3xl will-change-transform" />
+        <div className="absolute top-1/3 -left-20 w-[600px] h-[600px] rounded-full bg-[radial-gradient(circle,rgba(20,184,166,0.06)_0%,transparent_50%)] blur-3xl will-change-transform" />
+        <div className="absolute -bottom-32 right-1/4 w-[500px] h-[500px] rounded-full bg-[radial-gradient(circle,rgba(6,182,212,0.05)_0%,transparent_60%)] blur-3xl will-change-transform" />
+
+        {/* Subtle Geometric Matrix Grid */}
+        <div
+          className="absolute inset-0 opacity-[0.03]"
+          style={{
+            backgroundImage: `radial-gradient(rgba(16, 185, 129, 0.4) 1px, transparent 1px)`,
+            backgroundSize: "28px 28px",
+          }}
+        />
       </div>
 
       <div className="relative z-10 mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 space-y-6">
-        {/* College Header */}
+        {/* College Header with Elevated Glassmorphism */}
         <CollegeHeader
-          className="surface-card mb-0 shadow-[0_8px_30px_rgb(0,0,0,0.04)]"
+          className="surface-card mb-0 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-200/80 bg-white/80 backdrop-blur-xl"
           collegeName={currentUser?.collegeName}
           profilePhotoUrl={currentUser?.profilePhotoUrl}
           profileMenuPhotoUrl={currentUser?.facultyProfilePhotoUrl}
@@ -1242,60 +1252,86 @@ const FacultyDashboard: React.FC = () => {
           onLogout={logout}
         />
 
-        {/* Navigation Tabs Bar with Framer Motion Sliding Pill */}
-        <div className="rounded-3xl border border-slate-200/80 bg-white/80 p-1.5 shadow-[0_8px_30px_rgb(0,0,0,0.03)] backdrop-blur-xl">
-          <div className="flex flex-wrap items-center gap-1.5">
-            {navTabs.map((tab) => {
-              const isActive = activeTab === tab.id;
-              const Icon = tab.icon;
+        {/* Navigation Tabs Bar with Glassmorphism and Fluid Sliding Pill */}
+        <div className="rounded-3xl border border-slate-200/80 bg-white/80 p-2 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {navTabs.map((tab) => {
+                const isActive = activeTab === tab.id;
+                const Icon = tab.icon;
 
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`relative flex items-center gap-2 rounded-2xl px-5 py-3 text-xs font-bold transition duration-200 cursor-pointer ${
-                    isActive
-                      ? "text-white"
-                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/60"
-                  }`}
-                >
-                  {isActive && (
-                    <motion.div
-                      layoutId="activeFacultyTabIndicator"
-                      className="absolute inset-0 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 shadow-[0_6px_20px_rgba(16,185,129,0.35)]"
-                      transition={{ type: "spring", stiffness: 380, damping: 30 }}
-                    />
-                  )}
-
-                  <span className="relative z-10 flex items-center gap-2">
-                    <Icon size={16} className={isActive ? "text-white" : "text-emerald-600"} />
-                    <span>{tab.label}</span>
-
-                    {tab.badge && (
-                      <span
-                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wider ${
-                          tab.badge === "LIVE"
-                            ? "bg-rose-500 text-white animate-pulse"
-                            : "bg-emerald-100 text-emerald-800"
-                        }`}
-                      >
-                        {tab.badge}
-                      </span>
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setActiveTab(tab.id)}
+                    className={`relative flex items-center gap-2 rounded-2xl px-4.5 py-2.5 text-xs font-bold tracking-tight transition-all duration-200 select-none cursor-pointer ${
+                      isActive
+                        ? "text-white shadow-xs"
+                        : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
+                    }`}
+                  >
+                    {isActive && (
+                      <motion.div
+                        layoutId="activeTabIndicator"
+                        className="absolute inset-0 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 shadow-[0_4px_16px_rgba(16,185,129,0.35)]"
+                        transition={{ type: "spring", stiffness: 450, damping: 35 }}
+                      />
                     )}
-                  </span>
-                </button>
-              );
-            })}
+
+                    <span className="relative z-10 flex items-center gap-2">
+                      <Icon
+                        size={16}
+                        className={isActive ? "text-white" : "text-emerald-600"}
+                      />
+                      <span>{tab.label}</span>
+
+                      {tab.badge && (
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wider ${
+                            tab.badge === "LIVE"
+                              ? "bg-rose-500 text-white shadow-xs animate-pulse"
+                              : "bg-emerald-100 text-emerald-800 border border-emerald-300"
+                          }`}
+                        >
+                          {tab.badge === "LIVE" && (
+                            <span className="h-1.5 w-1.5 rounded-full bg-white animate-ping" />
+                          )}
+                          {tab.badge}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Live Session Radar Pill Indicator (When Active) */}
+            {isActiveSessionRunning && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="hidden sm:flex items-center gap-2 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-2 text-xs font-bold text-emerald-700 shadow-xs backdrop-blur-md"
+              >
+                <span className="flex h-2 w-2 relative">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                </span>
+                <span className="truncate max-w-[200px]">
+                  Live: {selectedSubject?.code || activeSession?.section || "Session"}
+                </span>
+              </motion.div>
+            )}
           </div>
         </div>
 
-        {/* Tab Views */}
+        {/* Tab Views with Fluid Mount Animation */}
         <motion.div
           key={activeTab}
-          initial={{ opacity: 0, y: 10 }}
+          initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3 }}
+          exit={{ opacity: 0, y: -12 }}
+          transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
         >
           {activeTab === "TAKE_ATTENDANCE" && (
             <>

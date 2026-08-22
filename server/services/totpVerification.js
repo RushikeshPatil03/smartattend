@@ -7,8 +7,8 @@
 const crypto = require("crypto");
 const { getSupabaseClient } = require("../config/supabase");
 
-const TOTP_BLOCK_DURATION_MS = 3000;
-const TOTP_SKEW_TOLERANCE_BLOCKS = Number(process.env.TOTP_SKEW_TOLERANCE_BLOCKS || 10); // 10 * 3s = 30s window for smooth scanning
+const TOTP_BLOCK_DURATION_MS = 2000;
+const TOTP_SKEW_TOLERANCE_BLOCKS = Number(process.env.TOTP_SKEW_TOLERANCE_BLOCKS || 15); // 15 * 2s = 30s window for smooth scanning
 
 const totpSecretMemoryStore = new Map();
 const presenceMemoryStore = new Map(); // sessionId -> Set of studentIds

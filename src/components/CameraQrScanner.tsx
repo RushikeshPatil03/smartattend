@@ -28,7 +28,7 @@ type CameraQrScannerProps = {
 };
 
 const SCAN_INTERVAL_MS = 60;
-const DUPLICATE_DETECTION_COOLDOWN_MS = 800;
+const DUPLICATE_DETECTION_COOLDOWN_MS = 400;
 
 function isInsecureMobileCameraContext() {
   const host = window.location.hostname;

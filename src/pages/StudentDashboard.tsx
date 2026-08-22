@@ -5,7 +5,12 @@ import CollegeHeader from "../components/CollegeHeader";
 import { Scan, MapPin, CheckCircle, XCircle, History, Camera, LoaderCircle, X } from "lucide-react";
 import { markAttendanceTwoStep, getFingerprint } from "../services/attendanceClient";
 import apiClient from "../services/apiClient";
-import { getLiveLocationWithOptions, prewarmLiveLocation } from "../utils/liveLocation";
+import {
+  getLiveLocationWithOptions,
+  prewarmLiveLocation,
+  startRollingGpsWatcher,
+  getInstantCachedLocation,
+} from "../utils/liveLocation";
 import { createSequentialBuffer } from "../services/sequentialQrBuffer";
 import { parseQrPayload, RotatingQrPayload } from "../utils/totpQrGenerator";
 
@@ -25,14 +30,14 @@ type IdleCapableWindow = Window &
     cancelIdleCallback?: (handle: number) => void;
   };
 
-const DYNAMIC_SECOND_SCAN_TIMEOUT_MS = 10000;
+const DYNAMIC_SECOND_SCAN_TIMEOUT_MS = 8000;
 const MIN_DYNAMIC_ROTATION_WAIT_MS = Math.max(
-  1200,
-  Number(import.meta.env.VITE_MIN_SECOND_SCAN_DELAY_MS || 2500)
+  800,
+  Number(import.meta.env.VITE_MIN_SECOND_SCAN_DELAY_MS || 1500)
 );
 const MAX_DYNAMIC_SEQUENCE_GAP_SECONDS = Math.max(
   4,
-  Number(import.meta.env.VITE_QR_SEQUENCE_GAP_SECONDS || 7)
+  Number(import.meta.env.VITE_QR_SEQUENCE_GAP_SECONDS || 6)
 );
 const FIRST_DYNAMIC_ARM_WINDOW_MS = 2500;
 const FACE_VERIFICATION_WINDOW_MS = 60000;
@@ -208,8 +213,17 @@ const StudentDashboard: React.FC = () => {
     if (registeredFacePhoto) {
       void computeDescriptorFromImageURL(registeredFacePhoto);
     }
+
+    // Start rolling 30-second GPS cache watcher in background for instant 0ms scan resolution
+    const stopGpsWatcher = startRollingGpsWatcher((_loc) => {
+      if (mountedRef.current) {
+        setLocationReady(true);
+      }
+    });
+
     return () => {
       mountedRef.current = false;
+      stopGpsWatcher();
       if (resetTimerRef.current) {
         window.clearTimeout(resetTimerRef.current);
         resetTimerRef.current = null;
@@ -407,7 +421,7 @@ const StudentDashboard: React.FC = () => {
       return locationWarmupPromiseRef.current;
     }
 
-    const promise = prewarmLiveLocation({ maxAgeMs: 15000 })
+    const promise = prewarmLiveLocation({ maxAgeMs: 30000 })
       .then((coords) => {
         if (mountedRef.current) {
           setLocationReady(Boolean(coords));
@@ -423,12 +437,22 @@ const StudentDashboard: React.FC = () => {
   }, []);
 
   const resolveLiveLocation = useCallback(async () => {
+    // 1. Instant 0ms Fast Path from rolling 30s GPS cache
+    const instant = getInstantCachedLocation(30000);
+    if (instant) {
+      if (mountedRef.current) {
+        setLocationReady(true);
+      }
+      return instant;
+    }
+
+    // 2. Warmed or active watcher fallback
     const warmed = await warmLocation();
     if (warmed) return warmed;
 
     const fresh = await getLiveLocationWithOptions({
       preferCached: true,
-      maxAgeMs: 15000,
+      maxAgeMs: 30000,
     });
     if (mountedRef.current) {
       setLocationReady(true);
@@ -520,10 +544,73 @@ const StudentDashboard: React.FC = () => {
     }
 
     if (result?.ok) {
+      const targetSessionId =
+        pendingQrPairRef.current?.kind === "totp"
+          ? pendingQrPairRef.current.sequence?.[0]?.classId || (pendingQrPairRef.current.sequence?.[0] as any)?.sessionId
+          : pendingQrPairRef.current?.kind === "legacy"
+            ? decodeDynamicQrPayload(pendingQrPairRef.current.first)?.sessionId
+            : null;
+
       pendingQrPairRef.current = null;
       setScanStep("SUCCESS");
       setStatusMsg(result.already || result.alreadyMarked ? "Attendance already marked." : "Attendance confirmed.");
-      await loadStudentData();
+
+      // 1. Optimistic Local State Update (Instant 0ms UI Feedback)
+      const markedSessionId = String(
+        result?.session?.id ||
+        result?.session?._id ||
+        result?.sessionId ||
+        targetSessionId ||
+        ""
+      );
+
+      if (markedSessionId) {
+        setRecentSessions((prev) => {
+          const nowIso = new Date().toISOString();
+          const existingIndex = prev.findIndex((item) => {
+            const sid = String(
+              item?.sessionId ||
+              item?.session?.id ||
+              item?.session?._id ||
+              item?.session ||
+              item?._id ||
+              item?.id ||
+              ""
+            );
+            return sid === markedSessionId;
+          });
+
+          if (existingIndex >= 0) {
+            const updated = [...prev];
+            updated[existingIndex] = {
+              ...updated[existingIndex],
+              status: "present",
+              attendanceCode: "P",
+              markedAt: result?.markedAt || updated[existingIndex]?.markedAt || nowIso,
+            };
+            return updated;
+          }
+
+          return [
+            {
+              sessionId: markedSessionId,
+              subjectName: result?.session?.subjectName || "Subject",
+              subjectCode: result?.session?.subjectCode || "SUB",
+              facultyName: "Faculty",
+              startTime: nowIso,
+              markedAt: result?.markedAt || nowIso,
+              isActive: true,
+              status: "present",
+              attendanceCode: "P",
+            },
+            ...prev,
+          ];
+        });
+      }
+
+      // 2. Silent background sync without blocking UI
+      void loadStudentData().catch(() => {});
+
       if (resetTimerRef.current) window.clearTimeout(resetTimerRef.current);
       resetTimerRef.current = window.setTimeout(() => {
         if (!mountedRef.current) return;

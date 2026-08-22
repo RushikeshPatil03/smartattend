@@ -126,40 +126,42 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
 
   return (
     <div className="space-y-6">
-      {/* Daily Class Presets */}
+      {/* Daily Class Quick-Launch Presets */}
       {recentClassCards.length > 0 && (
-        <div className="rounded-3xl border border-slate-200/80 bg-white/90 p-5 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-3">
+        <div className="rounded-3xl border border-slate-200/80 bg-white/80 p-5 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100/90 mb-3.5">
             <div className="flex items-center gap-2">
-              <Sparkles size={16} className="text-emerald-600" />
-              <h3 className="font-bold text-xs uppercase tracking-wider text-slate-800">
+              <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600">
+                <Sparkles size={14} />
+              </div>
+              <h3 className="font-extrabold text-xs uppercase tracking-wider text-slate-800">
                 Daily Class Quick-Launch Presets
               </h3>
             </div>
-            <span className="text-[11px] text-slate-400">1-click draft load</span>
+            <span className="text-[11px] font-semibold text-slate-400">1-click draft restore</span>
           </div>
 
           <div className="flex flex-wrap gap-2.5">
             {recentClassCards.map((preset) => (
               <div
                 key={preset.key}
-                className="group flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50/70 px-3.5 py-2 transition hover:border-emerald-400 hover:bg-emerald-50/40 hover:shadow-sm"
+                className="group flex items-center gap-2 rounded-2xl border border-slate-200/80 bg-white/70 p-2 pr-3 transition-all duration-200 hover:border-emerald-300 hover:shadow-sm active:scale-[0.98] backdrop-blur-xs"
               >
                 <button
                   type="button"
                   onClick={() => onApplyRecentClass(preset)}
                   disabled={!preset.available}
-                  className="flex items-center gap-2 text-left cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                  className="flex items-center gap-2.5 text-left cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-700 font-bold text-[10px]">
+                  <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-500/15 to-teal-500/15 border border-emerald-500/30 text-emerald-700 font-extrabold text-[11px] shadow-2xs">
                     {preset.section}
                   </span>
                   <div>
-                    <p className="font-bold text-xs text-slate-800 group-hover:text-emerald-700 transition">
+                    <p className="font-bold text-xs text-slate-800 group-hover:text-emerald-700 transition leading-tight">
                       {preset.label}
                     </p>
-                    <p className="text-[10px] text-slate-500">
-                      {preset.departmentCode || preset.departmentName} • {preset.radiusMeters}m
+                    <p className="text-[10px] font-medium text-slate-500 mt-0.5">
+                      {preset.departmentCode || preset.departmentName} • {preset.radiusMeters}m geofence
                     </p>
                   </div>
                 </button>
@@ -168,7 +170,7 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
                   type="button"
                   onClick={() => onRemoveRecentClass(preset.key)}
                   title="Remove preset"
-                  className="text-slate-400 hover:text-rose-500 transition pl-1"
+                  className="text-slate-400 hover:text-rose-500 transition-colors p-1 rounded-lg hover:bg-rose-50 cursor-pointer"
                 >
                   <Trash2 size={13} />
                 </button>
@@ -179,20 +181,24 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
       )}
 
       {/* Main Configuration Card */}
-      <div className="rounded-3xl border border-slate-200/80 bg-white/90 p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl space-y-6">
+      <div className="relative overflow-hidden rounded-3xl border border-slate-200/80 bg-white/80 p-6 sm:p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl space-y-6">
         <div className="flex items-center justify-between pb-4 border-b border-slate-100">
           <div>
-            <h2 className="text-xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
-              <BookOpen size={20} className="text-emerald-600" />
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50/90 px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-emerald-700 shadow-xs mb-2">
+              <Sparkles size={12} className="text-emerald-600" />
+              Live Session Setup
+            </div>
+            <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
+              <BookOpen size={22} className="text-emerald-600" />
               Configure Class Session
             </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Select department, class attributes, and lock GPS geofence before starting
+            <p className="text-xs text-slate-500 font-normal mt-0.5">
+              Select department, course attributes, and lock the high-precision GPS geofence before starting.
             </p>
           </div>
         </div>
 
-        {/* Input Matrix */}
+        {/* Input Matrix with Floating Style */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
           {/* Department Select */}
           <div>
@@ -201,7 +207,7 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
               Department
             </label>
             <select
-              className="w-full rounded-2xl border border-slate-200 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-sm"
+              className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300"
               value={formDepartment}
               onChange={(e) => {
                 setFormDepartment(e.target.value);
@@ -225,7 +231,7 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
               Year
             </label>
             <select
-              className="w-full rounded-2xl border border-slate-200 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-sm disabled:bg-slate-100 disabled:text-slate-400"
+              className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
               value={formYear}
               onChange={(e) => {
                 setFormYear(e.target.value);
@@ -248,7 +254,7 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
               Semester
             </label>
             <select
-              className="w-full rounded-2xl border border-slate-200 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-sm disabled:bg-slate-100 disabled:text-slate-400"
+              className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
               value={formSem}
               onChange={(e) => {
                 setFormSem(e.target.value);
@@ -271,7 +277,7 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
               Section
             </label>
             <select
-              className="w-full rounded-2xl border border-slate-200 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-sm disabled:bg-slate-100 disabled:text-slate-400"
+              className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
               value={formSection}
               onChange={(e) => {
                 setFormSection(e.target.value);
@@ -294,7 +300,7 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
               Subject
             </label>
             <select
-              className="w-full rounded-2xl border border-slate-200 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-sm disabled:bg-slate-100 disabled:text-slate-400"
+              className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
               value={formSubject}
               onChange={(e) => {
                 setFormSubject(e.target.value);
@@ -321,7 +327,7 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
               type="number"
               min={5}
               max={1000}
-              className="w-full rounded-2xl border border-slate-200 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-sm disabled:bg-slate-100 disabled:text-slate-400"
+              className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
               value={formRadius}
               onChange={(e) => setFormRadius(e.target.value)}
               disabled={!formDepartment}
@@ -330,47 +336,49 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
           </div>
         </div>
 
-        {/* Geofence Visualizer Widget */}
-        <div className="rounded-3xl border border-slate-200/90 bg-gradient-to-r from-slate-50 via-emerald-50/20 to-teal-50/20 p-5">
+        {/* High-Tech Geofence Visualizer Widget */}
+        <div className="rounded-3xl border border-slate-200/90 bg-gradient-to-br from-slate-50/90 via-emerald-50/30 to-teal-50/30 p-5 sm:p-6 transition-all shadow-xs">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex items-center gap-3">
-              <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border shadow-sm ${
-                isLocationConfirmed
-                  ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-600"
-                  : "bg-slate-100 border-slate-200 text-slate-400"
-              }`}>
+            <div className="flex items-center gap-3.5">
+              <div
+                className={`flex h-13 w-13 shrink-0 items-center justify-center rounded-2xl border shadow-sm transition-colors duration-300 ${
+                  isLocationConfirmed
+                    ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-600 shadow-[0_0_20px_rgba(16,185,129,0.2)]"
+                    : "bg-slate-100 border-slate-200 text-slate-400"
+                }`}
+              >
                 <MapPin className="h-6 w-6" />
               </div>
               <div>
                 <div className="flex items-center gap-2">
-                  <h4 className="font-bold text-sm text-slate-900">
+                  <h4 className="font-extrabold text-sm text-slate-900 tracking-tight">
                     Geofence Boundary & GPS Anchor
                   </h4>
                   {isLocationConfirmed ? (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 border border-emerald-300 px-2.5 py-0.5 text-[10px] font-bold text-emerald-800">
-                      <CheckCircle2 size={11} /> Locked
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 border border-emerald-300 px-2.5 py-0.5 text-[10px] font-extrabold text-emerald-800 shadow-2xs">
+                      <CheckCircle2 size={11} /> Locked (±{formRadius}m)
                     </span>
                   ) : (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 border border-amber-300 px-2.5 py-0.5 text-[10px] font-bold text-amber-800">
-                      <AlertCircle size={11} /> Location Needed
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 border border-amber-300 px-2.5 py-0.5 text-[10px] font-bold text-amber-800 shadow-2xs">
+                      <AlertCircle size={11} /> GPS Lock Required
                     </span>
                   )}
                 </div>
                 <p className="font-mono text-xs text-slate-600 mt-0.5">
                   {locationState && isLocationConfirmed
-                    ? `Coordinates: ${capturedLocationLabel} (±${formRadius}m Radius)`
-                    : "Capture live GPS from laptop browser or pair with smartphone"}
+                    ? `Anchor Coordinates: ${capturedLocationLabel} (±${formRadius}m Geofence)`
+                    : "Capture live GPS from laptop browser or beam high-accuracy position from phone."}
                 </p>
               </div>
             </div>
 
             {/* Geofence Action Buttons */}
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2.5">
               <button
                 type="button"
                 onClick={onCaptureLocation}
                 disabled={locating}
-                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 hover:border-emerald-300 hover:bg-emerald-50/50 transition shadow-sm disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 hover:border-emerald-400 hover:bg-emerald-50/60 transition duration-200 shadow-xs cursor-pointer disabled:opacity-50"
               >
                 {locating ? (
                   <>
@@ -389,7 +397,7 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
                 type="button"
                 onClick={onStartLocateViaMobile}
                 disabled={mobileLocateLoading}
-                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 hover:border-emerald-300 hover:bg-emerald-50/50 transition shadow-sm disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 hover:border-emerald-400 hover:bg-emerald-50/60 transition duration-200 shadow-xs cursor-pointer disabled:opacity-50"
               >
                 <Smartphone size={14} className="text-teal-600" />
                 Locate via Phone
@@ -400,14 +408,14 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
                   <button
                     type="button"
                     onClick={onOpenCapturedLocationInMaps}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition"
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition cursor-pointer"
                   >
                     <ExternalLink size={13} /> Maps
                   </button>
                   <button
                     type="button"
                     onClick={onShowManualLocationEditor}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition"
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition cursor-pointer"
                   >
                     <MapPin size={13} /> Edit
                   </button>
@@ -416,7 +424,7 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
             </div>
           </div>
 
-          {/* Mobile QR Modal/Drawer */}
+          {/* Mobile QR Drawer */}
           {mobileLocateToken && (
             <motion.div
               initial={{ opacity: 0, height: 0 }}
@@ -426,36 +434,37 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
             >
               <div className="flex items-start justify-between">
                 <div>
-                  <h5 className="font-bold text-xs text-slate-900">
+                  <h5 className="font-extrabold text-xs text-slate-900">
                     Scan to Capture GPS from Mobile
                   </h5>
                   <p className="text-[11px] text-slate-500 mt-0.5">
-                    Open your smartphone camera to beam high-accuracy outdoor GPS.
+                    Open your smartphone camera to beam high-accuracy outdoor GPS coordinates.
                   </p>
                 </div>
                 <button
                   type="button"
                   onClick={onCloseMobileLocate}
-                  className="text-xs font-bold text-slate-500 hover:text-slate-800"
+                  className="text-xs font-bold text-slate-500 hover:text-slate-800 cursor-pointer"
                 >
                   Close
                 </button>
               </div>
 
               <div className="mt-3 flex flex-col items-center">
-                <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-md">
+                <div className="rounded-2xl border-4 border-white bg-white p-3 shadow-lg">
                   <QRCode
                     value={mobileLocateUrl}
                     size={180}
-                    level="L"
+                    level="M"
                     style={{ width: "100%", maxWidth: 180, height: "auto" }}
                   />
                 </div>
-                <p className="mt-2 text-xs font-medium text-slate-600 text-center">
+                <p className="mt-2.5 text-xs font-semibold text-emerald-700 text-center flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500 animate-ping" />
                   {mobileLocateStatus || "Awaiting GPS beam from phone..."}
                 </p>
                 {mobileLocateExpiresAt && (
-                  <p className="text-[10px] text-slate-400 font-mono">
+                  <p className="text-[10px] text-slate-400 font-mono mt-0.5">
                     QR expires at {new Date(mobileLocateExpiresAt).toLocaleTimeString()}
                   </p>
                 )}
@@ -483,7 +492,7 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
                 variant="secondary"
                 className="text-xs rounded-xl"
               >
-                <MapPin size={13} /> Save Manual Coordinates
+                <MapPin size={13} /> Save Coordinates
               </Button>
             </div>
           )}
@@ -491,13 +500,13 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
 
         {/* Error Alerts */}
         {locationError && (
-          <div className="flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-medium text-rose-700">
+          <div className="flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-medium text-rose-700 shadow-xs">
             <AlertCircle size={16} className="shrink-0" />
             <span>{locationError}</span>
           </div>
         )}
         {sessionError && (
-          <div className="flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-medium text-rose-700">
+          <div className="flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-medium text-rose-700 shadow-xs">
             <AlertCircle size={16} className="shrink-0" />
             <span>{sessionError}</span>
           </div>
@@ -507,11 +516,11 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
         <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="text-xs text-slate-500">
             {isFormValid ? (
-              <span className="text-emerald-700 font-semibold flex items-center gap-1.5">
-                <CheckCircle2 size={15} /> All parameters validated. Ready to host live attendance.
+              <span className="text-emerald-700 font-bold flex items-center gap-1.5">
+                <CheckCircle2 size={16} /> Ready to broadcast dynamic QR attendance.
               </span>
             ) : (
-              <span>Fill all fields and lock GPS to enable live session hosting.</span>
+              <span>Select department, subject, and lock GPS to activate session launch.</span>
             )}
           </div>
 
@@ -520,7 +529,7 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
             type="button"
             onClick={onStartSession}
             disabled={!isFormValid || startLoading}
-            className="w-full sm:w-auto inline-flex items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 px-8 py-3.5 text-sm font-bold text-white shadow-[0_12px_24px_-6px_rgba(16,185,129,0.35)] hover:shadow-[0_16px_32px_-6px_rgba(16,185,129,0.45)] hover:brightness-105 active:scale-[0.98] transition duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none cursor-pointer"
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 px-9 py-3.5 text-sm font-extrabold text-white shadow-[0_12px_28px_-6px_rgba(16,185,129,0.45)] hover:shadow-[0_16px_36px_-6px_rgba(16,185,129,0.55)] hover:brightness-105 active:scale-[0.98] transition duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none cursor-pointer"
           >
             {startLoading ? (
               <>

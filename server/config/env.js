@@ -153,10 +153,10 @@ const env = {
 
   // QR & Attendance Security
   QR_SECRET: requireStrongSecret("QR_SECRET", "smart-attendance-system-default-strong-qr-secret-key-32-chars"),
-  QR_TTL_SECONDS: parseNumber("QR_TTL_SECONDS", 3, { min: 1 }),
+  QR_TTL_SECONDS: parseNumber("QR_TTL_SECONDS", 2, { min: 1 }),
   QR_RECENT_HISTORY: parseNumber("QR_RECENT_HISTORY", 8, { min: 3 }),
   QR_MAX_SEQUENCE_DRIFT: parseNumber("QR_MAX_SEQUENCE_DRIFT", 2, { min: 0 }),
-  QR_MIN_ROTATION_SECONDS: parseNumber("QR_MIN_ROTATION_SECONDS", 3, { min: 0 }),
+  QR_MIN_ROTATION_SECONDS: parseNumber("QR_MIN_ROTATION_SECONDS", 2, { min: 0 }),
   QR_VERIFY_MAX_AGE_SECONDS: parseNumber("QR_VERIFY_MAX_AGE_SECONDS", 20, { min: 1 }),
   QR_MAX_TWO_STEP_GAP_SECONDS: parseNumber("QR_MAX_TWO_STEP_GAP_SECONDS", 45, { min: 1 }),
   QR_PRECHECK_SKEW_SECONDS: parseNumber("QR_PRECHECK_SKEW_SECONDS", 8, { min: 0 }),

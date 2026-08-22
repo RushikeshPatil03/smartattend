@@ -52,7 +52,7 @@ interface LiveSessionStudioProps {
 
 // ---------------------------------------------------------------------------
 // Self-Contained Leaf Dynamic QR Engine
-// Encapsulates 100% of the 3-second TOTP generation in browser memory.
+// Encapsulates 100% of the 2-second TOTP generation in browser memory.
 // Changes to currentToken only re-render this leaf component, causing 0 re-renders
 // in LiveSessionStudio or root FacultyDashboard.
 // ---------------------------------------------------------------------------
@@ -74,7 +74,8 @@ const IsolatedRotatingQrEngine: React.FC<IsolatedRotatingQrEngineProps> = React.
   isProjector = false,
 }) => {
   const [currentToken, setCurrentToken] = useState<string>("");
-  const [timeLeft, setTimeLeft] = useState<number>(3);
+  const [timeLeft, setTimeLeft] = useState<number>(2);
+  const [progressPercent, setProgressPercent] = useState<number>(0);
   const prevTokenRef = useRef<string>("");
   const secretKeyRef = useRef<string | null>(sessionSecretKey || null);
 
@@ -117,7 +118,7 @@ const IsolatedRotatingQrEngine: React.FC<IsolatedRotatingQrEngineProps> = React.
         setCurrentToken(serialized);
         prevTokenRef.current = serialized;
 
-        // 2. Start dedicated 3000ms client-side TOTP engine in memory
+        // 2. Start dedicated 2000ms client-side TOTP engine in memory
         stopPolling = startQrPolling(
           key,
           sessionId,
@@ -131,7 +132,7 @@ const IsolatedRotatingQrEngine: React.FC<IsolatedRotatingQrEngineProps> = React.
               }
             }
           },
-          3000
+          2000
         );
       } catch (err) {
         console.error("Isolated TOTP Engine init error:", err);
@@ -152,13 +153,14 @@ const IsolatedRotatingQrEngine: React.FC<IsolatedRotatingQrEngineProps> = React.
   useEffect(() => {
     if (!isActive) return;
     const interval = setInterval(() => {
-      const remaining = 3 - (Math.floor(Date.now() / 1000) % 3);
-      setTimeLeft(remaining);
-    }, 200);
+      const msIntoCurrentBlock = Date.now() % 2000;
+      const remainingSec = Math.ceil((2000 - msIntoCurrentBlock) / 1000);
+      const pct = (msIntoCurrentBlock / 2000) * 100;
+      setTimeLeft(remainingSec);
+      setProgressPercent(pct);
+    }, 100);
     return () => clearInterval(interval);
   }, [isActive]);
-
-  const progressPercent = ((3 - timeLeft) / 3) * 100;
 
   if (!isActive) {
     return (
@@ -190,7 +192,7 @@ const IsolatedRotatingQrEngine: React.FC<IsolatedRotatingQrEngineProps> = React.
         <QRCode
           value={currentToken}
           size={size}
-          level="H"
+          level="M"
           className="h-auto max-w-full"
         />
       </div>
@@ -199,13 +201,13 @@ const IsolatedRotatingQrEngine: React.FC<IsolatedRotatingQrEngineProps> = React.
         <div className="flex items-center justify-between text-xs font-mono font-semibold">
           <span className="text-emerald-700 flex items-center gap-1">
             <span className="h-2 w-2 rounded-full bg-emerald-700 animate-pulse" />
-            Rotating Token
+            Rotating Token (2s)
           </span>
           <span className="text-slate-600">{timeLeft}s</span>
         </div>
         <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200/80">
           <div
-            className="h-full bg-emerald-700 transition-all duration-200 ease-linear rounded-full"
+            className="h-full bg-emerald-700 transition-all duration-100 ease-linear rounded-full"
             style={{ width: `${progressPercent}%` }}
           />
         </div>
@@ -547,22 +549,22 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
           animate={{ opacity: 1, y: 0 }}
           className="space-y-6"
         >
-          {/* Top Review Control Bar: ONLY Cancel Session & Save Attendance at uprights */}
-          <div className="rounded-3xl border border-slate-200/80 bg-white/90 p-6 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.06)] backdrop-blur-xl">
+          {/* Top Review Control Bar */}
+          <div className="rounded-[32px] border border-white/85 bg-white/90 p-6 sm:p-8 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.06)] backdrop-blur-2xl">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              {/* Left Context: Session Stopped & Review Mode */}
-              <div className="flex items-center gap-3">
-                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-700 shadow-sm">
+              {/* Left Context */}
+              <div className="flex items-center gap-3.5">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-700 shadow-sm">
                   <ShieldCheck className="h-6 w-6" />
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
-                    <span className="inline-flex items-center gap-1.5 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-0.5 text-[11px] font-bold text-rose-700 uppercase tracking-wide">
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-rose-200 bg-rose-50 px-3 py-0.5 text-[11px] font-extrabold text-rose-700 uppercase tracking-wider shadow-2xs">
                       <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
-                      Session Stopped • QR Inactive
+                      Session Locked • QR Inactive
                     </span>
                   </div>
-                  <h2 className="text-xl font-black text-slate-900 tracking-tight mt-0.5">
+                  <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight mt-1">
                     Attendance Final Review
                   </h2>
                 </div>
@@ -571,88 +573,90 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
               {/* Right Uprights: Only Cancel Session & Save Attendance */}
               <div className="flex items-center gap-3">
                 {showCancelConfirm ? (
-                  <div className="flex items-center gap-2 bg-rose-50 border border-rose-200 rounded-xl px-3 py-1.5 animate-in fade-in">
+                  <div className="flex items-center gap-2 bg-rose-50 border border-rose-200 rounded-2xl px-3.5 py-2 animate-in fade-in">
                     <span className="text-xs font-bold text-rose-800">Discard session?</span>
                     <button
                       type="button"
                       disabled={isCancelling}
                       onClick={handleConfirmCancel}
-                      className="inline-flex items-center gap-1 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold text-xs px-2.5 py-1 rounded-lg cursor-pointer transition shadow-sm"
+                      className="inline-flex items-center gap-1 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold text-xs px-3 py-1.5 rounded-xl cursor-pointer transition shadow-sm"
                     >
-                      {isCancelling ? "Cancelling..." : "Yes, Cancel"}
+                      {isCancelling ? "Cancelling..." : "Yes, Discard"}
                     </button>
                     <button
                       type="button"
                       disabled={isCancelling}
                       onClick={() => setShowCancelConfirm(false)}
-                      className="text-xs font-semibold px-2 py-1 text-slate-600 hover:bg-slate-200/60 rounded-lg cursor-pointer transition"
+                      className="text-xs font-semibold px-2.5 py-1.5 text-slate-600 hover:bg-slate-200/60 rounded-xl cursor-pointer transition"
                     >
                       No
                     </button>
                   </div>
                 ) : (
-                  <Button
-                    variant="outline"
+                  <button
+                    type="button"
                     disabled={isCancelling}
                     onClick={() => setShowCancelConfirm(true)}
-                    className="rounded-xl px-4 py-2.5 text-xs font-semibold text-rose-600 border-rose-200 hover:bg-rose-50 hover:border-rose-300 flex items-center gap-1.5 cursor-pointer"
+                    className="inline-flex items-center gap-1.5 rounded-2xl border border-rose-200 bg-rose-50/60 px-4 py-3 text-xs font-bold text-rose-700 hover:bg-rose-100/80 transition cursor-pointer disabled:opacity-50"
                   >
                     <XCircle size={15} />
                     Cancel Session
-                  </Button>
+                  </button>
                 )}
 
-                <Button
+                <motion.button
+                  whileTap={{ scale: 0.98 }}
+                  type="button"
                   onClick={onStopSession}
                   disabled={isCancelling}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm px-7 py-2.5 rounded-xl shadow-lg shadow-emerald-600/30 flex items-center gap-2 cursor-pointer transition active:scale-95"
+                  className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 px-8 py-3 text-sm font-extrabold text-white shadow-[0_12px_28px_-6px_rgba(16,185,129,0.45)] hover:shadow-[0_16px_36px_-6px_rgba(16,185,129,0.55)] hover:brightness-105 active:scale-[0.98] transition duration-200 cursor-pointer disabled:opacity-50"
                 >
                   <CheckCircle2 size={18} />
-                  Save Attendance
-                </Button>
+                  Save & Finalize Attendance
+                </motion.button>
               </div>
             </div>
 
             {/* Session Stats Banner */}
             <div className="mt-6 pt-5 border-t border-slate-100 grid grid-cols-2 gap-3.5 sm:grid-cols-5">
-              <div className="rounded-2xl bg-slate-50 p-3.5 border border-slate-100 col-span-2 sm:col-span-1">
-                <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Subject & Section</p>
-                <p className="text-sm font-bold text-slate-900 truncate mt-0.5">
+              <div className="rounded-2xl bg-slate-50/90 p-4 border border-slate-200/80 col-span-2 sm:col-span-1 shadow-2xs">
+                <p className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">Subject & Section</p>
+                <p className="text-sm font-extrabold text-slate-900 truncate mt-1">
                   {selectedSubject?.name || "Subject"} ({activeSession?.section || "A"})
                 </p>
               </div>
 
-              <div className="rounded-2xl bg-emerald-50/80 p-3.5 border border-emerald-100">
-                <p className="text-[11px] font-semibold text-emerald-800 uppercase tracking-wider">Verified Presentees</p>
-                <p className="text-xl font-mono font-black text-emerald-700 mt-0.5">{presentCount}</p>
+              <div className="rounded-2xl bg-emerald-50/90 p-4 border border-emerald-200/80 shadow-2xs">
+                <p className="text-[10px] font-extrabold text-emerald-800 uppercase tracking-wider">Verified Presentees</p>
+                <p className="text-2xl font-mono font-black text-emerald-700 mt-1">{presentCount}</p>
               </div>
 
-              <div className="rounded-2xl bg-rose-50/80 p-3.5 border border-rose-100">
-                <p className="text-[11px] font-semibold text-rose-800 uppercase tracking-wider">Absentees</p>
-                <p className="text-xl font-mono font-black text-rose-700 mt-0.5">{absentCount}</p>
+              <div className="rounded-2xl bg-rose-50/90 p-4 border border-rose-200/80 shadow-2xs">
+                <p className="text-[10px] font-extrabold text-rose-800 uppercase tracking-wider">Absentees</p>
+                <p className="text-2xl font-mono font-black text-rose-700 mt-1">{absentCount}</p>
               </div>
 
-              <div className="rounded-2xl bg-slate-50 p-3.5 border border-slate-100">
-                <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Total Strength</p>
-                <p className="text-xl font-mono font-black text-slate-800 mt-0.5">{totalCount}</p>
+              <div className="rounded-2xl bg-slate-50/90 p-4 border border-slate-200/80 shadow-2xs">
+                <p className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">Class Quorum</p>
+                <p className="text-2xl font-mono font-black text-slate-800 mt-1">{totalCount}</p>
               </div>
 
-              <div className="rounded-2xl bg-indigo-50/80 p-3.5 border border-indigo-100">
-                <p className="text-[11px] font-semibold text-indigo-800 uppercase tracking-wider">Present %</p>
-                <p className="text-xl font-mono font-black text-indigo-700 mt-0.5">{attendancePercentage}%</p>
+              <div className="rounded-2xl bg-teal-50/90 p-4 border border-teal-200/80 shadow-2xs">
+                <p className="text-[10px] font-extrabold text-teal-800 uppercase tracking-wider">Present %</p>
+                <p className="text-2xl font-mono font-black text-teal-700 mt-1">{attendancePercentage}%</p>
               </div>
             </div>
           </div>
 
-          {/* Full-Width Single-Line Review Stream (Presentees & Absentees Lists) */}
-          <div className="rounded-3xl border border-slate-200/80 bg-white/90 p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
+          {/* Full-Width Single-Line Review Stream */}
+          <div className="rounded-[32px] border border-white/85 bg-white/90 p-6 sm:p-8 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.06)] backdrop-blur-2xl">
             {/* Top Bar: 2 Segmented Tabs & Search Box */}
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between pb-4 border-b border-slate-100">
-              <div className="flex items-center gap-1.5 p-1 bg-slate-100/90 rounded-2xl w-fit">
+              <div className="flex items-center gap-1.5 p-1 bg-slate-100/90 border border-slate-200/60 rounded-2xl w-fit">
                 <button
                   type="button"
                   onClick={() => setReviewTab("present")}
-                  className={`rounded-xl px-4 py-2 text-xs font-bold transition duration-150 flex items-center gap-1.5 cursor-pointer ${
+                  className={`rounded-xl px-4 py-2.5 text-xs font-bold transition duration-150 flex items-center gap-1.5 cursor-pointer ${
                     reviewTab === "present"
                       ? "bg-emerald-600 text-white shadow-sm"
                       : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/60"
@@ -665,7 +669,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                 <button
                   type="button"
                   onClick={() => setReviewTab("absent")}
-                  className={`rounded-xl px-4 py-2 text-xs font-bold transition duration-150 flex items-center gap-1.5 cursor-pointer ${
+                  className={`rounded-xl px-4 py-2.5 text-xs font-bold transition duration-150 flex items-center gap-1.5 cursor-pointer ${
                     reviewTab === "absent"
                       ? "bg-rose-600 text-white shadow-sm"
                       : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/60"
@@ -677,27 +681,27 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
               </div>
 
               {/* Search Box */}
-              <div className="relative w-full sm:w-72">
-                <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <div className="relative w-full sm:w-80">
+                <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
                   placeholder="Search name or USN..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50/70 pl-9 pr-3 py-2 text-xs font-medium text-slate-800 focus:bg-white focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 transition"
+                  className="w-full rounded-2xl border border-slate-200/90 bg-slate-50/70 pl-10 pr-3.5 py-2.5 text-xs font-medium text-slate-800 focus:bg-white focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 transition"
                 />
               </div>
             </div>
 
-            {/* Student Single-Line Rows (Scrollable) */}
-            <div className="mt-4 space-y-2 max-h-[520px] overflow-y-auto pr-1">
+            {/* Student Single-Line Rows */}
+            <div className="mt-4 space-y-2.5 max-h-[520px] overflow-y-auto pr-1">
               <AnimatePresence initial={false}>
                 {/* 1. Presentees Tab View */}
                 {reviewTab === "present" && (
                   filteredPresentList.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-16 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
-                      <Users size={28} className="mb-2 text-slate-300" />
-                      <p className="font-semibold text-slate-600">No present students found</p>
+                    <div className="flex flex-col items-center justify-center py-16 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-3xl bg-slate-50/50">
+                      <Users size={32} className="mb-2 text-slate-300" />
+                      <p className="font-bold text-sm text-slate-700">No present students found</p>
                       {searchQuery && <p className="mt-0.5">Try a different search keyword or check Absentees.</p>}
                     </div>
                   ) : (
@@ -711,11 +715,11 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                         className="flex items-center justify-between rounded-2xl border border-emerald-200/80 bg-emerald-50/40 hover:bg-emerald-50/70 p-3.5 transition duration-150"
                       >
                         <div className="flex items-center gap-3.5 min-w-0">
-                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white border border-slate-200 overflow-hidden shadow-sm">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white border border-slate-200 overflow-hidden shadow-xs">
                             {item.photoUrl ? (
                               <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
                             ) : (
-                              <span className="font-bold text-xs text-slate-700">
+                              <span className="font-extrabold text-xs text-slate-700">
                                 {item.name.slice(0, 1).toUpperCase()}
                               </span>
                             )}
@@ -723,21 +727,21 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
 
                           <div className="min-w-0 flex flex-col sm:flex-row sm:items-center sm:gap-4">
                             <p className="truncate text-sm font-bold text-slate-900">{item.name}</p>
-                            <span className="font-mono text-xs font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200/60 w-fit">
+                            <span className="font-mono text-xs font-semibold text-slate-500 bg-white/90 px-2 py-0.5 rounded-lg border border-slate-200/60 w-fit">
                               {item.enrollmentNo}
                             </span>
-                            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-md w-fit">
-                              <Check size={12} /> Present
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-lg w-fit">
+                              <Check size={12} /> Verified Present
                             </span>
                           </div>
                         </div>
 
-                        {/* Action Button: Remove -> marks student Absent and moves them to Absentees */}
+                        {/* Action Button: Remove */}
                         <div className="flex items-center gap-2 shrink-0">
                           <button
                             type="button"
                             onClick={() => onManualAttendance("absent", item.enrollmentNo)}
-                            className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100 hover:border-rose-300 active:scale-95 transition cursor-pointer shadow-sm"
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs font-bold text-rose-600 hover:bg-rose-100 hover:border-rose-300 active:scale-95 transition cursor-pointer shadow-2xs"
                             title="Remove student and mark as absent"
                           >
                             <Trash2 size={14} className="text-rose-600" />
@@ -752,10 +756,10 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                 {/* 2. Absentees Tab View */}
                 {reviewTab === "absent" && (
                   filteredAbsentList.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-16 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
-                      <CheckCircle2 size={28} className="mb-2 text-emerald-400" />
-                      <p className="font-semibold text-slate-700">100% Attendance Recorded!</p>
-                      <p className="mt-0.5">All registered students are currently marked present.</p>
+                    <div className="flex flex-col items-center justify-center py-16 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-3xl bg-slate-50/50">
+                      <CheckCircle2 size={32} className="mb-2 text-emerald-500" />
+                      <p className="font-extrabold text-sm text-slate-800">100% Attendance Recorded!</p>
+                      <p className="mt-0.5">All registered class students are currently marked present.</p>
                     </div>
                   ) : (
                     filteredAbsentList.map((item) => (
@@ -768,7 +772,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                         className="flex items-center justify-between rounded-2xl border border-rose-200/80 bg-rose-50/30 hover:bg-rose-50/60 p-3.5 transition duration-150"
                       >
                         <div className="flex items-center gap-3.5 min-w-0">
-                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white border border-slate-200 overflow-hidden shadow-sm">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white border border-slate-200 overflow-hidden shadow-xs">
                             {item.photoUrl ? (
                               <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
                             ) : (
@@ -780,21 +784,21 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
 
                           <div className="min-w-0 flex flex-col sm:flex-row sm:items-center sm:gap-4">
                             <p className="truncate text-sm font-bold text-slate-800">{item.name}</p>
-                            <span className="font-mono text-xs font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200/60 w-fit">
+                            <span className="font-mono text-xs font-semibold text-slate-500 bg-white/90 px-2 py-0.5 rounded-lg border border-slate-200/60 w-fit">
                               {item.enrollmentNo}
                             </span>
-                            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-700 bg-rose-100/70 px-2 py-0.5 rounded-md w-fit">
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-700 bg-rose-100/70 px-2 py-0.5 rounded-lg w-fit">
                               <UserX size={12} /> Absent
                             </span>
                           </div>
                         </div>
 
-                        {/* Action Button: Add -> marks student Present and moves them to Presentees */}
+                        {/* Action Button: Add */}
                         <div className="flex items-center gap-2 shrink-0">
                           <button
                             type="button"
                             onClick={() => onManualAttendance("present", item.enrollmentNo)}
-                            className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 hover:border-emerald-400 active:scale-95 transition cursor-pointer shadow-sm"
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100 hover:border-emerald-400 active:scale-95 transition cursor-pointer shadow-2xs"
                             title="Add student to presentees"
                           >
                             <UserPlus size={14} className="text-emerald-700" />
@@ -809,20 +813,20 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
             </div>
 
             {/* Manual Attendance Entry Bar */}
-            <div className="mt-5 pt-4 border-t border-slate-100">
-              <div className="flex gap-2 max-w-md">
+            <div className="mt-6 pt-4 border-t border-slate-100">
+              <div className="flex flex-col sm:flex-row gap-2 max-w-lg">
                 <input
                   type="text"
                   placeholder="Enter USN to add manually (e.g. 1RV21CS001)"
                   value={manualEnrollment}
                   onChange={(e) => setManualEnrollment(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && onManualAttendance("present")}
-                  className="flex-1 rounded-xl border border-slate-200 bg-slate-50/60 px-3.5 py-2 text-xs font-medium text-slate-800 focus:bg-white focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 transition"
+                  className="flex-1 rounded-2xl border border-slate-200/90 bg-slate-50/60 px-4 py-2.5 text-xs font-semibold text-slate-800 focus:bg-white focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 transition"
                 />
                 <Button
                   onClick={() => onManualAttendance("present")}
                   disabled={manualLoading || !manualEnrollment.trim()}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-4 py-2 rounded-xl flex items-center gap-1.5"
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-5 py-2.5 rounded-2xl flex items-center justify-center gap-1.5"
                 >
                   <UserPlus size={14} /> Add to Presentees
                 </Button>
@@ -836,28 +840,28 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
         /* ========================================================================= */
         <>
           {/* Main Studio Control Banner */}
-          <div className="relative overflow-hidden rounded-3xl border border-emerald-500/30 bg-gradient-to-br from-slate-900 via-slate-900 to-emerald-950/80 p-6 text-white shadow-[0_12px_40px_-12px_rgba(16,185,129,0.25)] backdrop-blur-xl">
-            <div className="absolute top-0 right-0 h-64 w-64 rounded-full bg-emerald-500/10 blur-3xl pointer-events-none" />
+          <div className="relative overflow-hidden rounded-[32px] border border-emerald-500/30 bg-gradient-to-br from-slate-950 via-slate-900 to-emerald-950 p-6 sm:p-8 text-white shadow-[0_16px_40px_-12px_rgba(16,185,129,0.3)] backdrop-blur-2xl">
+            <div className="absolute -top-10 -right-10 h-72 w-72 rounded-full bg-[radial-gradient(circle,rgba(16,185,129,0.25)_0%,transparent_70%)] blur-3xl pointer-events-none" />
 
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="relative z-10 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div className="flex items-center gap-4">
-                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 shadow-[0_0_24px_rgba(16,185,129,0.3)]">
+                <div className="flex h-15 w-15 shrink-0 items-center justify-center rounded-2xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 shadow-[0_0_28px_rgba(16,185,129,0.35)]">
                   <Radio className="h-7 w-7 animate-pulse" />
                 </div>
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/40 bg-emerald-500/20 px-2.5 py-0.5 text-[11px] font-bold text-emerald-300 uppercase tracking-wide">
+                    <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/40 bg-emerald-500/20 px-3 py-0.5 text-[11px] font-extrabold text-emerald-300 uppercase tracking-wide shadow-2xs">
                       <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-ping" />
-                      Live Attendance Active
+                      Live Attendance Broadcast
                     </span>
-                    <span className="font-mono text-xs text-slate-400">
+                    <span className="font-mono text-xs text-slate-400 bg-slate-800/80 px-2.5 py-0.5 rounded-full border border-slate-700">
                       ID: {sessionId.slice(-8)}
                     </span>
                   </div>
                   <h2 className="mt-1 text-2xl font-black tracking-tight text-white sm:text-3xl">
                     {selectedSubject?.name || "Live Session"}
                   </h2>
-                  <p className="text-xs text-slate-300">
+                  <p className="text-xs text-slate-300 font-medium">
                     {selectedDepartment?.name || "Department"} • Year {activeSession?.year || "-"} • Sem {activeSession?.semester || "-"} • Sec {activeSession?.section || "A"}
                   </p>
                 </div>
@@ -868,18 +872,18 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                 <button
                   type="button"
                   onClick={openFullscreen}
-                  className="inline-flex items-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-600/30 px-4 py-2.5 text-xs font-bold text-emerald-200 hover:bg-emerald-600/50 transition duration-200 shadow-sm cursor-pointer"
+                  className="inline-flex items-center gap-2 rounded-2xl border border-emerald-500/40 bg-emerald-600/30 px-4.5 py-3 text-xs font-bold text-emerald-200 hover:bg-emerald-600/50 transition duration-200 shadow-sm cursor-pointer"
                 >
                   <Maximize2 size={16} /> Projector HUD
                 </button>
                 {showCancelConfirm ? (
-                  <div className="flex items-center gap-2 bg-rose-950/80 border border-rose-500/50 rounded-xl px-3 py-1.5 animate-in fade-in">
+                  <div className="flex items-center gap-2 bg-rose-950/80 border border-rose-500/50 rounded-2xl px-3.5 py-2 animate-in fade-in">
                     <span className="text-xs font-bold text-rose-200">Discard session?</span>
                     <button
                       type="button"
                       disabled={isCancelling}
                       onClick={handleConfirmCancel}
-                      className="inline-flex items-center gap-1 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold text-xs px-2.5 py-1 rounded-lg cursor-pointer transition shadow-sm"
+                      className="inline-flex items-center gap-1 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold text-xs px-3 py-1.5 rounded-xl cursor-pointer transition shadow-sm"
                     >
                       {isCancelling ? "Cancelling..." : "Yes, Cancel"}
                     </button>
@@ -887,7 +891,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                       type="button"
                       disabled={isCancelling}
                       onClick={() => setShowCancelConfirm(false)}
-                      className="text-xs font-semibold px-2 py-1 text-slate-300 hover:bg-slate-800 rounded-lg cursor-pointer transition"
+                      className="text-xs font-semibold px-2.5 py-1.5 text-slate-300 hover:bg-slate-800 rounded-xl cursor-pointer transition"
                     >
                       No
                     </button>
@@ -897,7 +901,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                     type="button"
                     disabled={isCancelling}
                     onClick={() => setShowCancelConfirm(true)}
-                    className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800/80 px-4 py-2.5 text-xs font-semibold text-slate-300 hover:bg-slate-700 transition duration-200 cursor-pointer"
+                    className="inline-flex items-center gap-2 rounded-2xl border border-slate-700 bg-slate-800/80 px-4.5 py-3 text-xs font-semibold text-slate-300 hover:bg-slate-700 transition duration-200 cursor-pointer"
                   >
                     <Square size={14} /> Cancel Session
                   </button>
@@ -906,26 +910,25 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                   type="button"
                   disabled={stoppingSession}
                   onClick={handleEnterReviewMode}
-                  className="inline-flex items-center gap-2 rounded-xl border border-rose-500/50 bg-rose-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-rose-700 active:scale-95 transition duration-200 shadow-[0_4px_16px_rgba(225,29,72,0.3)] cursor-pointer disabled:opacity-50"
+                  className="inline-flex items-center gap-2 rounded-2xl border border-rose-500/50 bg-rose-600 px-6 py-3 text-xs font-bold text-white hover:bg-rose-700 active:scale-95 transition duration-200 shadow-[0_6px_20px_rgba(225,29,72,0.35)] cursor-pointer disabled:opacity-50"
                 >
                   <Square size={14} /> {stoppingSession ? "Stopping..." : "Stop Session"}
                 </button>
               </div>
             </div>
-
           </div>
 
           {/* Grid: Enlarged Dynamic QR (8 cols) + Beside Stream (4 cols) */}
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
             {/* Enlarged Space: Dynamic Rotating QR Stage (8 cols) */}
             <div className="lg:col-span-8 flex flex-col">
-              <div className="relative flex-1 rounded-3xl border border-slate-200/80 bg-white/90 p-7 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl flex flex-col items-center justify-between text-center">
-                <div className="w-full flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="relative flex-1 rounded-[32px] border border-white/85 bg-white/90 p-7 sm:p-8 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.06)] backdrop-blur-2xl flex flex-col items-center justify-between text-center">
+                <div className="w-full flex items-center justify-between pb-3.5 border-b border-slate-100">
                   <div className="flex items-center gap-2">
                     <span className="flex h-2.5 w-2.5 rounded-full bg-emerald-500 animate-ping" />
-                    <h3 className="font-bold text-slate-900 text-sm tracking-tight">Dynamic Rotating QR Studio</h3>
+                    <h3 className="font-extrabold text-slate-900 text-sm tracking-tight">Dynamic Rotating QR Studio</h3>
                   </div>
-                  <span className="flex items-center gap-1 font-semibold text-xs text-emerald-600">
+                  <span className="flex items-center gap-1 font-bold text-xs text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200/70 shadow-2xs">
                     <ShieldCheck size={14} /> Geofenced Verification
                   </span>
                 </div>
@@ -942,13 +945,13 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                   />
                 </div>
 
-                <div className="w-full rounded-2xl bg-slate-50 border border-slate-100 p-3.5 text-left">
-                  <div className="flex items-center justify-between text-xs text-slate-600">
-                    <span className="flex items-center gap-1.5 font-medium">
+                <div className="w-full rounded-2xl bg-slate-50/90 border border-slate-200/80 p-4 text-left shadow-2xs">
+                  <div className="flex items-center justify-between text-xs text-slate-600 font-medium">
+                    <span className="flex items-center gap-1.5">
                       <Clock size={14} className="text-slate-400" />
                       Session Started: <strong className="font-mono text-slate-800">{formattedStartTime}</strong>
                     </span>
-                    <span className="font-mono text-[11px] text-slate-400">
+                    <span className="font-mono text-[11px] text-slate-500">
                       Scan via SmartAttend Student App
                     </span>
                   </div>
@@ -956,17 +959,17 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
               </div>
             </div>
 
-            {/* Beside Space: Live Scan Stream (4 cols) - Pure High-Performance Read-Only Ticker */}
+            {/* Beside Space: Live Scan Stream (4 cols) */}
             <div className="lg:col-span-4 flex flex-col">
-              <div className="flex-1 rounded-3xl border border-slate-200/80 bg-white/90 p-5 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl flex flex-col">
+              <div className="flex-1 rounded-[32px] border border-white/85 bg-white/90 p-5 sm:p-6 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.06)] backdrop-blur-2xl flex flex-col">
                 {/* Stream Header */}
-                <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div className="flex items-center justify-between pb-3.5 border-b border-slate-100">
                   <div>
-                    <h3 className="font-bold text-slate-900 text-sm tracking-tight flex items-center gap-1.5">
+                    <h3 className="font-extrabold text-slate-900 text-sm tracking-tight flex items-center gap-1.5">
                       <Radio size={15} className="text-emerald-500 animate-pulse" />
                       Live Scan Stream
                     </h3>
-                    <p className="text-[11px] text-slate-500 mt-0.5">
+                    <p className="text-[11px] text-slate-500 font-medium mt-0.5">
                       Real-time student check-ins
                     </p>
                   </div>
@@ -978,15 +981,15 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                         {effectiveTotalStudents > 0 ? ` / ${effectiveTotalStudents}` : ""}
                       </span>
                     </div>
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
                       Checked In
                     </span>
                   </div>
                 </div>
 
                 {/* Live Feed Status Bar */}
-                <div className="mt-3 flex items-center justify-between rounded-xl bg-emerald-50/80 border border-emerald-100 px-3.5 py-2 text-xs">
-                  <span className="flex items-center gap-1.5 font-bold text-emerald-800">
+                <div className="mt-3.5 flex items-center justify-between rounded-2xl bg-emerald-50/90 border border-emerald-200/80 px-3.5 py-2 text-xs shadow-2xs">
+                  <span className="flex items-center gap-1.5 font-extrabold text-emerald-800">
                     <span className="h-2 w-2 rounded-full bg-emerald-500 animate-ping" />
                     Live Scanning Active
                   </span>
@@ -996,7 +999,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                   </span>
                 </div>
 
-                {/* Live Stream List (Scrollable with Hardware-Accelerated 60 FPS Containment) */}
+                {/* Live Stream List */}
                 <div
                   className="mt-3 space-y-2 max-h-[390px] overflow-y-auto pr-1"
                   style={{
@@ -1007,9 +1010,9 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                 >
                   <AnimatePresence initial={false}>
                     {filteredPresentList.length === 0 ? (
-                      <div className="flex flex-col items-center justify-center py-14 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
+                      <div className="flex flex-col items-center justify-center py-14 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-3xl bg-slate-50/50">
                         <Radio size={24} className="mb-2 text-emerald-400 animate-pulse" />
-                        <p className="font-semibold text-slate-700">Waiting for live scans</p>
+                        <p className="font-bold text-sm text-slate-700">Waiting for live scans</p>
                         <p className="mt-1 text-[11px] text-slate-400 max-w-[200px]">
                           Scanned students will appear here in real-time.
                         </p>
@@ -1031,14 +1034,14 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                             initial={{ opacity: 0, y: -6 }}
                             animate={{ opacity: 1, y: 0 }}
                             exit={{ opacity: 0, y: 6 }}
-                            className="flex items-center justify-between rounded-xl border border-emerald-200/80 bg-emerald-50/40 p-2.5 transition-colors duration-150"
+                            className="flex items-center justify-between rounded-2xl border border-emerald-200/80 bg-emerald-50/40 p-2.5 transition-colors duration-150"
                           >
                             <div className="flex items-center gap-2.5 min-w-0">
-                              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white border border-slate-200 overflow-hidden shadow-sm">
+                              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-white border border-slate-200 overflow-hidden shadow-2xs">
                                 {item.photoUrl ? (
                                   <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
                                 ) : (
-                                  <span className="font-bold text-xs text-slate-700">
+                                  <span className="font-extrabold text-xs text-slate-700">
                                     {item.name.slice(0, 1).toUpperCase()}
                                   </span>
                                 )}
@@ -1050,7 +1053,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                             </div>
 
                             <div className="flex items-center gap-1.5 shrink-0">
-                              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100/90 border border-emerald-200 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+                              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100/90 border border-emerald-300 px-2 py-0.5 text-[10px] font-extrabold text-emerald-800 shadow-2xs">
                                 <Check size={10} className="stroke-[3]" /> {scanTime}
                               </span>
                             </div>

@@ -64,15 +64,19 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
   return (
     <div className="space-y-6">
       {/* Top Controls Card */}
-      <div className="rounded-3xl border border-slate-200/80 bg-white/90 p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
+      <div className="relative overflow-hidden rounded-3xl border border-slate-200/80 bg-white/80 p-6 sm:p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between pb-4 border-b border-slate-100">
           <div>
-            <h2 className="text-xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
-              <Smartphone size={20} className="text-emerald-600" />
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50/90 px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-emerald-700 shadow-xs mb-2">
+              <Sparkles size={12} className="text-emerald-600" />
+              Device Transition Portal
+            </div>
+            <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
+              <Smartphone size={22} className="text-emerald-600" />
               Biometric Device Change Requests
             </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Review and approve student device transitions
+            <p className="text-xs text-slate-500 font-normal mt-0.5">
+              Review and approve student device resets with photographic verification.
             </p>
           </div>
 
@@ -80,9 +84,9 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
             type="button"
             onClick={onLoadDeviceRequests}
             disabled={deviceRequestsLoading}
-            className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 transition shadow-sm"
+            className="inline-flex items-center gap-2 rounded-2xl border border-slate-200/90 bg-white px-4.5 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 transition shadow-xs cursor-pointer"
           >
-            <RefreshCw size={13} className={deviceRequestsLoading ? "animate-spin text-emerald-600" : ""} />
+            <RefreshCw size={13} className={deviceRequestsLoading ? "animate-spin text-emerald-600" : "text-emerald-600"} />
             <span>Refresh Feed</span>
           </button>
         </div>
@@ -94,10 +98,10 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
               key={status}
               type="button"
               onClick={() => setDeviceRequestStatus(status)}
-              className={`rounded-2xl px-4 py-2 text-xs font-bold capitalize transition cursor-pointer ${
+              className={`rounded-2xl px-4.5 py-2.5 text-xs font-extrabold capitalize transition-all duration-200 cursor-pointer ${
                 deviceRequestStatus === status
-                  ? "bg-emerald-600 text-white shadow-[0_4px_12px_rgba(16,185,129,0.3)]"
-                  : "border border-slate-200 bg-slate-50/70 text-slate-600 hover:bg-white"
+                  ? "bg-emerald-600 text-white shadow-[0_4px_12px_rgba(16,185,129,0.25)]"
+                  : "border border-slate-200/80 bg-white/70 text-slate-600 hover:bg-white hover:border-slate-300"
               }`}
             >
               {status}
@@ -107,7 +111,7 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
       </div>
 
       {deviceRequestError && (
-        <div className="flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-medium text-rose-700">
+        <div className="flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-medium text-rose-700 shadow-xs">
           <AlertCircle size={16} className="shrink-0" />
           <span>{deviceRequestError}</span>
         </div>
@@ -121,9 +125,9 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
             <Skeleton className="h-32 w-full rounded-3xl" />
           </div>
         ) : deviceRequests.length === 0 ? (
-          <div className="flex flex-col items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/60 py-16 text-center">
-            <Smartphone size={32} className="text-slate-300 mb-2" />
-            <p className="font-bold text-sm text-slate-700">No device requests found</p>
+          <div className="flex flex-col items-center justify-center rounded-[32px] border border-dashed border-slate-200/80 bg-white/70 py-16 text-center shadow-xs">
+            <Smartphone size={36} className="text-slate-300 mb-2" />
+            <p className="font-extrabold text-sm text-slate-800">No device requests found</p>
             <p className="text-xs text-slate-500 mt-0.5">
               There are currently no {deviceRequestStatus === "all" ? "" : deviceRequestStatus} requests for your department.
             </p>
@@ -141,12 +145,12 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
                 key={request._id || request.id}
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="rounded-3xl border border-slate-200/80 bg-white/90 p-5 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl transition hover:shadow-md"
+                className="rounded-[28px] border border-white/85 bg-white/90 p-6 shadow-[0_12px_36px_-10px_rgba(0,0,0,0.05)] backdrop-blur-2xl transition hover:shadow-md"
               >
                 <div className={isPending ? "grid grid-cols-1 lg:grid-cols-[160px_1fr] gap-5" : "space-y-3"}>
                   {/* Selfie Preview for Pending */}
                   {isPending && (
-                    <div className="relative group overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 aspect-square max-w-[160px] flex items-center justify-center">
+                    <div className="relative group overflow-hidden rounded-2xl border-2 border-slate-200 bg-slate-50 aspect-square max-w-[160px] flex items-center justify-center shadow-inner">
                       {request.selfieDataUrl ? (
                         <>
                           <img
@@ -157,7 +161,7 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
                           <button
                             type="button"
                             onClick={() => setInspectingRequest(request)}
-                            className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/50 text-white opacity-0 group-hover:opacity-100 transition backdrop-blur-xs font-bold text-[10px] gap-1 cursor-pointer"
+                            className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/60 text-white opacity-0 group-hover:opacity-100 transition backdrop-blur-xs font-extrabold text-[11px] gap-1.5 cursor-pointer"
                           >
                             <Eye size={16} /> Compare
                           </button>
@@ -172,13 +176,13 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
                   <div className="flex-1 space-y-3">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
-                        <h3 className="font-bold text-base text-slate-900">
+                        <h3 className="font-extrabold text-base text-slate-900 tracking-tight">
                           {student.name || "Student"}
                         </h3>
-                        <p className="font-mono text-xs font-semibold text-emerald-700">
+                        <p className="font-mono text-xs font-bold text-emerald-700">
                           USN: {student.enrollmentNo || "-"}
                         </p>
-                        <p className="text-xs text-slate-500">
+                        <p className="text-xs text-slate-500 font-medium mt-0.5">
                           {student.email || "-"} • Year {student.year || "-"}, Sem {student.semester || "-"}, Sec {student.section || "-"}
                         </p>
                       </div>
@@ -196,15 +200,15 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
                     </div>
 
                     {/* Reviewer Note or Context */}
-                    <div className="rounded-2xl bg-slate-50 p-3 text-xs text-slate-600">
+                    <div className="rounded-2xl bg-slate-50/90 p-3.5 text-xs text-slate-600 border border-slate-200/60">
                       {isPending ? (
                         <div className="flex items-center justify-between gap-2">
-                          <span>Verify the live selfie photo matches official college records before approving.</span>
+                          <span>Verify the live selfie matches official college records before approving.</span>
                           {request.selfieDataUrl && (
                             <button
                               type="button"
                               onClick={() => setInspectingRequest(request)}
-                              className="text-emerald-700 font-bold hover:underline shrink-0"
+                              className="text-emerald-700 font-bold hover:underline shrink-0 cursor-pointer"
                             >
                               Open Identity Inspector →
                             </button>
@@ -214,7 +218,7 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
                         <div>
                           <span>Reviewed by: <strong className="text-slate-800">{request.reviewedBy?.name || "Faculty"}</strong></span>
                           {status === "rejected" && request.reviewNote && (
-                            <p className="mt-1 text-rose-700">
+                            <p className="mt-1 text-rose-700 font-semibold">
                               Reason: <em>"{request.reviewNote}"</em>
                             </p>
                           )}
@@ -226,7 +230,7 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
                     {isPending && (
                       <div className="space-y-3 pt-2">
                         <textarea
-                          className="w-full rounded-2xl border border-slate-200 bg-slate-50/50 p-3 text-xs font-medium text-slate-800 placeholder-slate-400 focus:bg-white focus:border-emerald-500 focus:outline-none"
+                          className="w-full rounded-2xl border border-slate-200 bg-slate-50/60 p-3.5 text-xs font-medium text-slate-800 placeholder-slate-400 focus:bg-white focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 transition"
                           rows={2}
                           placeholder="Rejection reason note (mandatory only if rejecting)..."
                           value={deviceRejectNote[request._id] || ""}
@@ -238,12 +242,12 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
                           }
                         />
 
-                        <div className="flex flex-wrap items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2.5">
                           <button
                             type="button"
                             onClick={() => onReviewDeviceRequest(request._id, "approved")}
                             disabled={deviceReviewingId === request._id}
-                            className="inline-flex items-center gap-1.5 rounded-2xl bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-emerald-700 shadow-sm transition disabled:opacity-50 cursor-pointer"
+                            className="inline-flex items-center gap-1.5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 px-5 py-2.5 text-xs font-bold text-white shadow-[0_4px_16px_rgba(16,185,129,0.3)] hover:brightness-105 transition disabled:opacity-50 cursor-pointer"
                           >
                             <CheckCircle2 size={14} />
                             <span>Approve & Reset Device</span>
@@ -253,7 +257,7 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
                             type="button"
                             onClick={() => onReviewDeviceRequest(request._id, "rejected")}
                             disabled={deviceReviewingId === request._id}
-                            className="inline-flex items-center gap-1.5 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-xs font-bold text-rose-700 hover:bg-rose-100 transition disabled:opacity-50 cursor-pointer"
+                            className="inline-flex items-center gap-1.5 rounded-2xl border border-rose-200 bg-rose-50 px-4.5 py-2.5 text-xs font-bold text-rose-700 hover:bg-rose-100 transition disabled:opacity-50 cursor-pointer"
                           >
                             <XCircle size={14} />
                             <span>Reject</span>
@@ -272,24 +276,24 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
       {/* Split-View Biometric Identity Inspector Modal */}
       <AnimatePresence>
         {inspectingRequest && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-md">
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="relative w-full max-w-2xl rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl overflow-hidden"
+              className="relative w-full max-w-2xl rounded-[32px] border border-white/80 bg-white p-6 sm:p-8 shadow-2xl overflow-hidden"
             >
               <div className="flex items-center justify-between pb-4 border-b border-slate-100">
                 <div className="flex items-center gap-2">
-                  <Fingerprint className="text-emerald-600" size={20} />
-                  <h3 className="font-bold text-base text-slate-900">
+                  <Fingerprint className="text-emerald-600" size={22} />
+                  <h3 className="font-extrabold text-lg text-slate-900 tracking-tight">
                     Biometric Identity Inspector
                   </h3>
                 </div>
                 <button
                   type="button"
                   onClick={() => setInspectingRequest(null)}
-                  className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                  className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 cursor-pointer"
                 >
                   <X size={18} />
                 </button>
@@ -298,7 +302,7 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
               <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-6">
                 {/* Registered Profile Photo */}
                 <div className="flex flex-col items-center text-center">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-2">
+                  <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500 mb-2">
                     Official College Photo
                   </span>
                   <div className="h-48 w-48 rounded-2xl border-2 border-slate-200 bg-slate-50 overflow-hidden flex items-center justify-center shadow-inner">
@@ -312,14 +316,14 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
                       <User size={48} className="text-slate-300" />
                     )}
                   </div>
-                  <p className="mt-2 font-bold text-xs text-slate-800">
+                  <p className="mt-2.5 font-bold text-xs text-slate-800">
                     {inspectingRequest.student?.name || "Student"}
                   </p>
                 </div>
 
                 {/* Uploaded Verification Selfie */}
                 <div className="flex flex-col items-center text-center">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-700 mb-2">
+                  <span className="text-[11px] font-extrabold uppercase tracking-wider text-emerald-700 mb-2">
                     Live Captured Selfie
                   </span>
                   <div className="h-48 w-48 rounded-2xl border-2 border-emerald-400 bg-emerald-50/50 overflow-hidden flex items-center justify-center shadow-md">
@@ -333,7 +337,7 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
                       <span className="text-xs text-slate-400">No image captured</span>
                     )}
                   </div>
-                  <p className="mt-2 font-mono text-xs text-emerald-700 font-bold">
+                  <p className="mt-2.5 font-mono text-xs text-emerald-700 font-extrabold">
                     USN: {inspectingRequest.student?.enrollmentNo || "-"}
                   </p>
                 </div>
@@ -343,7 +347,7 @@ export const DeviceRequestsView: React.FC<DeviceRequestsViewProps> = React.memo(
                 <Button
                   onClick={() => setInspectingRequest(null)}
                   variant="secondary"
-                  className="rounded-2xl text-xs"
+                  className="rounded-2xl text-xs font-bold"
                 >
                   Close Inspector
                 </Button>
