@@ -123,8 +123,12 @@ function getAttendanceTone(percentage: number) {
 const AdminDashboard: React.FC = () => {
   const {
     currentUser,
-    users,
-    departments,
+    users = [],
+    departments = [],
+    subjects = [],
+    fetchDepartments,
+    fetchSubjects,
+    fetchUsers,
     logout,
     generateRegistrationLink,
     updateCurrentUser,

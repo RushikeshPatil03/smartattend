@@ -154,7 +154,7 @@ const StudentDashboard: React.FC = () => {
   const [scannerStatusTone, setScannerStatusTone] = useState<"neutral" | "success" | "error">("neutral");
   const [firstDynamicArmActive, setFirstDynamicArmActive] = useState(false);
   const [locationReady, setLocationReady] = useState(false);
-  const [faceGateOpen, setFaceGateOpen] = useState(true);
+  const [faceGateOpen, setFaceGateOpen] = useState(false);
   const [faceGateStatus, setFaceGateStatus] = useState<"VERIFYING" | "MATCHING" | "FAILED">("VERIFYING");
   const [faceGateMessage, setFaceGateMessage] = useState("");
   const [liveFacePhoto, setLiveFacePhoto] = useState("");
@@ -262,9 +262,6 @@ const StudentDashboard: React.FC = () => {
     faceGateTimerRef.current = window.setTimeout(() => {
       if (!mountedRef.current) return;
       setFaceVerifiedUntil(0);
-      setFaceGateOpen(true);
-      setFaceGateStatus("VERIFYING");
-      setFaceGateMessage("Face verification expired. Verify again to mark attendance.");
     }, FACE_VERIFICATION_WINDOW_MS);
   }, []);
 
@@ -701,13 +698,31 @@ const StudentDashboard: React.FC = () => {
   return (
     <div className="relative mx-auto min-h-screen max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
       {faceGateOpen && (
-        <div className="fixed inset-0 z-[75] overflow-y-auto bg-black/85 p-4">
-          <div className="mx-auto flex min-h-full w-full max-w-xl items-center justify-center py-4">
+        <div className="fixed inset-0 z-[75] overflow-y-auto bg-black/85 p-4 flex flex-col items-center justify-center">
+          <div className="relative mx-auto flex min-h-full w-full max-w-xl items-center justify-center py-4">
+            <button
+              type="button"
+              onClick={() => {
+                setFaceGateOpen(false);
+                setFaceGateStatus("VERIFYING");
+              }}
+              className="absolute top-2 right-2 z-20 p-2 text-white/80 hover:text-white rounded-full bg-slate-900/80 hover:bg-slate-800 transition-colors cursor-pointer"
+              title="Close face verification"
+            >
+              <X size={20} />
+            </button>
             <React.Suspense fallback={<div className="text-sm text-white">Opening face verification...</div>}>
               <LivePhotoCapture
                 value={liveFacePhoto}
                 onChange={setLiveFacePhoto}
-                onCaptured={handleLiveFaceCaptured}
+                onCaptured={(capture) => {
+                  handleLiveFaceCaptured(capture);
+                  if (capture.faceVerification?.matched && capture.faceVerification.liveness === "movement") {
+                    window.setTimeout(() => {
+                      void simulateScan();
+                    }, 250);
+                  }
+                }}
                 disabled={faceGateStatus === "MATCHING" || !registeredFacePhoto}
                 autoStart
                 autoCapture
