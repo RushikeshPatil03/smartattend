@@ -20,11 +20,11 @@ export type FaceQualityResult = {
 
 const WASM_BASE_URL =
   import.meta.env.VITE_MEDIAPIPE_WASM_BASE_URL ||
-  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm";
+  "/models/mediapipe/wasm";
 
 const MODEL_URL =
   import.meta.env.VITE_MEDIAPIPE_FACE_DETECTOR_MODEL_URL ||
-  "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite";
+  "/models/mediapipe/blaze_face_short_range.tflite";
 
 const MIN_FACE_SCORE = Number(import.meta.env.VITE_FACE_MIN_DETECTION_SCORE || 0.62);
 const MIN_FACE_AREA_RATIO = Number(import.meta.env.VITE_FACE_MIN_AREA_RATIO || 0.12);

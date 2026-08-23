@@ -36,6 +36,10 @@ type ClientFaceVerification = {
     translation: number;
     rotation: number;
     missingFaceSamples: number;
+    earMin?: number;
+    earMax?: number;
+    yawDelta?: number;
+    challenge?: string;
   };
 };
 
@@ -428,8 +432,11 @@ const LivePhotoCapture: React.FC<{
         setCaptureError("");
         setVerificationMessage("Preparing secure face check...");
         await loadModelsIfNeeded();
-        setVerificationMessage("Checking live face movement...");
-        const liveness = await runMovementLiveness(videoRef.current!);
+        const liveness = await runMovementLiveness(videoRef.current!, {
+          onChallengeUpdate: (update) => {
+            setVerificationMessage(update.prompt);
+          },
+        });
         if (!liveness.ok) {
           throw new Error(liveness.reason || "Live face movement was not detected.");
         }
@@ -452,7 +459,10 @@ const LivePhotoCapture: React.FC<{
             threshold: match.threshold,
             matched: true,
             liveness: "movement",
-            livenessMetric: liveness.metric,
+            livenessMetric: {
+              ...liveness.metric,
+              challenge: liveness.challenge,
+            },
           };
         } catch (descriptorError: any) {
           if (String(descriptorError?.message || "").includes("did not match")) {
@@ -471,7 +481,10 @@ const LivePhotoCapture: React.FC<{
             threshold: LEGACY_FACE_SCORE_THRESHOLD,
             matched: true,
             liveness: "movement",
-            livenessMetric: liveness.metric,
+            livenessMetric: {
+              ...liveness.metric,
+              challenge: liveness.challenge,
+            },
           };
         }
       } else {
@@ -675,6 +688,17 @@ const LivePhotoCapture: React.FC<{
         <div className="space-y-3">
           <div className="relative overflow-hidden rounded-[22px] border border-slate-200 bg-black">
             <video ref={videoRef} className="aspect-[3/4] w-full object-cover" autoPlay muted playsInline />
+            {verificationInProgress && verificationMessage ? (
+              <div className="pointer-events-none absolute inset-x-3 top-3 z-10 flex justify-center">
+                <div className="inline-flex items-center gap-2 rounded-full border border-teal-400/40 bg-slate-950/80 px-4 py-1.5 text-xs font-semibold text-teal-200 shadow-lg backdrop-blur-md transition-all">
+                  <span className="relative flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-teal-400 opacity-75"></span>
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-teal-500"></span>
+                  </span>
+                  <span>{verificationMessage}</span>
+                </div>
+              </div>
+            ) : null}
           </div>
 
           {autoCapture ? (

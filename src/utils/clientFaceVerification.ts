@@ -1,10 +1,12 @@
 const FACE_API_SCRIPT_URL =
   import.meta.env.VITE_FACE_API_SCRIPT_URL ||
-  "https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js";
+  import.meta.env.VITE_FACEAPI_SCRIPT_URL ||
+  "/models/face-api.min.js";
 
 const FACE_API_MODEL_URL =
   import.meta.env.VITE_FACE_API_MODEL_URL ||
-  "https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights";
+  import.meta.env.VITE_FACEAPI_MODEL_URL ||
+  "/models";
 
 const configuredThreshold = Number(import.meta.env.VITE_FACE_API_DISTANCE_THRESHOLD || 0.5);
 const FACE_MATCH_DISTANCE_THRESHOLD = Number.isFinite(configuredThreshold)

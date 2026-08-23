@@ -8,31 +8,41 @@ The attendance flow now supports:
 
 ## Frontend MediaPipe
 
-The browser loads MediaPipe Tasks Vision at runtime. Optional environment values:
+The browser loads MediaPipe Tasks Vision and BlazeFace detector from local static storage in `public/models/mediapipe/`. Default environment values:
 
 ```env
-VITE_MEDIAPIPE_WASM_BASE_URL=https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm
-VITE_MEDIAPIPE_FACE_DETECTOR_MODEL_URL=https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite
+VITE_MEDIAPIPE_WASM_BASE_URL=/models/mediapipe/wasm
+VITE_MEDIAPIPE_FACE_DETECTOR_MODEL_URL=/models/mediapipe/blaze_face_short_range.tflite
 ```
 
-## Client-Side Attendance Verification
+## Client-Side Attendance Verification & Randomized Challenge Liveness
 
-Student attendance uses the existing front-camera capture after MediaPipe reports one centered,
-stable face. The browser then loads face-api.js and its tiny models on demand, samples a short
-movement-based liveness window, and compares a 160 px live-frame descriptor with the registered
+Student attendance uses the front-camera capture after MediaPipe reports one centered,
+stable face. The browser loads `face-api.js` and its tiny models locally from `/models/`,
+randomly assigns one of three micro-challenges:
+1. `BLINK`: Eye Aspect Ratio (EAR) drops below 0.20 and recovers to >= 0.23.
+2. `TURN_LEFT`: Nose landmark horizontal shift towards the left boundary.
+3. `TURN_RIGHT`: Nose landmark horizontal shift towards the right boundary.
+
+Once the challenge passes within 3.0 seconds, it compares a 160 px live-frame descriptor with the registered
 profile-photo descriptor. The profile descriptor is cached in memory and `sessionStorage`; live
 frames and descriptors are never sent to the server. A successful face and liveness result unlocks
 attendance for 60 seconds.
 
-Optional tuning values:
+Model files can be re-downloaded or verified anytime with:
+```bash
+npm run models:download
+```
+
+Default tuning values:
 
 ```env
-VITE_FACEAPI_SCRIPT_URL=https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js
-VITE_FACEAPI_MODEL_URL=https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights
+VITE_FACEAPI_SCRIPT_URL=/models/face-api.min.js
+VITE_FACEAPI_MODEL_URL=/models
 VITE_FACEAPI_INPUT_SIZE=160
 VITE_FACEAPI_DISTANCE_THRESHOLD=0.45
 VITE_FACEAPI_MOVEMENT_MAX_TIME_MS=3200
-VITE_FACEAPI_MOVEMENT_SAMPLE_FPS=6
+VITE_FACEAPI_MOVEMENT_SAMPLE_FPS=8
 VITE_FACEAPI_MOVEMENT_TRANSLATE_THRESHOLD=0.045
 VITE_FACEAPI_MOVEMENT_ROTATION_THRESHOLD=0.045
 VITE_FACEAPI_LEGACY_SCORE_THRESHOLD=0.78
