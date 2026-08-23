@@ -50,7 +50,7 @@ const ManageSubjectsCatalog: React.FC = () => {
   const [showAllot, setShowAllot] = useState(false);
   const [allotTargetSubject, setAllotTargetSubject] = useState<any | null>(null);
   const [selectedDepartmentIds, setSelectedDepartmentIds] = useState<string[]>([]);
-  const [facultyByAssignment, setFacultyByAssignment] = useState<Record<string, string>>({});
+  const [facultyByAssignment, setFacultyByAssignment] = useState<Record<string, string[]>>({});
   const [applyFacultyId, setApplyFacultyId] = useState("");
   const [allotLoading, setAllotLoading] = useState(false);
 
@@ -93,7 +93,15 @@ const ManageSubjectsCatalog: React.FC = () => {
       return SECTION_OPTIONS.map((section) => {
         const rowKey = `${departmentId}:${section}`;
         const classCode = `${String(department.code || "").toUpperCase()}${allotTargetSubject.year}${allotTargetSubject.semester}${section}-${String(allotTargetSubject.code || "").toUpperCase()}`;
-        return { rowKey, departmentId, departmentName: department.name, departmentCode: String(department.code || "").toUpperCase(), section, classCode, facultyId: facultyByAssignment[rowKey] || "" };
+        return {
+          rowKey,
+          departmentId,
+          departmentName: department.name,
+          departmentCode: String(department.code || "").toUpperCase(),
+          section,
+          classCode,
+          facultyIds: facultyByAssignment[rowKey] || [],
+        };
       });
     });
   }, [allotTargetSubject, departments, facultyByAssignment, selectedDepartmentIds]);
@@ -161,11 +169,17 @@ const ManageSubjectsCatalog: React.FC = () => {
     const departmentIds: string[] = Array.from(
       new Set(existingAssignments.map((a: any) => String(getId(a.department) || "")).filter(Boolean))
     );
-    const nextFacultyByAssignment = existingAssignments.reduce((acc: Record<string, string>, assignment: any) => {
+    const nextFacultyByAssignment = existingAssignments.reduce((acc: Record<string, string[]>, assignment: any) => {
       const departmentId = getId(assignment.department);
       const facultyId = getId(assignment.faculty);
       const section = String(assignment?.section || "").toUpperCase();
-      if (departmentId && facultyId && section) acc[`${departmentId}:${section}`] = facultyId;
+      if (departmentId && facultyId && section) {
+        const key = `${departmentId}:${section}`;
+        const cur = acc[key] || [];
+        if (!cur.includes(facultyId)) {
+          acc[key] = [...cur, facultyId];
+        }
+      }
       return acc;
     }, {});
     setAllotTargetSubject(subject);
@@ -177,13 +191,26 @@ const ManageSubjectsCatalog: React.FC = () => {
 
   const toggleDepartment = (departmentId: string) => setSelectedDepartmentIds((cur) => (cur.includes(departmentId) ? cur.filter((d) => d !== departmentId) : [...cur, departmentId]));
 
-  const updateRowFaculty = (rowKey: string, facultyId: string) => setFacultyByAssignment((cur) => ({ ...cur, [rowKey]: facultyId }));
+  const toggleRowFaculty = (rowKey: string, facultyId: string) => {
+    setFacultyByAssignment((cur) => {
+      const existing = cur[rowKey] || [];
+      const updated = existing.includes(facultyId)
+        ? existing.filter((id) => id !== facultyId)
+        : [...existing, facultyId];
+      return { ...cur, [rowKey]: updated };
+    });
+  };
 
   const applyFacultyToAll = () => {
     if (!applyFacultyId) return;
     setFacultyByAssignment((cur) => {
       const next = { ...cur };
-      generatedRows.forEach((r) => (next[r.rowKey] = applyFacultyId));
+      generatedRows.forEach((r) => {
+        const existing = next[r.rowKey] || [];
+        if (!existing.includes(applyFacultyId)) {
+          next[r.rowKey] = [...existing, applyFacultyId];
+        }
+      });
       return next;
     });
   };
@@ -191,7 +218,17 @@ const ManageSubjectsCatalog: React.FC = () => {
   const handleAllotSave = async () => {
     if (!allotTargetSubject) return;
     if (!selectedDepartmentIds.length) return alert("Select at least one department.");
-    const completedAssignments = generatedRows.filter((r) => r.facultyId).map((r) => ({ departmentId: r.departmentId, facultyId: r.facultyId, section: r.section, classCode: r.classCode }));
+    const completedAssignments: any[] = [];
+    generatedRows.forEach((r) => {
+      (r.facultyIds || []).forEach((facultyId: string) => {
+        completedAssignments.push({
+          departmentId: r.departmentId,
+          facultyId,
+          section: r.section,
+          classCode: r.classCode,
+        });
+      });
+    });
     if (!completedAssignments.length) return alert("Assign at least one faculty before saving allotments.");
     setAllotLoading(true);
     const res = await allotSubject(getId(allotTargetSubject), completedAssignments);
@@ -425,10 +462,51 @@ const ManageSubjectsCatalog: React.FC = () => {
                               <td className="px-4 py-3">{row.departmentName} ({row.departmentCode})</td>
                               <td className="px-4 py-3">{row.section}</td>
                               <td className="px-4 py-3">
-                                <select className="w-full rounded-xl border border-slate-300 px-3 py-2" value={row.facultyId} onChange={(e) => updateRowFaculty(row.rowKey, e.target.value)}>
-                                  <option value="">Select faculty</option>
-                                  {faculties.map((faculty: any) => (<option key={getId(faculty)} value={getId(faculty)}>{faculty.name} ({faculty.email})</option>))}
-                                </select>
+                                <div className="space-y-1.5">
+                                  {row.facultyIds.length > 0 && (
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                      {row.facultyIds.map((fId: string) => {
+                                        const fObj = faculties.find((f: any) => getId(f) === fId);
+                                        return (
+                                          <span
+                                            key={fId}
+                                            className="inline-flex items-center gap-1 rounded-lg bg-blue-50 border border-blue-200 px-2 py-0.5 text-xs font-semibold text-blue-800"
+                                          >
+                                            <span>{fObj?.name || fId}</span>
+                                            <button
+                                              type="button"
+                                              onClick={() => toggleRowFaculty(row.rowKey, fId)}
+                                              className="text-blue-500 hover:text-blue-800 cursor-pointer"
+                                              title="Remove faculty"
+                                            >
+                                              <X size={12} />
+                                            </button>
+                                          </span>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                  <select
+                                    className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-xs bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                                    value=""
+                                    onChange={(e) => {
+                                      if (e.target.value) {
+                                        toggleRowFaculty(row.rowKey, e.target.value);
+                                      }
+                                    }}
+                                  >
+                                    <option value="">+ Add / assign co-faculty...</option>
+                                    {faculties.map((faculty: any) => {
+                                      const fId = getId(faculty);
+                                      const isSelected = row.facultyIds.includes(fId);
+                                      return (
+                                        <option key={fId} value={fId} disabled={isSelected}>
+                                          {isSelected ? `✓ ${faculty.name}` : faculty.name} ({faculty.email})
+                                        </option>
+                                      );
+                                    })}
+                                  </select>
+                                </div>
                               </td>
                             </tr>
                           ))}

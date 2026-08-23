@@ -15,6 +15,7 @@ import { createSequentialBuffer } from "../services/sequentialQrBuffer";
 import { parseQrPayload, RotatingQrPayload } from "../utils/totpQrGenerator";
 
 import { loadModelsIfNeeded, computeDescriptorFromImageURL } from "../utils/faceApiLoader";
+import { prewarmFrontCamera } from "../components/LivePhotoCapture";
 
 const preloadCameraQrScanner = () => import("../components/CameraQrScanner");
 const CameraQrScanner = React.lazy(preloadCameraQrScanner);
@@ -40,7 +41,7 @@ const MAX_DYNAMIC_SEQUENCE_GAP_SECONDS = Math.max(
   Number(import.meta.env.VITE_QR_SEQUENCE_GAP_SECONDS || 6)
 );
 const FIRST_DYNAMIC_ARM_WINDOW_MS = 2500;
-const FACE_VERIFICATION_WINDOW_MS = 60000;
+const FACE_VERIFICATION_WINDOW_MS = 30000;
 type ScannerResult = string | { first: string; second: string } | { sequence: RotatingQrPayload[] } | null;
 type DynamicPairScanResult =
   | { kind: "legacy"; first: string; second: string }
@@ -210,6 +211,7 @@ const StudentDashboard: React.FC = () => {
     void preloadCameraQrScanner();
     void preloadLivePhotoCapture();
     void loadModelsIfNeeded();
+    void prewarmFrontCamera();
     if (registeredFacePhoto) {
       void computeDescriptorFromImageURL(registeredFacePhoto);
     }

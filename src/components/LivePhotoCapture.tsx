@@ -122,6 +122,27 @@ async function compareLegacyFaceSignatures(referenceUrl: string, liveDataUrl: st
   return { score, matched: score >= LEGACY_FACE_SCORE_THRESHOLD };
 }
 
+let prewarmedFrontStream: MediaStream | null = null;
+
+export async function prewarmFrontCamera(): Promise<void> {
+  if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) return;
+  try {
+    if (prewarmedFrontStream && prewarmedFrontStream.active) return;
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        facingMode: "user",
+        width: { ideal: 480, max: 640 },
+        height: { ideal: 640, max: 800 },
+        frameRate: { ideal: 30, max: 30 },
+      },
+    });
+    prewarmedFrontStream = stream;
+  } catch {
+    // Ignore background prewarm errors
+  }
+}
+
 const LivePhotoCapture: React.FC<{
   value: string;
   onChange: (nextValue: string) => void;
@@ -373,21 +394,26 @@ const LivePhotoCapture: React.FC<{
       await waitForNextFrame();
 
       let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: {
-            facingMode: "user",
-            width: { ideal: 480, max: 640 },
-            height: { ideal: 640, max: 800 },
-            frameRate: { ideal: 30, max: 30 },
-          },
-        });
-      } catch (primaryError: any) {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: { facingMode: "user" },
-        });
+      if (prewarmedFrontStream && prewarmedFrontStream.active) {
+        stream = prewarmedFrontStream;
+        prewarmedFrontStream = null;
+      } else {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: {
+              facingMode: "user",
+              width: { ideal: 480, max: 640 },
+              height: { ideal: 640, max: 800 },
+              frameRate: { ideal: 30, max: 30 },
+            },
+          });
+        } catch (primaryError: any) {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: { facingMode: "user" },
+          });
+        }
       }
 
       streamRef.current = stream;
@@ -669,18 +695,49 @@ const LivePhotoCapture: React.FC<{
       {cameraActive || cameraLoading ? (
         <div className="space-y-3">
           <div className="relative overflow-hidden rounded-[22px] border border-slate-200 bg-black">
-            <video ref={videoRef} className="aspect-[3/4] w-full object-cover" autoPlay muted playsInline />
-            {verificationInProgress && verificationMessage ? (
-              <div className="pointer-events-none absolute inset-x-3 top-3 z-10 flex justify-center">
-                <div className="inline-flex items-center gap-2 rounded-full border border-teal-400/40 bg-slate-950/80 px-4 py-1.5 text-xs font-semibold text-teal-200 shadow-lg backdrop-blur-md transition-all">
-                  <span className="relative flex h-2 w-2">
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-teal-400 opacity-75"></span>
-                    <span className="relative inline-flex h-2 w-2 rounded-full bg-teal-500"></span>
-                  </span>
-                  <span>{verificationMessage}</span>
-                </div>
+            <video ref={videoRef} className="aspect-[3/4] w-full object-cover -scale-x-100" autoPlay muted playsInline />
+            
+            {/* Oval Face Guide Overlay */}
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+              <div
+                className={`h-52 w-40 rounded-[50%] border-2 transition-all duration-300 ${
+                  faceQualityReady
+                    ? "border-emerald-400 border-solid shadow-[0_0_20px_rgba(16,185,129,0.45)]"
+                    : "border-cyan-400/80 border-dashed shadow-[0_0_15px_rgba(6,182,212,0.25)]"
+                }`}
+              />
+            </div>
+
+            {/* Real-time Status Badge Overlay */}
+            <div className="pointer-events-none absolute bottom-3 inset-x-3 flex justify-center z-10">
+              <div
+                className={`inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-xs font-semibold shadow-lg backdrop-blur-md transition-all ${
+                  faceQualityReady
+                    ? "bg-emerald-950/85 text-emerald-300 border border-emerald-500/50"
+                    : "bg-slate-950/85 text-cyan-300 border border-cyan-500/40"
+                }`}
+              >
+                <span className="relative flex h-2 w-2">
+                  <span
+                    className={`absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                      faceQualityReady ? "bg-emerald-400 animate-ping" : "bg-cyan-400 animate-ping"
+                    }`}
+                  />
+                  <span
+                    className={`relative inline-flex h-2 w-2 rounded-full ${
+                      faceQualityReady ? "bg-emerald-400" : "bg-cyan-400"
+                    }`}
+                  />
+                </span>
+                <span>
+                  {verificationInProgress && verificationMessage
+                    ? verificationMessage
+                    : faceQualityReady
+                    ? "Face centered & ready!"
+                    : faceQuality?.reason || "Looking for face..."}
+                </span>
               </div>
-            ) : null}
+            </div>
           </div>
 
           {autoCapture ? (
@@ -693,7 +750,11 @@ const LivePhotoCapture: React.FC<{
             <div className="flex flex-col gap-3 sm:flex-row">
               <Button type="button" onClick={capturePhoto} disabled={!captureEnabled} className="flex-1">
                 <Camera size={16} />
-                {cameraLoading ? "Starting Camera..." : "Capture Photo"}
+                {cameraLoading
+                  ? "Starting Camera..."
+                  : !faceQualityReady
+                  ? faceQuality?.reason || "Center face in guide"
+                  : "Capture Official Photo"}
               </Button>
               <Button type="button" variant="secondary" onClick={stopCamera} className="flex-1">
                 Cancel Camera

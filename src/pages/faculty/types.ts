@@ -74,6 +74,7 @@ export type FacultySubjectAnalyticsData = {
   sessionInsights: Array<{
     sessionId: string;
     classCode: string;
+    facultyName?: string;
     date: string;
     section: string;
     departmentName: string;

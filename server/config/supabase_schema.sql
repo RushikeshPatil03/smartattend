@@ -159,9 +159,8 @@ CREATE TABLE IF NOT EXISTS subject_assignments (
     class_code VARCHAR(50) NOT NULL,
     created_by_admin UUID NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT uq_assignment_full UNIQUE (subject, department, year, semester, section, created_by_admin),
-    CONSTRAINT uq_assignment_class_code UNIQUE (class_code, created_by_admin)
+    CONSTRAINT uq_assignment_full UNIQUE (subject, faculty, department, year, semester, section, created_by_admin),
+    CONSTRAINT uq_assignment_class_faculty UNIQUE (class_code, faculty, created_by_admin)
 );
 
 CREATE INDEX IF NOT EXISTS idx_assignments_subject_fac ON subject_assignments (subject, faculty);

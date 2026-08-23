@@ -816,18 +816,26 @@ router.get("/subjects/:subjectId/analytics", authMiddleware, async (req, res) =>
     const adminId = req.user.created_by_admin || req.user.createdByAdmin;
     const { data: rawAssignments } = await supabase
       .from("subject_assignments")
-      .select("id, subject, faculty, department, year, semester, section, class_code, dept:departments(id, name, code)")
+      .select("id, subject, faculty, department, year, semester, section, class_code, dept:departments(id, name, code), fac:faculties(id, name, email)")
       .eq("subject", subjectId)
-      .eq("faculty", req.userId)
       .eq("created_by_admin", String(adminId))
       .order("class_code", { ascending: true });
 
-    const assignments = (rawAssignments || []).map((a) => ({
-      ...a,
-      _id: a.id,
-      classCode: a.class_code,
-      department: a.dept ? { ...a.dept, _id: a.dept.id } : a.department,
-    }));
+    // Deduplicate assignments by class_code
+    const seenClassCodes = new Set();
+    const assignments = [];
+    (rawAssignments || []).forEach((a) => {
+      const code = String(a.class_code || "").toUpperCase();
+      if (!seenClassCodes.has(code)) {
+        seenClassCodes.add(code);
+        assignments.push({
+          ...a,
+          _id: a.id,
+          classCode: a.class_code,
+          department: a.dept ? { ...a.dept, _id: a.dept.id } : a.department,
+        });
+      }
+    });
 
     if (!assignments.length) {
       return res.json({
@@ -893,11 +901,10 @@ router.get("/subjects/:subjectId/analytics", authMiddleware, async (req, res) =>
       eligibleStudentsByKey.set(key, students || []);
     }
 
-    // Query completed sessions for this subject
+    // Query completed sessions for this subject across all allotted faculties
     const { data: rawSessions } = await supabase
       .from("sessions")
-      .select("id, department, year, semester, section, start_time, end_time, is_active")
-      .eq("faculty", req.userId)
+      .select("id, faculty, department, year, semester, section, start_time, end_time, is_active, fac:faculties(id, name)")
       .eq("subject", subjectId)
       .eq("is_active", false)
       .not("end_time", "is", null)
@@ -928,7 +935,6 @@ router.get("/subjects/:subjectId/analytics", authMiddleware, async (req, res) =>
         .from("attendances")
         .select("session, student, timestamp, status")
         .in("session", sessionIds)
-        .eq("faculty", req.userId)
         .eq("subject", subjectId)
         .eq("status", "present");
 
@@ -948,7 +954,7 @@ router.get("/subjects/:subjectId/analytics", authMiddleware, async (req, res) =>
     });
 
     const totalClassesByAssignmentKey = new Map();
-    const sessionInsights = filteredSessions.slice(0, 18).map((session) => {
+    const sessionInsights = filteredSessions.slice(0, 25).map((session) => {
       const sessionKey = String(session.id);
       const eligibleStudents = eligibleStudentsByKey.get(session.assignmentKey) || [];
       const presentCount = (presentStudentsBySession.get(sessionKey) || new Set()).size;
@@ -960,6 +966,7 @@ router.get("/subjects/:subjectId/analytics", authMiddleware, async (req, res) =>
         sessionId: session.id,
         _id: session.id,
         classCode: session.classCode,
+        facultyName: session.fac?.name || "Faculty",
         date: session.endTime || session.startTime,
         section: session.section,
         departmentName: session.assignment?.department?.name || "Department",

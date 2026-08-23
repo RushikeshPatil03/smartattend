@@ -322,7 +322,10 @@ export const FacultyAnalyticsModal: React.FC<FacultyAnalyticsModalProps> = React
                           data.sessionInsights.map((session) => (
                             <tr key={session.sessionId}>
                               <td className="py-2.5 font-semibold text-slate-800">
-                                {session.classCode}
+                                <div>{session.classCode}</div>
+                                {session.facultyName && (
+                                  <div className="text-[10px] text-slate-400 font-normal">{session.facultyName}</div>
+                                )}
                               </td>
                               <td className="py-2.5 text-slate-500">
                                 {new Date(session.date).toLocaleDateString()}

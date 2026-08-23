@@ -597,7 +597,7 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
           start_time,
           end_time,
           created_at,
-          subj:subjects(id, name, code, created_by_admin, departments),
+          subj:subjects(id, name, code, created_by_admin, departments, allotted_faculties),
           fac:faculties(id, name)
         `)
         .eq("id", String(sessionId))
@@ -607,8 +607,14 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
         return res.status(404).json({ ok: false, error: "Session not found" });
       }
 
-      if (req.userRole === "FACULTY" && String(rawSession.faculty) !== String(req.userId)) {
-        return res.status(403).json({ ok: false, error: "Forbidden" });
+      if (req.userRole === "FACULTY") {
+        const isDirectFaculty = String(rawSession.faculty) === String(req.userId);
+        const isSubjectAllotted =
+          Array.isArray(rawSession.subj?.allotted_faculties) &&
+          rawSession.subj.allotted_faculties.some((f) => String(f) === String(req.userId));
+        if (!isDirectFaculty && !isSubjectAllotted) {
+          return res.status(403).json({ ok: false, error: "Forbidden" });
+        }
       }
 
       // Fetch all recorded attendances for this session
@@ -781,9 +787,27 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
       .order("timestamp", { ascending: false })
       .limit(500);
 
-    if (subjectId) query = query.eq("subject", String(subjectId));
+    if (subjectId) {
+      if (req.userRole === "FACULTY") {
+        const { data: subjectCheck } = await supabase
+          .from("subjects")
+          .select("id, allotted_faculties")
+          .eq("id", String(subjectId))
+          .single();
+
+        const isAllotted =
+          Array.isArray(subjectCheck?.allotted_faculties) &&
+          subjectCheck.allotted_faculties.some((f) => String(f) === String(req.userId));
+
+        if (!isAllotted) {
+          return res.status(403).json({ ok: false, error: "Forbidden: You are not allotted to this subject" });
+        }
+      }
+      query = query.eq("subject", String(subjectId));
+    } else {
+      if (req.userRole === "FACULTY") query = query.eq("faculty", req.userId);
+    }
     if (studentId) query = query.eq("student", String(studentId));
-    if (req.userRole === "FACULTY") query = query.eq("faculty", req.userId);
     if (req.userRole === "STUDENT") query = query.eq("student", req.userId);
 
     const targetDate = date || startDate;

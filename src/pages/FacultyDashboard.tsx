@@ -1100,20 +1100,22 @@ const FacultyDashboard: React.FC = () => {
       return `${y}-${m}-${d} ${hh}:${mm}`;
     };
     logs.forEach((x: any) => {
-      const sid = String(x?.session?._id || x?.session || "").trim();
+      const sid = String(x?.session?._id || x?.session || x?.sessionId || "").trim();
       const sortTime = new Date(
-        x?.session?.startTime || x?.timestamp || x?.createdAt || Date.now()
+        x?.session?.startTime || x?.session?.start_time || x?.timestamp || x?.markedAt || x?.createdAt || Date.now()
       ).getTime();
-      const label = toDateTimeKey(
+      const dateLabel = toDateTimeKey(
         new Date(
-          x?.session?.startTime || x?.timestamp || x?.createdAt || Date.now()
+          x?.session?.startTime || x?.session?.start_time || x?.timestamp || x?.markedAt || x?.createdAt || Date.now()
         )
       );
+      const facName = x?.faculty?.name || x?.fac?.name;
+      const label = facName ? `${dateLabel} (${facName})` : dateLabel;
       const colKey = sid || label;
       if (!sessionMeta.has(colKey)) {
         sessionMeta.set(colKey, { orderTime: sortTime, label });
       }
-      const e = String(x?.student?.enrollmentNo || "").trim();
+      const e = String(x?.student?.enrollmentNo || x?.student?.enrollment_no || "").trim();
       if (!e) return;
       if (!stu.has(e))
         stu.set(e, { name: x?.student?.name || "", enrollmentNo: e });

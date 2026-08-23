@@ -689,6 +689,9 @@ const Register: React.FC = () => {
                     onChange={setProfilePhotoUrl}
                     disabled={submitting}
                     enableFaceQuality
+                    showCapturedPreview
+                    title="Student Official Face ID Photo"
+                    description="Position your face inside the oval guide. The capture button enables as soon as your face is centered."
                   />
                 </div>
               )}
