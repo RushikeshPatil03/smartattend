@@ -330,8 +330,9 @@ export default function CameraQrScanner({
             audio: false,
             video: {
               facingMode: { ideal: "environment" },
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
+              width: { ideal: 640 },
+              height: { ideal: 480 },
+              frameRate: { ideal: 30, max: 30 },
             },
           });
         } catch (primaryError: any) {
@@ -356,6 +357,9 @@ export default function CameraQrScanner({
         const video = videoRef.current;
         if (!video) return;
         video.srcObject = stream;
+        video.onloadedmetadata = () => {
+          setLoading(false);
+        };
         try {
           await video.play();
         } catch (err: any) {
@@ -368,6 +372,7 @@ export default function CameraQrScanner({
             throw err;
           }
         }
+        setLoading(false);
 
         const [track] = stream.getVideoTracks();
         const capabilities =
@@ -453,6 +458,7 @@ export default function CameraQrScanner({
                 autoPlay
                 muted
                 playsInline
+                onLoadedMetadata={() => setLoading(false)}
                 style={{ transform: "none" }}
               />
             </>

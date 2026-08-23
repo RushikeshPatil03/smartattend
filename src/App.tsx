@@ -3,6 +3,7 @@ import React, { Suspense } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import HeaderBar from "./components/HeaderBar";
 import ProtectedRoute from "./routes/ProtectedRoute";
+import { useApp } from "./store";
 
 // Helper to handle stale client cache / dynamic chunk loading retries
 function lazyWithRetry<T extends React.ComponentType<any>>(
@@ -35,6 +36,15 @@ const FacultyDashboard = lazyWithRetry(() => import("./pages/FacultyDashboard"))
 const StudentDashboard = lazyWithRetry(() => import("./pages/StudentDashboard"));
 const MobileLocationCapture = lazyWithRetry(() => import("./pages/MobileLocationCapture"));
 
+const RootRedirect = () => {
+  const { currentUser } = useApp();
+  const role = String(currentUser?.role || "").toUpperCase();
+  if (role === "STUDENT") return <Navigate to="/student" replace />;
+  if (role === "FACULTY") return <Navigate to="/faculty" replace />;
+  if (role === "ADMIN") return <Navigate to="/admin" replace />;
+  return <Navigate to="/login" replace />;
+};
+
 const Container = ({ children }: { children: React.ReactNode }) => (
   <div className="min-h-screen page-enter flex flex-col bg-[linear-gradient(180deg,_#f8fbff_0%,_#eef6ff_42%,_#f8fafc_100%)]">
     {children}
@@ -62,7 +72,7 @@ const App = () => {
       <div className="flex-1">
         <Suspense fallback={<PageLoader />}>
           <Routes>
-            <Route path="/" element={<Navigate to="/login" replace />} />
+            <Route path="/" element={<RootRedirect />} />
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
             <Route path="/admin/register" element={<AdminRegister />} />

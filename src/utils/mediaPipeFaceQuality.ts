@@ -26,10 +26,10 @@ const MODEL_URL =
   import.meta.env.VITE_MEDIAPIPE_FACE_DETECTOR_MODEL_URL ||
   "/models/mediapipe/blaze_face_short_range.tflite";
 
-const MIN_FACE_SCORE = Number(import.meta.env.VITE_FACE_MIN_DETECTION_SCORE || 0.62);
-const MIN_FACE_AREA_RATIO = Number(import.meta.env.VITE_FACE_MIN_AREA_RATIO || 0.12);
-const CENTER_TOLERANCE_RATIO = Number(import.meta.env.VITE_FACE_CENTER_TOLERANCE_RATIO || 0.22);
-const STABLE_MOVE_TOLERANCE_RATIO = Number(import.meta.env.VITE_FACE_STABLE_MOVE_TOLERANCE_RATIO || 0.035);
+const MIN_FACE_SCORE = Number(import.meta.env.VITE_FACE_MIN_DETECTION_SCORE || 0.52);
+const MIN_FACE_AREA_RATIO = Number(import.meta.env.VITE_FACE_MIN_AREA_RATIO || 0.08);
+const CENTER_TOLERANCE_RATIO = Number(import.meta.env.VITE_FACE_CENTER_TOLERANCE_RATIO || 0.38);
+const STABLE_MOVE_TOLERANCE_RATIO = Number(import.meta.env.VITE_FACE_STABLE_MOVE_TOLERANCE_RATIO || 0.08);
 
 let detectorPromise: Promise<FaceDetector | null> | null = null;
 let lastCenter: { x: number; y: number; at: number } | null = null;
@@ -148,7 +148,7 @@ export async function assessMediaPipeFaceQuality(
   const stable =
     Boolean(previous) &&
     movedRatio <= STABLE_MOVE_TOLERANCE_RATIO &&
-    now - previous.at >= 450;
+    now - previous.at >= 120;
   lastCenter = { x: centerX, y: centerY, at: previous && movedRatio <= STABLE_MOVE_TOLERANCE_RATIO ? previous.at : now };
 
   const ok = score >= MIN_FACE_SCORE && centered && largeEnough && stable;

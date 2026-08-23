@@ -1,5 +1,6 @@
 // src/pages/Login.tsx
 import React, { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Shield,
@@ -148,13 +149,54 @@ const FloatingInput: React.FC<FloatingInputProps> = React.memo(({
 
 // --- Main Centered Login Page Component ---
 const Login: React.FC = () => {
-  const { login, goToAdminRegister } = useApp();
+  const { currentUser, login, restoreSession, goToAdminRegister } = useApp();
+  const navigate = useNavigate();
 
   const [selectedRole, setSelectedRole] = useState<UserRole>(UserRole.STUDENT);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const checkRedirect = (user: any) => {
+      const role = String(user?.role || "").toUpperCase();
+      if (role === "STUDENT") {
+        navigate("/student", { replace: true });
+        return true;
+      }
+      if (role === "FACULTY") {
+        navigate("/faculty", { replace: true });
+        return true;
+      }
+      if (role === "ADMIN") {
+        navigate("/admin", { replace: true });
+        return true;
+      }
+      return false;
+    };
+
+    if (currentUser) {
+      checkRedirect(currentUser);
+      return;
+    }
+
+    try {
+      const stored = typeof localStorage !== "undefined" ? localStorage.getItem("smartattend_user") : null;
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (checkRedirect(parsed)) return;
+      }
+    } catch {
+      // Fallback
+    }
+
+    void restoreSession().then((res) => {
+      if (res?.ok && res.user) {
+        checkRedirect(res.user);
+      }
+    });
+  }, [currentUser, navigate, restoreSession]);
 
   // Device change modal states
   const [deviceFormOpen, setDeviceFormOpen] = useState(false);

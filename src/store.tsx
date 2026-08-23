@@ -104,7 +104,17 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [view, setView] = useState<ViewType>(View.LOGIN);
-  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [currentUser, setCurrentUser] = useState<any>(() => {
+    try {
+      const saved =
+        typeof localStorage !== "undefined"
+          ? localStorage.getItem("smartattend_user")
+          : null;
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -142,7 +152,18 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     [navigate]
   );
   const updateCurrentUser = useCallback((patch: Record<string, any>) => {
-    setCurrentUser((prev: any) => (prev ? { ...prev, ...patch } : prev));
+    setCurrentUser((prev: any) => {
+      if (!prev) return prev;
+      const updated = { ...prev, ...patch };
+      try {
+        if (typeof localStorage !== "undefined") {
+          localStorage.setItem("smartattend_user", JSON.stringify(updated));
+        }
+      } catch {
+        // Storage full/disabled fallback
+      }
+      return updated;
+    });
   }, []);
 
   const normalizeFrontendOrigin = useCallback((rawOrigin: string) => {
@@ -213,7 +234,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       password,
       fingerprint
     );
-    if (res?.ok) {
+    if (res?.ok && res.user) {
+      try {
+        if (typeof localStorage !== "undefined") {
+          localStorage.setItem("smartattend_user", JSON.stringify(res.user));
+        }
+      } catch {
+        // Fallback if storage is disabled
+      }
       setCurrentUser(res.user);
       if (res.user.role === "ADMIN") {
         navigateTo(View.ADMIN_DASHBOARD);
@@ -234,6 +262,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   const logout = async () => {
     await apiClient.logout();
+    try {
+      if (typeof localStorage !== "undefined") {
+        localStorage.removeItem("smartattend_user");
+        localStorage.removeItem("smartattend_access_token");
+      }
+    } catch {
+      // Fallback
+    }
     setCurrentUser(null);
     setSessions([]);
     setAttendance([]);
@@ -246,7 +282,24 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const restoreSession = useCallback(async () => {
     const res = await apiClient.refreshSession();
     if (res?.ok && res.user) {
+      try {
+        if (typeof localStorage !== "undefined") {
+          localStorage.setItem("smartattend_user", JSON.stringify(res.user));
+        }
+      } catch {
+        // Fallback
+      }
       setCurrentUser(res.user);
+    } else if (res?.status === 401) {
+      try {
+        if (typeof localStorage !== "undefined") {
+          localStorage.removeItem("smartattend_user");
+          localStorage.removeItem("smartattend_access_token");
+        }
+      } catch {
+        // Fallback
+      }
+      setCurrentUser(null);
     }
     return res;
   }, []);

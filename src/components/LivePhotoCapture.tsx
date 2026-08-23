@@ -19,7 +19,7 @@ const PORTRAIT_BETA_MIN = 55;
 const PORTRAIT_BETA_MAX = 125;
 const PORTRAIT_GAMMA_TOLERANCE = 28;
 const ORIENTATION_UPDATE_THRESHOLD = 0.8;
-const FACE_QUALITY_INTERVAL_MS = 250;
+const FACE_QUALITY_INTERVAL_MS = 120;
 const LEGACY_FACE_SCORE_THRESHOLD = Number(
   import.meta.env.VITE_FACEAPI_LEGACY_SCORE_THRESHOLD || 0.78
 );
@@ -165,7 +165,7 @@ const LivePhotoCapture: React.FC<{
   autoCapture = false,
   hideLauncher = false,
   title = "Live Profile Photo",
-  description = "Hold the phone upright in portrait mode at face or waist level. Landscape or flat positions stay blocked when sensors are available.",
+  description = "Look into the front camera and keep your face centered for verification.",
   captureRequestKey = 0,
   showCapturedPreview = true,
   compactMode = false,
@@ -188,20 +188,13 @@ const LivePhotoCapture: React.FC<{
   const autoCaptureTimerRef = useRef<number | null>(null);
   const verificationInFlightRef = useRef(false);
 
-  const alignmentReady = useMemo(
-    () => isPortraitUpright(orientation.beta, orientation.gamma),
-    [orientation.beta, orientation.gamma]
-  );
-
-  const canAutoGateCapture =
-    orientation.supported &&
-    (!orientation.permissionRequired || orientation.permissionGranted);
+  const alignmentReady = true;
+  const canAutoGateCapture = false;
   const canUseFaceQualityGate = enableFaceQuality && Boolean(faceQuality?.supported && faceQuality.ready);
   const faceQualityReady = !canUseFaceQualityGate || Boolean(faceQuality?.ok);
   const captureEnabled =
     cameraActive &&
     !cameraLoading &&
-    (!canAutoGateCapture || alignmentReady) &&
     faceQualityReady &&
     !verificationInProgress &&
     !disabled;
@@ -599,14 +592,11 @@ const LivePhotoCapture: React.FC<{
       return;
     }
 
-    if (canAutoGateCapture && !alignmentReady) {
-      return;
-    }
     if (!faceQualityReady) {
       return;
     }
 
-    const delay = canAutoGateCapture ? 700 : 1400;
+    const delay = 120;
     autoCaptureTimerRef.current = window.setTimeout(() => {
       capturePhoto();
       autoCaptureTimerRef.current = null;
@@ -619,11 +609,9 @@ const LivePhotoCapture: React.FC<{
       }
     };
   }, [
-    alignmentReady,
     autoCapture,
     cameraActive,
     cameraLoading,
-    canAutoGateCapture,
     disabled,
     faceQualityReady,
     verificationInProgress,
@@ -634,20 +622,14 @@ const LivePhotoCapture: React.FC<{
     if (!captureRequestKey || !cameraActive || cameraLoading || disabled) {
       return;
     }
-    if (canAutoGateCapture && !alignmentReady) {
-      setCaptureError("Hold the phone upright before verifying.");
-      return;
-    }
     if (!faceQualityReady) {
       setCaptureError(faceQuality?.reason || "Hold steady until your face is ready.");
       return;
     }
     capturePhoto();
   }, [
-    alignmentReady,
     cameraActive,
     cameraLoading,
-    canAutoGateCapture,
     captureRequestKey,
     disabled,
     faceQuality?.reason,
@@ -703,15 +685,9 @@ const LivePhotoCapture: React.FC<{
 
           {autoCapture ? (
             <div className="rounded-2xl border border-teal-100 bg-teal-50 px-4 py-3 text-center text-sm font-medium text-teal-800">
-              {verificationMessage || (canAutoGateCapture
-                ? alignmentReady
-                  ? faceQualityReady
-                    ? "Face ready. Capturing automatically..."
-                    : faceQuality?.reason || "Checking face..."
-                  : "Hold the phone upright and stay steady."
-                : faceQualityReady
-                  ? "Stay steady. Capturing automatically..."
-                  : faceQuality?.reason || "Checking face...")}
+              {verificationMessage || (faceQualityReady
+                ? "Face ready. Capturing automatically..."
+                : faceQuality?.reason || "Looking for face...")}
             </div>
           ) : (
             <div className="flex flex-col gap-3 sm:flex-row">
@@ -747,9 +723,9 @@ const LivePhotoCapture: React.FC<{
                 <Smartphone size={18} />
               </div>
               <div>
-                <p className="font-semibold text-slate-800">Mobile-ready capture</p>
+                <p className="font-semibold text-slate-800">Fast front-camera verification</p>
                 <p className="mt-1 text-xs leading-5 text-slate-500">
-                  Opens the front camera directly and uses orientation sensors, when available, to verify upright portrait holding.
+                  Opens the front camera for rapid live face verification with randomized liveness challenges.
                 </p>
               </div>
             </div>

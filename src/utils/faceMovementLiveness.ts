@@ -27,9 +27,9 @@ export const DEFAULT_MOVEMENT_ROTATION_THRESHOLD = Number(
   import.meta.env.VITE_FACEAPI_MOVEMENT_ROTATION_THRESHOLD || 0.045
 );
 
-export const EAR_CLOSED_THRESHOLD = 0.20;
+export const EAR_CLOSED_THRESHOLD = 0.21;
 export const EAR_OPEN_THRESHOLD = 0.23;
-export const YAW_TURN_THRESHOLD = 0.055;
+export const YAW_TURN_THRESHOLD = 0.045;
 
 export type MovementLivenessOptions = {
   maxTimeMs?: number;
@@ -206,7 +206,7 @@ export async function runMovementLiveness(
   });
 
   const startedAt = performance.now();
-  const armAt = startedAt + 200;
+  const armAt = startedAt + 100;
 
   let baseline: FacePoseSample | null = null;
   let samples = 0;

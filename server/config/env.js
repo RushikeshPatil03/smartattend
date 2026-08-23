@@ -146,8 +146,8 @@ const env = {
     requireStrongSecret("JWT_SECRET")
   ),
   ACCESS_TOKEN_TTL: clean(process.env.ACCESS_TOKEN_TTL) || "15m",
-  REFRESH_TOKEN_TTL: clean(process.env.REFRESH_TOKEN_TTL) || "7d",
-  REFRESH_TOKEN_TTL_SECONDS: parseNumber("REFRESH_TOKEN_TTL_SECONDS", 7 * 24 * 60 * 60, {
+  REFRESH_TOKEN_TTL: clean(process.env.REFRESH_TOKEN_TTL) || "90d",
+  REFRESH_TOKEN_TTL_SECONDS: parseNumber("REFRESH_TOKEN_TTL_SECONDS", 90 * 24 * 60 * 60, {
     min: 60,
   }),
 

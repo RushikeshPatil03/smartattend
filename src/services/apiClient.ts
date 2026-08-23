@@ -39,14 +39,24 @@ const DEFAULT_REQUEST_TIMEOUT_MS = Number(
 );
 
 class ApiClient {
-  token: string | null = null;
+  token: string | null =
+    typeof localStorage !== "undefined"
+      ? localStorage.getItem("smartattend_access_token")
+      : null;
   private refreshPromise: Promise<any> | null = null;
 
   // ------------------------------------
-  // Token handling: access token in memory, refresh token in HttpOnly cookie
+  // Token handling: access token in memory + localStorage, refresh token in HttpOnly cookie
   // ------------------------------------
   setToken(token: string | null) {
     this.token = token;
+    if (typeof localStorage !== "undefined") {
+      if (token) {
+        localStorage.setItem("smartattend_access_token", token);
+      } else {
+        localStorage.removeItem("smartattend_access_token");
+      }
+    }
   }
 
   // ------------------------------------
@@ -187,6 +197,10 @@ class ApiClient {
   logout = async () => {
     await this.post("/api/auth/logout").catch(() => undefined);
     this.setToken(null);
+    if (typeof localStorage !== "undefined") {
+      localStorage.removeItem("smartattend_user");
+      localStorage.removeItem("smartattend_access_token");
+    }
     return { ok: true };
   };
 

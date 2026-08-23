@@ -213,6 +213,9 @@ const StudentDashboard: React.FC = () => {
     if (registeredFacePhoto) {
       void computeDescriptorFromImageURL(registeredFacePhoto);
     }
+    if (typeof navigator !== "undefined" && navigator?.permissions?.query) {
+      navigator.permissions.query({ name: "camera" as any }).catch(() => undefined);
+    }
 
     // Start rolling 30-second GPS cache watcher in background for instant 0ms scan resolution
     const stopGpsWatcher = startRollingGpsWatcher((_loc) => {
@@ -714,7 +717,7 @@ const StudentDashboard: React.FC = () => {
                 description={
                   !registeredFacePhoto
                     ? "No registered student profile photo is available."
-                    : faceGateMessage || "Hold the phone upright and center your face to continue."
+                    : faceGateMessage || "Center your face to complete live verification."
                 }
               />
             </React.Suspense>
