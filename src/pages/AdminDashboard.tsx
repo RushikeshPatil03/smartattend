@@ -172,6 +172,12 @@ const AdminDashboard: React.FC = () => {
     setCollegePhotoUrl(currentUser?.profilePhotoUrl || "");
   }, [currentUser?.collegeName, currentUser?.profilePhotoUrl]);
 
+  useEffect(() => {
+    if (!departments.length || !subjects.length || !users.length) {
+      void Promise.all([fetchDepartments(), fetchSubjects(), fetchUsers()]);
+    }
+  }, [departments.length, subjects.length, users.length, fetchDepartments, fetchSubjects, fetchUsers]);
+
   const sortedUsers = useMemo(
     () =>
       [...(users || [])].sort((a: any, b: any) => {

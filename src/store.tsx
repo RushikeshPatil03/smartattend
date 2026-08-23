@@ -221,6 +221,42 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [normalizeFrontendOrigin]);
 
+  // ---------------- FETCH HELPERS ----------------
+  const fetchDepartments = useCallback(async () => {
+    if (!apiClient.token) return [];
+    const res = await apiClient.getDepartments();
+    if (res?.ok) setDepartments(res.departments || []);
+    return res?.departments || [];
+  }, []);
+
+  const fetchSubjects = useCallback(async () => {
+    if (!apiClient.token) return [];
+    const res = await apiClient.getSubjects();
+    if (res?.ok) setSubjects(res.subjects || []);
+    return res?.subjects || [];
+  }, []);
+
+  const fetchUsers = useCallback(async () => {
+    if (!apiClient.token) return [];
+    const res = await apiClient.getUsers();
+    if (res?.ok) setUsers(res.users || []);
+    return res?.users || [];
+  }, []);
+
+  // Sync initial role data on boot if user was restored from localStorage
+  useEffect(() => {
+    if (currentUser) {
+      const role = String(currentUser?.role || "").toUpperCase();
+      if (role === "ADMIN") {
+        void Promise.all([fetchDepartments(), fetchSubjects(), fetchUsers()]);
+      } else if (role === "FACULTY") {
+        void Promise.all([fetchDepartments(), fetchSubjects()]);
+      } else if (role === "STUDENT") {
+        void fetchDepartments();
+      }
+    }
+  }, []);
+
   // ---------------- AUTH ----------------
   const login = async (
     role: string,
@@ -290,6 +326,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         // Fallback
       }
       setCurrentUser(res.user);
+      const role = String(res.user.role || "").toUpperCase();
+      if (role === "ADMIN") {
+        void Promise.all([fetchDepartments(), fetchSubjects(), fetchUsers()]);
+      } else if (role === "FACULTY") {
+        void Promise.all([fetchDepartments(), fetchSubjects()]);
+      } else if (role === "STUDENT") {
+        void fetchDepartments();
+      }
     } else if (res?.status === 401) {
       try {
         if (typeof localStorage !== "undefined") {
@@ -302,7 +346,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       setCurrentUser(null);
     }
     return res;
-  }, []);
+  }, [fetchDepartments, fetchSubjects, fetchUsers]);
 
   // ---------------- ADMIN ----------------
   const generateRegistrationLink = async (
@@ -323,26 +367,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       config: res.config,
       link: resolveRegistrationLink(type, res.token, res.link),
     };
-  };
-
-  const fetchDepartments = async () => {
-    if (!apiClient.token) return [];
-    const res = await apiClient.getDepartments();
-    if (res?.ok) setDepartments(res.departments || []);
-    return res?.departments || [];
-  };
-
-  const fetchSubjects = async () => {
-    if (!apiClient.token) return [];
-    const res = await apiClient.getSubjects();
-    if (res?.ok) setSubjects(res.subjects || []);
-    return res?.subjects || [];
-  };
-
-  const fetchUsers = async () => {
-    if (!apiClient.token) return;
-    const res = await apiClient.getUsers();
-    if (res?.ok) setUsers(res.users || []);
   };
 
   const updateFacultyDeviceLock = async (facultyId: string, enabled: boolean) => {

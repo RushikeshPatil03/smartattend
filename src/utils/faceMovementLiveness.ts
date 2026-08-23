@@ -27,9 +27,11 @@ export const DEFAULT_MOVEMENT_ROTATION_THRESHOLD = Number(
   import.meta.env.VITE_FACEAPI_MOVEMENT_ROTATION_THRESHOLD || 0.045
 );
 
-export const EAR_CLOSED_THRESHOLD = 0.21;
-export const EAR_OPEN_THRESHOLD = 0.23;
-export const YAW_TURN_THRESHOLD = 0.045;
+export const EAR_CLOSED_THRESHOLD = 0.14;
+export const EAR_OPEN_THRESHOLD = 0.22;
+export const RELATIVE_YAW_DELTA_THRESHOLD = 0.085;
+export const MIN_LIVENESS_DURATION_MS = 600;
+export const CONSECUTIVE_FRAMES_REQUIRED = 3;
 
 export type MovementLivenessOptions = {
   maxTimeMs?: number;
@@ -220,6 +222,7 @@ export async function runMovementLiveness(
   // State machine variables
   let eyeSawOpen = false;
   let eyeSawClosed = false;
+  let consecutiveTurnFrames = 0;
   let challengePassed = false;
 
   while (performance.now() - startedAt < maxTimeMs) {
@@ -262,49 +265,63 @@ export async function runMovementLiveness(
     const elapsed = performance.now() - startedAt;
     const timeProgress = Math.min(elapsed / maxTimeMs, 1);
 
-    // --- Check Challenge Conditions ---
+    // --- Check Challenge Conditions (Strict Relative Movements) ---
     if (challenge === "BLINK") {
-      if (pose.ear >= EAR_OPEN_THRESHOLD) {
+      // 1. Must observe open eyes first
+      if (!eyeSawClosed && pose.ear >= EAR_OPEN_THRESHOLD) {
         eyeSawOpen = true;
       }
+      // 2. Must observe eyes drop to closed threshold
       if (eyeSawOpen && pose.ear <= EAR_CLOSED_THRESHOLD) {
         eyeSawClosed = true;
         options.onChallengeUpdate?.({
           challenge,
-          prompt: "Blink detected, reopening...",
-          progress: 0.6,
+          prompt: "Blink detected, reopening eyes...",
+          progress: 0.65,
           passed: false,
         });
       }
+      // 3. Must observe eyes recover back to open threshold
       if (eyeSawClosed && pose.ear >= EAR_OPEN_THRESHOLD) {
         challengePassed = true;
       }
     } else if (challenge === "TURN_LEFT") {
-      // Nose shifting towards left side relative to baseline or absolute yaw
-      if (
-        yawDelta >= YAW_TURN_THRESHOLD ||
-        pose.yawRatio >= 0.57 ||
-        (pose.noseOffsetX - baseline.noseOffsetX) >= 0.045
-      ) {
-        challengePassed = true;
+      // Relative yaw change to left from initial baseline
+      if (yawDelta >= RELATIVE_YAW_DELTA_THRESHOLD) {
+        consecutiveTurnFrames += 1;
+        options.onChallengeUpdate?.({
+          challenge,
+          prompt: "Holding head turn left...",
+          progress: Math.min(0.35 + (consecutiveTurnFrames / CONSECUTIVE_FRAMES_REQUIRED) * 0.55, 0.9),
+          passed: false,
+        });
+        if (consecutiveTurnFrames >= CONSECUTIVE_FRAMES_REQUIRED) {
+          challengePassed = true;
+        }
+      } else {
+        consecutiveTurnFrames = Math.max(0, consecutiveTurnFrames - 1);
       }
     } else if (challenge === "TURN_RIGHT") {
-      // Nose shifting towards right side relative to baseline or absolute yaw
-      if (
-        yawDelta <= -YAW_TURN_THRESHOLD ||
-        pose.yawRatio <= 0.43 ||
-        (pose.noseOffsetX - baseline.noseOffsetX) <= -0.045
-      ) {
-        challengePassed = true;
+      // Relative yaw change to right from initial baseline
+      const rightYawDelta = baseline.yawRatio - pose.yawRatio;
+      if (rightYawDelta >= RELATIVE_YAW_DELTA_THRESHOLD) {
+        consecutiveTurnFrames += 1;
+        options.onChallengeUpdate?.({
+          challenge,
+          prompt: "Holding head turn right...",
+          progress: Math.min(0.35 + (consecutiveTurnFrames / CONSECUTIVE_FRAMES_REQUIRED) * 0.55, 0.9),
+          passed: false,
+        });
+        if (consecutiveTurnFrames >= CONSECUTIVE_FRAMES_REQUIRED) {
+          challengePassed = true;
+        }
+      } else {
+        consecutiveTurnFrames = Math.max(0, consecutiveTurnFrames - 1);
       }
     }
 
-    // Fallback: general micro-movement threshold met after warmup
-    const generalMovementPassed =
-      performance.now() >= armAt &&
-      (maxTranslation >= translateThreshold || maxRotation >= rotThreshold);
-
-    if (challengePassed || (challenge !== "BLINK" && generalMovementPassed)) {
+    // Must satisfy challenge condition AND minimum liveness sampling time guard
+    if (challengePassed && elapsed >= MIN_LIVENESS_DURATION_MS) {
       options.onChallengeUpdate?.({
         challenge,
         prompt: `${challengePrompt} ✓`,
@@ -328,12 +345,14 @@ export async function runMovementLiveness(
       };
     }
 
-    options.onChallengeUpdate?.({
-      challenge,
-      prompt: challengePrompt,
-      progress: Math.min(timeProgress * 0.8, 0.8),
-      passed: false,
-    });
+    if (!eyeSawClosed && consecutiveTurnFrames === 0) {
+      options.onChallengeUpdate?.({
+        challenge,
+        prompt: challengePrompt,
+        progress: Math.min(timeProgress * 0.6, 0.6),
+        passed: false,
+      });
+    }
 
     await wait(sampleIntervalMs);
   }

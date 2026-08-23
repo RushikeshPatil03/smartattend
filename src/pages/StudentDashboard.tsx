@@ -138,7 +138,7 @@ function decodeDynamicQrPayload(token: string): DynamicQrPayload | null {
 }
 
 const StudentDashboard: React.FC = () => {
-  const { currentUser, logout } = useApp();
+  const { currentUser, departments = [], fetchDepartments, logout } = useApp();
 
   const [scanStep, setScanStep] = useState<"IDLE" | "PREPARING" | "SCANNING" | "SUBMITTING" | "SUCCESS" | "ERROR">("IDLE");
   const [statusMsg, setStatusMsg] = useState("");
@@ -215,6 +215,9 @@ const StudentDashboard: React.FC = () => {
     }
     if (typeof navigator !== "undefined" && navigator?.permissions?.query) {
       navigator.permissions.query({ name: "camera" as any }).catch(() => undefined);
+    }
+    if (!departments.length) {
+      void fetchDepartments();
     }
 
     // Start rolling 30-second GPS cache watcher in background for instant 0ms scan resolution

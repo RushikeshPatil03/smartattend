@@ -75,6 +75,8 @@ const FacultyDashboard: React.FC = () => {
     subjects = [],
     sessions = [],
     departments = [],
+    fetchDepartments,
+    fetchSubjects,
     createSession,
     stopSession,
     cancelSession: cancelSessionFromStore,
@@ -312,6 +314,12 @@ const FacultyDashboard: React.FC = () => {
     manualLat,
     manualLng,
   ]);
+
+  useEffect(() => {
+    if (!departments.length || !subjects.length) {
+      void Promise.all([fetchDepartments(), fetchSubjects()]);
+    }
+  }, [departments.length, subjects.length, fetchDepartments, fetchSubjects]);
 
   // Restore Active Session on Mount
   useEffect(() => {
