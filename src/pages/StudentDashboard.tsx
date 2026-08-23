@@ -178,6 +178,7 @@ const StudentDashboard: React.FC = () => {
   const autoLaunchHandledRef = useRef(false);
   const pendingQrPairRef = useRef<DynamicPairScanResult | null>(null);
   const faceGateTimerRef = useRef<number | null>(null);
+  const faceVerifiedUntilRef = useRef(0);
 
   const faceVerified = faceVerifiedUntil > Date.now();
   const registeredFacePhoto = String(currentUser?.studentProfilePhotoUrl || "").trim();
@@ -248,6 +249,7 @@ const StudentDashboard: React.FC = () => {
     faceVerification?: { matched?: boolean; liveness?: string };
   }) => {
     if (!capture.faceVerification?.matched || capture.faceVerification.liveness !== "movement") {
+      faceVerifiedUntilRef.current = 0;
       setFaceVerifiedUntil(0);
       setFaceGateStatus("FAILED");
       setFaceGateMessage("Live face verification is required.");
@@ -255,6 +257,7 @@ const StudentDashboard: React.FC = () => {
     }
 
     const verifiedUntil = Date.now() + FACE_VERIFICATION_WINDOW_MS;
+    faceVerifiedUntilRef.current = verifiedUntil;
     if (faceGateTimerRef.current) window.clearTimeout(faceGateTimerRef.current);
     setFaceVerifiedUntil(verifiedUntil);
     setFaceGateOpen(false);
@@ -263,6 +266,7 @@ const StudentDashboard: React.FC = () => {
     setFaceGateMessage("");
     faceGateTimerRef.current = window.setTimeout(() => {
       if (!mountedRef.current) return;
+      faceVerifiedUntilRef.current = 0;
       setFaceVerifiedUntil(0);
     }, FACE_VERIFICATION_WINDOW_MS);
   }, []);
@@ -639,9 +643,11 @@ const StudentDashboard: React.FC = () => {
     resolveLiveLocation,
   ]);
 
-  const simulateScan = useCallback(async () => {
+  const simulateScan = useCallback(async (forcedVerifiedUntil?: number) => {
     if (submitLockRef.current || busy) return;
-    if (faceVerifiedUntil <= Date.now()) {
+    const currentVerifiedUntil = forcedVerifiedUntil ?? faceVerifiedUntilRef.current;
+    if (currentVerifiedUntil <= Date.now()) {
+      faceVerifiedUntilRef.current = 0;
       setFaceVerifiedUntil(0);
       setFaceGateOpen(true);
       setFaceGateStatus("VERIFYING");
@@ -675,7 +681,6 @@ const StudentDashboard: React.FC = () => {
     }
   }, [
     busy,
-    faceVerifiedUntil,
     submitQrAttendance,
     warmLocation,
   ]);
@@ -720,9 +725,10 @@ const StudentDashboard: React.FC = () => {
                 onCaptured={(capture) => {
                   handleLiveFaceCaptured(capture);
                   if (capture.faceVerification?.matched && capture.faceVerification.liveness === "movement") {
+                    const freshExpiry = Date.now() + FACE_VERIFICATION_WINDOW_MS;
                     window.setTimeout(() => {
-                      void simulateScan();
-                    }, 250);
+                      void simulateScan(freshExpiry);
+                    }, 150);
                   }
                 }}
                 disabled={faceGateStatus === "MATCHING" || !registeredFacePhoto}
@@ -998,9 +1004,9 @@ const StudentDashboard: React.FC = () => {
               </span>
             </div>
             <Button
-              onClick={simulateScan}
+              onClick={() => void simulateScan()}
               className="bg-teal-600 hover:bg-teal-500 active:bg-teal-700 w-full py-4 text-base sm:text-lg font-bold text-white shadow-lg shadow-teal-950/50 rounded-xl cursor-pointer"
-              disabled={busy || !faceVerified}
+              disabled={busy}
             >
               <Camera size={20} /> Mark Attendance
             </Button>
