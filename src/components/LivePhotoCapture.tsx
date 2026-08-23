@@ -694,46 +694,20 @@ const LivePhotoCapture: React.FC<{
 
       {cameraActive || cameraLoading ? (
         <div className="space-y-3">
-          <div className="relative overflow-hidden rounded-[22px] border border-slate-200 bg-black">
+          <div className="relative overflow-hidden rounded-[20px] border border-slate-200/80 bg-black shadow-inner">
             <video ref={videoRef} className="aspect-[3/4] w-full object-cover -scale-x-100" autoPlay muted playsInline />
-            
-            {/* Oval Face Guide Overlay */}
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-              <div
-                className={`h-52 w-40 rounded-[50%] border-2 transition-all duration-300 ${
-                  faceQualityReady
-                    ? "border-emerald-400 border-solid shadow-[0_0_20px_rgba(16,185,129,0.45)]"
-                    : "border-cyan-400/80 border-dashed shadow-[0_0_15px_rgba(6,182,212,0.25)]"
-                }`}
-              />
-            </div>
 
-            {/* Real-time Status Badge Overlay */}
+            {/* Stable Status Badge Overlay */}
             <div className="pointer-events-none absolute bottom-3 inset-x-3 flex justify-center z-10">
-              <div
-                className={`inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-xs font-semibold shadow-lg backdrop-blur-md transition-all ${
-                  faceQualityReady
-                    ? "bg-emerald-950/85 text-emerald-300 border border-emerald-500/50"
-                    : "bg-slate-950/85 text-cyan-300 border border-cyan-500/40"
-                }`}
-              >
-                <span className="relative flex h-2 w-2">
-                  <span
-                    className={`absolute inline-flex h-full w-full rounded-full opacity-75 ${
-                      faceQualityReady ? "bg-emerald-400 animate-ping" : "bg-cyan-400 animate-ping"
-                    }`}
-                  />
-                  <span
-                    className={`relative inline-flex h-2 w-2 rounded-full ${
-                      faceQualityReady ? "bg-emerald-400" : "bg-cyan-400"
-                    }`}
-                  />
+              <div className="inline-flex max-w-[90%] items-center gap-2 rounded-full bg-slate-950/85 px-3.5 py-1.5 text-xs font-semibold text-teal-300 border border-teal-500/40 shadow-lg backdrop-blur-md">
+                <span className="relative flex h-2 w-2 shrink-0">
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-teal-400" />
                 </span>
-                <span>
+                <span className="truncate">
                   {verificationInProgress && verificationMessage
                     ? verificationMessage
                     : faceQualityReady
-                    ? "Face centered & ready!"
+                    ? "Face ready"
                     : faceQuality?.reason || "Looking for face..."}
                 </span>
               </div>
@@ -741,10 +715,10 @@ const LivePhotoCapture: React.FC<{
           </div>
 
           {autoCapture ? (
-            <div className="rounded-2xl border border-teal-100 bg-teal-50 px-4 py-3 text-center text-sm font-medium text-teal-800">
-              {verificationMessage || (faceQualityReady
-                ? "Face ready. Capturing automatically..."
-                : faceQuality?.reason || "Looking for face...")}
+            <div className="h-10 flex items-center justify-center rounded-xl border border-teal-500/20 bg-teal-950/40 px-3 text-center text-xs font-medium text-teal-300">
+              <span className="truncate">
+                {verificationMessage || "Verifying live face movement..."}
+              </span>
             </div>
           ) : (
             <div className="flex flex-col gap-3 sm:flex-row">
@@ -753,7 +727,7 @@ const LivePhotoCapture: React.FC<{
                 {cameraLoading
                   ? "Starting Camera..."
                   : !faceQualityReady
-                  ? faceQuality?.reason || "Center face in guide"
+                  ? faceQuality?.reason || "Looking for face..."
                   : "Capture Official Photo"}
               </Button>
               <Button type="button" variant="secondary" onClick={stopCamera} className="flex-1">

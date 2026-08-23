@@ -705,20 +705,20 @@ const StudentDashboard: React.FC = () => {
   return (
     <div className="relative mx-auto min-h-screen max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
       {faceGateOpen && (
-        <div className="fixed inset-0 z-[75] overflow-y-auto bg-black/85 p-4 flex flex-col items-center justify-center">
-          <div className="relative mx-auto flex min-h-full w-full max-w-xl items-center justify-center py-4">
+        <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+          <div className="relative w-full max-w-sm sm:max-w-md overflow-hidden rounded-3xl bg-slate-900 border border-slate-800 p-5 shadow-2xl">
             <button
               type="button"
               onClick={() => {
                 setFaceGateOpen(false);
                 setFaceGateStatus("VERIFYING");
               }}
-              className="absolute top-2 right-2 z-20 p-2 text-white/80 hover:text-white rounded-full bg-slate-900/80 hover:bg-slate-800 transition-colors cursor-pointer"
+              className="absolute top-4 right-4 z-30 p-2 text-slate-400 hover:text-white rounded-full bg-slate-800/80 hover:bg-slate-700 transition-colors cursor-pointer"
               title="Close face verification"
             >
-              <X size={20} />
+              <X size={18} />
             </button>
-            <React.Suspense fallback={<div className="text-sm text-white">Opening face verification...</div>}>
+            <React.Suspense fallback={<div className="py-12 text-center text-sm text-slate-400">Opening camera...</div>}>
               <LivePhotoCapture
                 value={liveFacePhoto}
                 onChange={setLiveFacePhoto}
@@ -737,13 +737,12 @@ const StudentDashboard: React.FC = () => {
                 hideLauncher
                 compactMode
                 showCapturedPreview={false}
-                enableFaceQuality
                 faceVerificationReferenceUrl={registeredFacePhoto}
-                title="Verify Face"
+                title="Face Verification"
                 description={
                   !registeredFacePhoto
-                    ? "No registered student profile photo is available."
-                    : faceGateMessage || "Center your face to complete live verification."
+                    ? "No registered student profile photo found."
+                    : "Verify your live face to mark attendance."
                 }
               />
             </React.Suspense>
