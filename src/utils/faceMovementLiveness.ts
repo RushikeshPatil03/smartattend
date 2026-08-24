@@ -4,12 +4,17 @@ import {
   type FacePoint,
 } from "./faceApiLoader";
 
-export type LivenessChallenge = "BLINK" | "TURN_LEFT" | "TURN_RIGHT";
+export type LivenessChallenge =
+  | "TURN_LEFT"
+  | "TURN_RIGHT"
+  | "TILT_UP"
+  | "TILT_DOWN";
 
 export const CHALLENGES: readonly LivenessChallenge[] = [
-  "BLINK",
   "TURN_LEFT",
   "TURN_RIGHT",
+  "TILT_UP",
+  "TILT_DOWN",
 ] as const;
 
 export const DEFAULT_MOVEMENT_MAX_TIME_MS = Math.max(
@@ -27,10 +32,9 @@ export const DEFAULT_MOVEMENT_ROTATION_THRESHOLD = Number(
   import.meta.env.VITE_FACEAPI_MOVEMENT_ROTATION_THRESHOLD || 0.045
 );
 
-export const EAR_CLOSED_THRESHOLD = 0.14;
-export const EAR_OPEN_THRESHOLD = 0.22;
-export const RELATIVE_YAW_DELTA_THRESHOLD = 0.085;
-export const MIN_LIVENESS_DURATION_MS = 600;
+export const RELATIVE_PITCH_DELTA_THRESHOLD = 0.055;
+export const RELATIVE_YAW_DELTA_THRESHOLD = 0.075;
+export const MIN_LIVENESS_DURATION_MS = 500;
 export const CONSECUTIVE_FRAMES_REQUIRED = 3;
 
 export type MovementLivenessOptions = {
@@ -57,8 +61,7 @@ export type MovementLivenessResult = {
     translation: number;
     rotation: number;
     missingFaceSamples: number;
-    earMin?: number;
-    earMax?: number;
+    pitchDelta?: number;
     yawDelta?: number;
   };
   reason?: string;
@@ -69,7 +72,7 @@ type FacePoseSample = {
   size: number;
   noseOffsetX: number;
   eyeTilt: number;
-  ear: number;
+  pitchRatio: number;
   yawRatio: number;
 };
 
@@ -100,46 +103,17 @@ export function getRandomLivenessChallenge(): LivenessChallenge {
 
 export function getChallengePrompt(challenge: LivenessChallenge): string {
   switch (challenge) {
-    case "BLINK":
-      return "Please blink your eyes";
     case "TURN_LEFT":
       return "Turn head slightly to the left";
     case "TURN_RIGHT":
       return "Turn head slightly to the right";
+    case "TILT_UP":
+      return "Tilt head slightly upwards";
+    case "TILT_DOWN":
+      return "Tilt head slightly downwards";
     default:
       return "Please make a slight head movement";
   }
-}
-
-function calculateEAR(points: FacePoint[], startIdx: number): number {
-  const p0 = points[startIdx];
-  const p1 = points[startIdx + 1];
-  const p2 = points[startIdx + 2];
-  const p3 = points[startIdx + 3];
-  const p4 = points[startIdx + 4];
-  const p5 = points[startIdx + 5];
-
-  if (!p0 || !p1 || !p2 || !p3 || !p4 || !p5) return 0.25;
-
-  const vertical1 = distance(p1, p5);
-  const vertical2 = distance(p2, p4);
-  const horizontal = distance(p0, p3);
-
-  if (horizontal <= 0.001) return 0.25;
-  return (vertical1 + vertical2) / (2.0 * horizontal);
-}
-
-export function computeEyeAspectRatio(landmarks: FaceLandmarks): {
-  ear: number;
-  leftEar: number;
-  rightEar: number;
-} {
-  const points = landmarks.positions;
-  if (points.length < 68) return { ear: 0.25, leftEar: 0.25, rightEar: 0.25 };
-  const rightEar = calculateEAR(points, 36);
-  const leftEar = calculateEAR(points, 42);
-  const ear = (leftEar + rightEar) / 2;
-  return { ear, leftEar, rightEar };
 }
 
 function getPoseSample(landmarks: FaceLandmarks): FacePoseSample | null {
@@ -155,24 +129,21 @@ function getPoseSample(landmarks: FaceLandmarks): FacePoseSample | null {
 
   const leftEye = average(points.slice(36, 42));
   const rightEye = average(points.slice(42, 48));
+  const eyeMid = average(points.slice(36, 48));
   const nose = points[30] || { x: center.x, y: center.y };
   const chin = points[8] || { x: center.x, y: maxY };
-  const eyeMid = average([leftEye, rightEye]);
   const faceHeight = Math.max(distance(eyeMid, chin), 1);
 
-  const rightCheek = points[0] || { x: minX, y: center.y };
-  const leftCheek = points[16] || { x: maxX, y: center.y };
-  const cheekSpan = Math.max(leftCheek.x - rightCheek.x, 1);
-  const yawRatio = (nose.x - rightCheek.x) / cheekSpan;
-
-  const { ear } = computeEyeAspectRatio(landmarks);
+  const pitchRatio = (nose.y - eyeMid.y) / faceHeight;
+  const yawRatio =
+    (nose.x - points[0].x) / Math.max(distance(points[0], points[16]), 1);
 
   return {
     center,
     size,
     noseOffsetX: (nose.x - eyeMid.x) / faceHeight,
     eyeTilt: (rightEye.y - leftEye.y) / Math.max(distance(leftEye, rightEye), 1),
-    ear,
+    pitchRatio,
     yawRatio,
   };
 }
@@ -208,21 +179,17 @@ export async function runMovementLiveness(
   });
 
   const startedAt = performance.now();
-  const armAt = startedAt + 100;
 
   let baseline: FacePoseSample | null = null;
   let samples = 0;
   let missingFaceSamples = 0;
   let maxTranslation = 0;
   let maxRotation = 0;
-  let earMin = 1.0;
-  let earMax = 0.0;
+  let maxPitchDelta = 0;
   let maxYawDelta = 0;
 
   // State machine variables
-  let eyeSawOpen = false;
-  let eyeSawClosed = false;
-  let consecutiveTurnFrames = 0;
+  let consecutiveFrames = 0;
   let challengePassed = false;
 
   while (performance.now() - startedAt < maxTimeMs) {
@@ -241,14 +208,8 @@ export async function runMovementLiveness(
     samples += 1;
     missingFaceSamples = 0;
 
-    earMin = Math.min(earMin, pose.ear);
-    earMax = Math.max(earMax, pose.ear);
-
     if (!baseline) {
       baseline = pose;
-      if (pose.ear >= EAR_OPEN_THRESHOLD) {
-        eyeSawOpen = true;
-      }
       await wait(sampleIntervalMs);
       continue;
     }
@@ -256,6 +217,11 @@ export async function runMovementLiveness(
     const movement = compareSamples(baseline, pose);
     maxTranslation = Math.max(maxTranslation, movement.translation);
     maxRotation = Math.max(maxRotation, movement.rotation);
+
+    const pitchDelta = pose.pitchRatio - baseline.pitchRatio;
+    if (Math.abs(pitchDelta) > Math.abs(maxPitchDelta)) {
+      maxPitchDelta = pitchDelta;
+    }
 
     const yawDelta = pose.yawRatio - baseline.yawRatio;
     if (Math.abs(yawDelta) > Math.abs(maxYawDelta)) {
@@ -266,57 +232,84 @@ export async function runMovementLiveness(
     const timeProgress = Math.min(elapsed / maxTimeMs, 1);
 
     // --- Check Challenge Conditions (Strict Relative Movements) ---
-    if (challenge === "BLINK") {
-      // 1. Must observe open eyes first
-      if (!eyeSawClosed && pose.ear >= EAR_OPEN_THRESHOLD) {
-        eyeSawOpen = true;
-      }
-      // 2. Must observe eyes drop to closed threshold
-      if (eyeSawOpen && pose.ear <= EAR_CLOSED_THRESHOLD) {
-        eyeSawClosed = true;
+    if (challenge === "TILT_UP") {
+      // Relative pitch change upwards (nose moves upward relative to eye midpoint, pitchRatio decreases)
+      const tiltUpDelta = baseline.pitchRatio - pose.pitchRatio;
+      if (tiltUpDelta >= RELATIVE_PITCH_DELTA_THRESHOLD) {
+        consecutiveFrames += 1;
         options.onChallengeUpdate?.({
           challenge,
-          prompt: "Blink detected, reopening eyes...",
-          progress: 0.65,
+          prompt: "Holding head tilt up...",
+          progress: Math.min(
+            0.35 + (consecutiveFrames / CONSECUTIVE_FRAMES_REQUIRED) * 0.55,
+            0.9
+          ),
           passed: false,
         });
+        if (consecutiveFrames >= CONSECUTIVE_FRAMES_REQUIRED) {
+          challengePassed = true;
+        }
+      } else {
+        consecutiveFrames = Math.max(0, consecutiveFrames - 1);
       }
-      // 3. Must observe eyes recover back to open threshold
-      if (eyeSawClosed && pose.ear >= EAR_OPEN_THRESHOLD) {
-        challengePassed = true;
+    } else if (challenge === "TILT_DOWN") {
+      // Relative pitch change downwards (nose moves downward relative to eye midpoint, pitchRatio increases)
+      const tiltDownDelta = pose.pitchRatio - baseline.pitchRatio;
+      if (tiltDownDelta >= RELATIVE_PITCH_DELTA_THRESHOLD) {
+        consecutiveFrames += 1;
+        options.onChallengeUpdate?.({
+          challenge,
+          prompt: "Holding head tilt down...",
+          progress: Math.min(
+            0.35 + (consecutiveFrames / CONSECUTIVE_FRAMES_REQUIRED) * 0.55,
+            0.9
+          ),
+          passed: false,
+        });
+        if (consecutiveFrames >= CONSECUTIVE_FRAMES_REQUIRED) {
+          challengePassed = true;
+        }
+      } else {
+        consecutiveFrames = Math.max(0, consecutiveFrames - 1);
       }
     } else if (challenge === "TURN_LEFT") {
       // Relative yaw change to left from initial baseline
       if (yawDelta >= RELATIVE_YAW_DELTA_THRESHOLD) {
-        consecutiveTurnFrames += 1;
+        consecutiveFrames += 1;
         options.onChallengeUpdate?.({
           challenge,
           prompt: "Holding head turn left...",
-          progress: Math.min(0.35 + (consecutiveTurnFrames / CONSECUTIVE_FRAMES_REQUIRED) * 0.55, 0.9),
+          progress: Math.min(
+            0.35 + (consecutiveFrames / CONSECUTIVE_FRAMES_REQUIRED) * 0.55,
+            0.9
+          ),
           passed: false,
         });
-        if (consecutiveTurnFrames >= CONSECUTIVE_FRAMES_REQUIRED) {
+        if (consecutiveFrames >= CONSECUTIVE_FRAMES_REQUIRED) {
           challengePassed = true;
         }
       } else {
-        consecutiveTurnFrames = Math.max(0, consecutiveTurnFrames - 1);
+        consecutiveFrames = Math.max(0, consecutiveFrames - 1);
       }
     } else if (challenge === "TURN_RIGHT") {
       // Relative yaw change to right from initial baseline
       const rightYawDelta = baseline.yawRatio - pose.yawRatio;
       if (rightYawDelta >= RELATIVE_YAW_DELTA_THRESHOLD) {
-        consecutiveTurnFrames += 1;
+        consecutiveFrames += 1;
         options.onChallengeUpdate?.({
           challenge,
           prompt: "Holding head turn right...",
-          progress: Math.min(0.35 + (consecutiveTurnFrames / CONSECUTIVE_FRAMES_REQUIRED) * 0.55, 0.9),
+          progress: Math.min(
+            0.35 + (consecutiveFrames / CONSECUTIVE_FRAMES_REQUIRED) * 0.55,
+            0.9
+          ),
           passed: false,
         });
-        if (consecutiveTurnFrames >= CONSECUTIVE_FRAMES_REQUIRED) {
+        if (consecutiveFrames >= CONSECUTIVE_FRAMES_REQUIRED) {
           challengePassed = true;
         }
       } else {
-        consecutiveTurnFrames = Math.max(0, consecutiveTurnFrames - 1);
+        consecutiveFrames = Math.max(0, consecutiveFrames - 1);
       }
     }
 
@@ -338,14 +331,13 @@ export async function runMovementLiveness(
           translation: maxTranslation,
           rotation: maxRotation,
           missingFaceSamples,
-          earMin,
-          earMax,
+          pitchDelta: maxPitchDelta,
           yawDelta: maxYawDelta,
         },
       };
     }
 
-    if (!eyeSawClosed && consecutiveTurnFrames === 0) {
+    if (consecutiveFrames === 0) {
       options.onChallengeUpdate?.({
         challenge,
         prompt: challengePrompt,
@@ -366,8 +358,7 @@ export async function runMovementLiveness(
       translation: maxTranslation,
       rotation: maxRotation,
       missingFaceSamples,
-      earMin,
-      earMax,
+      pitchDelta: maxPitchDelta,
       yawDelta: maxYawDelta,
     },
     reason: `Liveness challenge (${challengePrompt}) was not completed in time. Please try again.`,

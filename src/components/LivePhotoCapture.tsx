@@ -36,8 +36,7 @@ type ClientFaceVerification = {
     translation: number;
     rotation: number;
     missingFaceSamples: number;
-    earMin?: number;
-    earMax?: number;
+    pitchDelta?: number;
     yawDelta?: number;
     challenge?: string;
   };
@@ -694,15 +693,19 @@ const LivePhotoCapture: React.FC<{
 
       {cameraActive || cameraLoading ? (
         <div className="space-y-3">
-          <div className="relative overflow-hidden rounded-[20px] border border-slate-200/80 bg-black shadow-inner">
-            <video ref={videoRef} className="aspect-[3/4] w-full object-cover -scale-x-100" autoPlay muted playsInline />
+          <div className="relative w-full aspect-[4/3] max-h-[380px] rounded-2xl overflow-hidden bg-slate-950 shadow-inner">
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              className="h-full w-full object-cover -scale-x-100"
+            />
 
-            {/* Stable Status Badge Overlay */}
-            <div className="pointer-events-none absolute bottom-3 inset-x-3 flex justify-center z-10">
-              <div className="inline-flex max-w-[90%] items-center gap-2 rounded-full bg-slate-950/85 px-3.5 py-1.5 text-xs font-semibold text-teal-300 border border-teal-500/40 shadow-lg backdrop-blur-md">
-                <span className="relative flex h-2 w-2 shrink-0">
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-teal-400" />
-                </span>
+            {/* Floating Challenge Prompt (Top-Center) */}
+            <div className="absolute top-3 inset-x-3 z-20 flex justify-center pointer-events-none">
+              <div className="rounded-full bg-slate-900/80 backdrop-blur-md border border-white/20 px-4 py-1.5 text-xs font-semibold text-white shadow-lg flex items-center gap-2 max-w-sm truncate">
+                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-ping shrink-0" />
                 <span className="truncate">
                   {verificationInProgress && verificationMessage
                     ? verificationMessage
@@ -712,17 +715,26 @@ const LivePhotoCapture: React.FC<{
                 </span>
               </div>
             </div>
+
+            {/* Floating Error Toast (Bottom-Center) */}
+            {captureError ? (
+              <div className="absolute bottom-3 inset-x-3 z-20 flex justify-center pointer-events-none">
+                <div className="rounded-xl bg-rose-950/90 backdrop-blur-md border border-rose-500/40 px-3.5 py-2 text-xs text-rose-200 shadow-xl flex items-center gap-2 max-w-sm text-center">
+                  <ShieldAlert size={14} className="text-rose-400 shrink-0" />
+                  <span className="truncate">{captureError}</span>
+                </div>
+              </div>
+            ) : null}
           </div>
 
-          {autoCapture ? (
-            <div className="h-10 flex items-center justify-center rounded-xl border border-teal-500/20 bg-teal-950/40 px-3 text-center text-xs font-medium text-teal-300">
-              <span className="truncate">
-                {verificationMessage || "Verifying live face movement..."}
-              </span>
-            </div>
-          ) : (
+          {!autoCapture ? (
             <div className="flex flex-col gap-3 sm:flex-row">
-              <Button type="button" onClick={capturePhoto} disabled={!captureEnabled} className="flex-1">
+              <Button
+                type="button"
+                onClick={capturePhoto}
+                disabled={!captureEnabled}
+                className="flex-1"
+              >
                 <Camera size={16} />
                 {cameraLoading
                   ? "Starting Camera..."
@@ -730,17 +742,32 @@ const LivePhotoCapture: React.FC<{
                   ? faceQuality?.reason || "Looking for face..."
                   : "Capture Official Photo"}
               </Button>
-              <Button type="button" variant="secondary" onClick={stopCamera} className="flex-1">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={stopCamera}
+                className="flex-1"
+              >
                 Cancel Camera
               </Button>
             </div>
-          )}
+          ) : null}
         </div>
       ) : value && showCapturedPreview ? (
         <div className="space-y-3">
-          <img src={value} alt="Captured profile" loading="lazy" className="aspect-square w-36 rounded-[22px] border border-slate-200 object-cover shadow-sm" />
+          <img
+            src={value}
+            alt="Captured profile"
+            loading="lazy"
+            className="aspect-square w-36 rounded-[22px] border border-slate-200 object-cover shadow-sm"
+          />
           <div className="flex flex-col gap-3 sm:flex-row">
-            <Button type="button" variant="secondary" onClick={() => onChange("")} className="flex-1">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => onChange("")}
+              className="flex-1"
+            >
               <RefreshCw size={16} />
               Retake Photo
             </Button>
@@ -766,11 +793,31 @@ const LivePhotoCapture: React.FC<{
             </div>
 
             <div className="flex flex-col gap-3 sm:flex-row">
-            <Button type="button" onClick={startCamera} disabled={cameraLoading || disabled} className="flex-1">
-                {cameraLoading ? <><RefreshCw size={16} className="animate-spin" /> Opening Camera</> : <><Camera size={16} /> Open Camera</>}
+              <Button
+                type="button"
+                onClick={startCamera}
+                disabled={cameraLoading || disabled}
+                className="flex-1"
+              >
+                {cameraLoading ? (
+                  <>
+                    <RefreshCw size={16} className="animate-spin" /> Opening Camera
+                  </>
+                ) : (
+                  <>
+                    <Camera size={16} /> Open Camera
+                  </>
+                )}
               </Button>
-              {orientation.supported && orientation.permissionRequired && !orientation.permissionGranted ? (
-                <Button type="button" variant="secondary" onClick={requestOrientationPermission} className="flex-1">
+              {orientation.supported &&
+              orientation.permissionRequired &&
+              !orientation.permissionGranted ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={requestOrientationPermission}
+                  className="flex-1"
+                >
                   <Compass size={16} />
                   Enable Gyroscope
                 </Button>
@@ -780,18 +827,21 @@ const LivePhotoCapture: React.FC<{
         </div>
       )}
 
-      {captureError ? (
+      {!cameraActive && captureError ? (
         <div className="flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 sm:flex-row sm:items-center sm:justify-between">
           <div className="inline-flex items-start gap-2">
             <ShieldAlert size={16} className="mt-0.5 shrink-0" />
             <span>{captureError}</span>
           </div>
-          {!cameraActive ? (
-            <Button type="button" variant="secondary" onClick={startCamera} disabled={cameraLoading || disabled}>
-              <RefreshCw size={16} />
-              Retry
-            </Button>
-          ) : null}
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={startCamera}
+            disabled={cameraLoading || disabled}
+          >
+            <RefreshCw size={16} />
+            Retry
+          </Button>
         </div>
       ) : null}
     </div>
