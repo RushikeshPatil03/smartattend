@@ -1076,69 +1076,75 @@ const FacultyDashboard: React.FC = () => {
   const loadSheet = useCallback(async () => {
     if (!sheetFilters.subjectId) return;
     setSheetLoading(true);
-    const res: any = await apiClient.fetchAttendance({
-      subjectId: sheetFilters.subjectId,
-      departmentId: sheetFilters.departmentId || undefined,
-      year: sheetFilters.year || undefined,
-      semester: sheetFilters.semester || undefined,
-      section: sheetFilters.section || undefined,
-    });
-    if (!res?.ok) {
-      setSheetLoading(false);
-      return alert(res?.error || "Failed to load sheet");
-    }
-    const logs = Array.isArray(res.attendance) ? res.attendance : [];
-    const sessionMeta = new Map<string, { orderTime: number; label: string }>();
-    const stu = new Map<string, { name: string; enrollmentNo: string }>();
-    const prs = new Set<string>();
-    const toDateTimeKey = (dt: Date) => {
-      const y = dt.getFullYear();
-      const m = String(dt.getMonth() + 1).padStart(2, "0");
-      const d = String(dt.getDate()).padStart(2, "0");
-      const hh = String(dt.getHours()).padStart(2, "0");
-      const mm = String(dt.getMinutes()).padStart(2, "0");
-      return `${y}-${m}-${d} ${hh}:${mm}`;
-    };
-    logs.forEach((x: any) => {
-      const sid = String(x?.session?._id || x?.session || x?.sessionId || "").trim();
-      const sortTime = new Date(
-        x?.session?.startTime || x?.session?.start_time || x?.timestamp || x?.markedAt || x?.createdAt || Date.now()
-      ).getTime();
-      const dateLabel = toDateTimeKey(
-        new Date(
-          x?.session?.startTime || x?.session?.start_time || x?.timestamp || x?.markedAt || x?.createdAt || Date.now()
-        )
-      );
-      const facName = x?.faculty?.name || x?.fac?.name;
-      const label = facName ? `${dateLabel} (${facName})` : dateLabel;
-      const colKey = sid || label;
-      if (!sessionMeta.has(colKey)) {
-        sessionMeta.set(colKey, { orderTime: sortTime, label });
-      }
-      const e = String(x?.student?.enrollmentNo || x?.student?.enrollment_no || "").trim();
-      if (!e) return;
-      if (!stu.has(e))
-        stu.set(e, { name: x?.student?.name || "", enrollmentNo: e });
-      if (String(x?.status || "").toLowerCase() === "present") {
-        prs.add(`${e}|${colKey}`);
-      }
-    });
-    const columns = Array.from(sessionMeta.entries())
-      .sort((a, b) => a[1].orderTime - b[1].orderTime)
-      .map(([colKey, meta]) => `${colKey}::${meta.label}`);
-    const rows = Array.from(stu.values())
-      .sort((a, b) => a.enrollmentNo.localeCompare(b.enrollmentNo))
-      .map((s) => {
-        const attRec: Record<string, "P" | "A"> = {};
-        columns.forEach((c) => {
-          const [colKey] = c.split("::");
-          attRec[c] = prs.has(`${s.enrollmentNo}|${colKey}`) ? "P" : "A";
-        });
-        return { ...s, attendance: attRec };
+    try {
+      const res: any = await apiClient.fetchAttendance({
+        subjectId: sheetFilters.subjectId,
+        departmentId: sheetFilters.departmentId || undefined,
+        year: sheetFilters.year || undefined,
+        semester: sheetFilters.semester || undefined,
+        section: sheetFilters.section || undefined,
       });
-    setSheetColumns(columns);
-    setSheetRows(rows);
-    setSheetLoading(false);
+      if (!res?.ok) {
+        setSheetLoading(false);
+        return alert(res?.error || "Failed to load sheet");
+      }
+
+      // Map all conducted sessions into columns (Guarantees 100% Class Counts):
+      const sessionList = Array.isArray(res.sessions) ? res.sessions : [];
+      const columns = sessionList.map((sess: any) => {
+        const dateObj = new Date(sess.start_time || sess.startTime || sess.created_at || Date.now());
+        const dateLabel = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, "0")}-${String(dateObj.getDate()).padStart(2, "0")} ${String(dateObj.getHours()).padStart(2, "0")}:${String(dateObj.getMinutes()).padStart(2, "0")}`;
+        const facName = sess.fac?.name || sess.faculty?.name || "";
+        const label = facName ? `${dateLabel} (${facName})` : dateLabel;
+        return `${sess.id || sess._id}::${label}`;
+      });
+
+      // Map all enrolled students into rows:
+      let studentList = Array.isArray(res.students) ? res.students : [];
+      if (studentList.length === 0 && Array.isArray(res.attendance)) {
+        const stuMap = new Map<string, { name: string; enrollmentNo: string }>();
+        res.attendance.forEach((att: any) => {
+          const eno = String(att.student?.enrollmentNo || att.student?.enrollment_no || "").trim().toUpperCase();
+          if (eno && !stuMap.has(eno)) {
+            stuMap.set(eno, { name: att.student?.name || "Student", enrollmentNo: eno });
+          }
+        });
+        studentList = Array.from(stuMap.values());
+      }
+
+      const presentSet = new Set<string>(); // Stores "enrollmentNo|sessionId"
+      (res.attendance || []).forEach((att: any) => {
+        const eno = String(att.student?.enrollmentNo || att.student?.enrollment_no || "").trim().toUpperCase();
+        const sid = String(att.session?._id || att.session || att.sessionId || "").trim();
+        if (eno && sid && String(att.status).toLowerCase() === "present") {
+          presentSet.add(`${eno}|${sid}`);
+        }
+      });
+
+      const rows = studentList
+        .map((stu: any) => {
+          const eno = String(stu.enrollmentNo || stu.enrollment_no || "").trim().toUpperCase();
+          const attRec: Record<string, "P" | "A"> = {};
+          columns.forEach((colStr) => {
+            const [colKey] = colStr.split("::");
+            attRec[colStr] = presentSet.has(`${eno}|${colKey}`) ? "P" : "A";
+          });
+          return {
+            name: stu.name,
+            enrollmentNo: eno,
+            attendance: attRec,
+          };
+        })
+        .sort((a, b) => a.enrollmentNo.localeCompare(b.enrollmentNo));
+
+      setSheetColumns(columns);
+      setSheetRows(rows);
+    } catch (err: any) {
+      console.error("Load sheet error:", err);
+      alert(err?.message || "Failed to load attendance sheet");
+    } finally {
+      setSheetLoading(false);
+    }
   }, [sheetFilters]);
 
   const exportCsv = useCallback(() => {

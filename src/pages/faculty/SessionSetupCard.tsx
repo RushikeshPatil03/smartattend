@@ -142,40 +142,82 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
           </div>
 
           <div className="flex flex-wrap gap-2.5">
-            {recentClassCards.map((preset) => (
-              <div
-                key={preset.key}
-                className="group flex items-center gap-2 rounded-2xl border border-slate-200/80 bg-white/70 p-2 pr-3 transition-all duration-200 hover:border-emerald-300 hover:shadow-sm active:scale-[0.98] backdrop-blur-xs"
-              >
-                <button
-                  type="button"
-                  onClick={() => onApplyRecentClass(preset)}
-                  disabled={!preset.available}
-                  className="flex items-center gap-2.5 text-left cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-500/15 to-teal-500/15 border border-emerald-500/30 text-emerald-700 font-extrabold text-[11px] shadow-2xs">
-                    {preset.section}
-                  </span>
-                  <div>
-                    <p className="font-bold text-xs text-slate-800 group-hover:text-emerald-700 transition leading-tight">
-                      {preset.label}
-                    </p>
-                    <p className="text-[10px] font-medium text-slate-500 mt-0.5">
-                      {preset.departmentCode || preset.departmentName} • {preset.radiusMeters}m geofence
-                    </p>
-                  </div>
-                </button>
+            {recentClassCards.map((preset) => {
+              const isSelected =
+                Boolean(formDepartment && formSubject) &&
+                String(preset.departmentId) === String(formDepartment) &&
+                String(preset.year) === String(formYear) &&
+                String(preset.semester) === String(formSem) &&
+                String(preset.section || "").trim().toUpperCase() ===
+                  String(formSection || "").trim().toUpperCase() &&
+                String(preset.subjectId) === String(formSubject);
 
-                <button
-                  type="button"
-                  onClick={() => onRemoveRecentClass(preset.key)}
-                  title="Remove preset"
-                  className="text-slate-400 hover:text-rose-500 transition-colors p-1 rounded-lg hover:bg-rose-50 cursor-pointer"
+              return (
+                <div
+                  key={preset.key}
+                  className={`group relative flex items-center gap-2 rounded-2xl border p-2 pr-3 transition-all duration-200 backdrop-blur-xs ${
+                    isSelected
+                      ? "border-emerald-500/90 bg-emerald-50/90 shadow-[0_4px_20px_rgba(16,185,129,0.18)] ring-2 ring-emerald-500/30 scale-[1.02]"
+                      : "border-slate-200/80 bg-white/70 hover:border-emerald-300 hover:shadow-sm"
+                  } active:scale-[0.98]`}
                 >
-                  <Trash2 size={13} />
-                </button>
-              </div>
-            ))}
+                  <button
+                    type="button"
+                    onClick={() => onApplyRecentClass(preset)}
+                    disabled={!preset.available}
+                    className="flex items-center gap-2.5 text-left cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <span
+                      className={`flex h-7 w-7 items-center justify-center rounded-xl font-extrabold text-[11px] shadow-2xs transition-all duration-200 ${
+                        isSelected
+                          ? "bg-gradient-to-br from-emerald-600 to-teal-600 text-white border border-emerald-600 shadow-[0_2px_8px_rgba(16,185,129,0.4)]"
+                          : "bg-gradient-to-br from-emerald-500/15 to-teal-500/15 border border-emerald-500/30 text-emerald-700"
+                      }`}
+                    >
+                      {preset.section}
+                    </span>
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <p
+                          className={`font-bold text-xs leading-tight transition-colors ${
+                            isSelected
+                              ? "text-emerald-950 font-extrabold"
+                              : "text-slate-800 group-hover:text-emerald-700"
+                          }`}
+                        >
+                          {preset.label}
+                        </p>
+                        {isSelected && (
+                          <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-600 px-1.5 py-0.5 text-[9px] font-extrabold text-white shadow-2xs">
+                            <CheckCircle2 size={10} /> Active
+                          </span>
+                        )}
+                      </div>
+                      <p
+                        className={`text-[10px] font-medium mt-0.5 transition-colors ${
+                          isSelected ? "text-emerald-700 font-semibold" : "text-slate-500"
+                        }`}
+                      >
+                        {preset.departmentCode || preset.departmentName} • {preset.radiusMeters}m geofence
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => onRemoveRecentClass(preset.key)}
+                    title="Remove preset"
+                    className={`transition-colors p-1 rounded-lg cursor-pointer ${
+                      isSelected
+                        ? "text-emerald-700/60 hover:text-rose-600 hover:bg-rose-50"
+                        : "text-slate-400 hover:text-rose-500 hover:bg-rose-50"
+                    }`}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

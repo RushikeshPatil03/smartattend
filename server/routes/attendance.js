@@ -766,6 +766,192 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
     }
 
     // Scenario B: Query attendance across filters (subject, department, dates, etc.)
+    if (subjectId) {
+      const { data: subjectCheck, error: subjectCheckErr } = await supabase
+        .from("subjects")
+        .select("id, name, code, created_by_admin, departments, allotted_faculties, year, semester")
+        .eq("id", String(subjectId))
+        .single();
+
+      if (subjectCheckErr || !subjectCheck) {
+        return res.status(404).json({ ok: false, error: "Subject not found" });
+      }
+
+      if (req.userRole === "FACULTY") {
+        const isAllotted =
+          Array.isArray(subjectCheck?.allotted_faculties) &&
+          subjectCheck.allotted_faculties.some((f) => String(f) === String(req.userId));
+
+        if (!isAllotted) {
+          return res.status(403).json({ ok: false, error: "Forbidden: You are not allotted to this subject" });
+        }
+      }
+
+      // 1) Fetch all conducted sessions for this subject
+      let sessionQuery = supabase
+        .from("sessions")
+        .select("id, year, semester, section, department, start_time, end_time, is_active, faculty, fac:faculties(id, name)")
+        .eq("subject", String(subjectId))
+        .eq("is_active", false)
+        .order("start_time", { ascending: true });
+
+      if (departmentId) {
+        sessionQuery = sessionQuery.eq("department", String(departmentId));
+      }
+      if (year) {
+        sessionQuery = sessionQuery.eq("year", Number(year));
+      }
+      if (semester) {
+        sessionQuery = sessionQuery.eq("semester", Number(semester));
+      }
+      if (section) {
+        sessionQuery = sessionQuery.eq("section", String(section).trim().toUpperCase());
+      }
+
+      const targetDate = date || startDate;
+      if (targetDate) {
+        const dStart = new Date(targetDate);
+        dStart.setUTCHours(0, 0, 0, 0);
+        const dEnd = new Date(endDate || targetDate);
+        dEnd.setUTCHours(23, 59, 59, 999);
+        sessionQuery = sessionQuery.gte("start_time", dStart.toISOString()).lte("start_time", dEnd.toISOString());
+      }
+
+      const { data: rawSubjectSessions, error: sessionErr } = await sessionQuery;
+      if (sessionErr) throw sessionErr;
+      const subjectSessions = (rawSubjectSessions || []).map((s) => ({
+        ...s,
+        _id: s.id,
+        startTime: s.start_time,
+        endTime: s.end_time,
+        isActive: s.is_active,
+      }));
+
+      // 2) Fetch Enrolled Students Roster
+      let studentQuery = supabase
+        .from("students")
+        .select("id, name, enrollment_no, email, profile_photo_url, department, year, semester, section")
+        .order("enrollment_no", { ascending: true });
+
+      const adminId = subjectCheck?.created_by_admin || req.user?.created_by_admin || (req.userRole === "ADMIN" ? req.userId : null);
+      if (adminId) {
+        studentQuery = studentQuery.eq("created_by_admin", String(adminId));
+      }
+
+      if (departmentId) {
+        studentQuery = studentQuery.eq("department", String(departmentId));
+      } else if (Array.isArray(subjectCheck?.departments) && subjectCheck.departments.length > 0) {
+        studentQuery = studentQuery.in("department", subjectCheck.departments);
+      }
+
+      if (year) {
+        studentQuery = studentQuery.eq("year", Number(year));
+      } else if (subjectCheck?.year) {
+        studentQuery = studentQuery.eq("year", Number(subjectCheck.year));
+      }
+
+      if (semester) {
+        studentQuery = studentQuery.eq("semester", Number(semester));
+      } else if (subjectCheck?.semester) {
+        studentQuery = studentQuery.eq("semester", Number(subjectCheck.semester));
+      }
+
+      if (section) {
+        studentQuery = studentQuery.eq("section", String(section).trim().toUpperCase());
+      }
+
+      const { data: rawStudents, error: stuErr } = await studentQuery;
+      if (stuErr) throw stuErr;
+
+      const enrolledStudents = (rawStudents || []).map((s) => ({
+        id: s.id,
+        _id: s.id,
+        name: s.name || "Student",
+        enrollmentNo: s.enrollment_no || "",
+        enrollment_no: s.enrollment_no || "",
+        email: s.email || "",
+        profilePhotoUrl: s.profile_photo_url || "",
+        department: s.department,
+        year: s.year,
+        semester: s.semester,
+        section: s.section,
+      }));
+
+      // 3) Fetch Recorded Attendances for matching sessions
+      const sessionIds = subjectSessions.map((s) => String(s.id));
+      let records = [];
+
+      if (sessionIds.length > 0) {
+        let attQuery = supabase
+          .from("attendances")
+          .select(`
+            id,
+            session,
+            student,
+            faculty,
+            subject,
+            timestamp,
+            status,
+            device_fingerprint,
+            location,
+            face_verification,
+            stu:students(id, name, enrollment_no, email, profile_photo_url),
+            subj:subjects(id, name, code),
+            fac:faculties(id, name),
+            sess:sessions(id, year, semester, section, department, start_time, end_time)
+          `)
+          .in("session", sessionIds)
+          .order("timestamp", { ascending: false });
+
+        if (studentId) attQuery = attQuery.eq("student", String(studentId));
+        if (req.userRole === "STUDENT") attQuery = attQuery.eq("student", req.userId);
+
+        const { data: rawAttendances, error: attErr } = await attQuery;
+        if (attErr) throw attErr;
+
+        records = (rawAttendances || []).map((item) => ({
+          id: item.id,
+          _id: item.id,
+          attendanceId: item.id,
+          sessionId: item.session,
+          session: item.session,
+          student: {
+            id: item.stu?.id || item.student,
+            _id: item.stu?.id || item.student,
+            name: item.stu?.name || "Student",
+            enrollmentNo: item.stu?.enrollment_no || "",
+            enrollment_no: item.stu?.enrollment_no || "",
+            email: item.stu?.email || "",
+            profilePhotoUrl: item.stu?.profile_photo_url || "",
+          },
+          subject: {
+            id: item.subj?.id || item.subject,
+            _id: item.subj?.id || item.subject,
+            name: item.subj?.name || "Subject",
+            code: item.subj?.code || "",
+          },
+          faculty: {
+            id: item.fac?.id || item.faculty,
+            _id: item.fac?.id || item.faculty,
+            name: item.fac?.name || "Faculty",
+          },
+          status: item.status || "present",
+          timestamp: item.timestamp,
+          markedAt: item.timestamp,
+        }));
+      }
+
+      // 4) Return Enriched Payload
+      return res.json({
+        ok: true,
+        attendance: records,
+        count: records.length,
+        sessions: subjectSessions,
+        students: enrolledStudents,
+      });
+    }
+
+    // Scenario B (without subjectId): Query attendance across filters
     let query = supabase
       .from("attendances")
       .select(`
@@ -787,26 +973,7 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
       .order("timestamp", { ascending: false })
       .limit(500);
 
-    if (subjectId) {
-      if (req.userRole === "FACULTY") {
-        const { data: subjectCheck } = await supabase
-          .from("subjects")
-          .select("id, allotted_faculties")
-          .eq("id", String(subjectId))
-          .single();
-
-        const isAllotted =
-          Array.isArray(subjectCheck?.allotted_faculties) &&
-          subjectCheck.allotted_faculties.some((f) => String(f) === String(req.userId));
-
-        if (!isAllotted) {
-          return res.status(403).json({ ok: false, error: "Forbidden: You are not allotted to this subject" });
-        }
-      }
-      query = query.eq("subject", String(subjectId));
-    } else {
-      if (req.userRole === "FACULTY") query = query.eq("faculty", req.userId);
-    }
+    if (req.userRole === "FACULTY") query = query.eq("faculty", req.userId);
     if (studentId) query = query.eq("student", String(studentId));
     if (req.userRole === "STUDENT") query = query.eq("student", req.userId);
 
