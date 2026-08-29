@@ -13,7 +13,6 @@ import {
   Sparkles,
   CheckCircle2,
   Radio,
-  Play,
   XCircle,
   Search,
   Check,
@@ -46,6 +45,7 @@ interface LiveSessionStudioProps {
   onToggleAttendanceItem?: (item: any) => Promise<void>;
   onStopSession: () => Promise<void>;
   onCancelSession: () => Promise<void>;
+  onDisconnectRealtime?: () => void;
   selectedSubject?: any;
   selectedDepartment?: any;
 }
@@ -230,6 +230,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
   onManualAttendance,
   onStopSession,
   onCancelSession,
+  onDisconnectRealtime,
   selectedSubject,
   selectedDepartment,
 }) => {
@@ -392,6 +393,14 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
   // Handle Stop Session -> Immediately stop session on server (stops QR generation and student scanning) and enter Review Mode with full roster
   const handleEnterReviewMode = async () => {
     if (stoppingSession) return;
+
+    // Immediate Realtime WebSocket Disconnect on Stop:
+    // Synchronously unsubscribe WebSocket channel, cancel pending timers & clear queue buffers
+    // so attendee list freezes in memory with zero background socket re-renders
+    if (onDisconnectRealtime) {
+      onDisconnectRealtime();
+    }
+
     setStoppingSession(true);
     setShowCancelConfirm(false);
     try {
@@ -405,12 +414,6 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
     } finally {
       setStoppingSession(false);
     }
-  };
-
-  // Handle Resume Session -> exit Review Mode back to Live Dynamic QR
-  const handleResumeLiveSession = () => {
-    setShowCancelConfirm(false);
-    setIsReviewMode(false);
   };
 
   // Immediate, non-blocking Cancel Session execution
@@ -693,123 +696,113 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
               </div>
             </div>
 
-            {/* Student Single-Line Rows */}
+            {/* Student Single-Line Rows with Lightweight CSS Transitions */}
             <div className="mt-4 space-y-2.5 max-h-[520px] overflow-y-auto pr-1">
-              <AnimatePresence initial={false}>
-                {/* 1. Presentees Tab View */}
-                {reviewTab === "present" && (
-                  filteredPresentList.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-16 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-3xl bg-slate-50/50">
-                      <Users size={32} className="mb-2 text-slate-300" />
-                      <p className="font-bold text-sm text-slate-700">No present students found</p>
-                      {searchQuery && <p className="mt-0.5">Try a different search keyword or check Absentees.</p>}
+              {/* 1. Presentees Tab View */}
+              {reviewTab === "present" && (
+                filteredPresentList.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-16 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-3xl bg-slate-50/50">
+                    <Users size={32} className="mb-2 text-slate-300" />
+                    <p className="font-bold text-sm text-slate-700">No present students found</p>
+                    {searchQuery && <p className="mt-0.5">Try a different search keyword or check Absentees.</p>}
+                  </div>
+                ) : (
+                  filteredPresentList.map((item) => (
+                    <div
+                      key={item.enrollmentNo}
+                      className="flex items-center justify-between rounded-2xl border border-emerald-200/80 bg-emerald-50/40 hover:bg-emerald-50/70 p-3.5 transition-colors duration-150"
+                    >
+                      <div className="flex items-center gap-3.5 min-w-0">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white border border-slate-200 overflow-hidden shadow-xs">
+                          {item.photoUrl ? (
+                            <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
+                          ) : (
+                            <span className="font-extrabold text-xs text-slate-700">
+                              {item.name.slice(0, 1).toUpperCase()}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="min-w-0 flex flex-col sm:flex-row sm:items-center sm:gap-4">
+                          <p className="truncate text-sm font-bold text-slate-900">{item.name}</p>
+                          <span className="font-mono text-xs font-semibold text-slate-500 bg-white/90 px-2 py-0.5 rounded-lg border border-slate-200/60 w-fit">
+                            {item.enrollmentNo}
+                          </span>
+                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-lg w-fit">
+                            <Check size={12} /> Verified Present
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Action Button: Remove */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => onManualAttendance("absent", item.enrollmentNo)}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs font-bold text-rose-600 hover:bg-rose-100 hover:border-rose-300 active:scale-95 transition cursor-pointer shadow-2xs"
+                          title="Remove student and mark as absent"
+                        >
+                          <Trash2 size={14} className="text-rose-600" />
+                          <span>Remove</span>
+                        </button>
+                      </div>
                     </div>
-                  ) : (
-                    filteredPresentList.map((item) => (
-                      <motion.div
-                        key={item.enrollmentNo}
-                        layout
-                        initial={{ opacity: 0, y: -4 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: 4 }}
-                        className="flex items-center justify-between rounded-2xl border border-emerald-200/80 bg-emerald-50/40 hover:bg-emerald-50/70 p-3.5 transition duration-150"
-                      >
-                        <div className="flex items-center gap-3.5 min-w-0">
-                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white border border-slate-200 overflow-hidden shadow-xs">
-                            {item.photoUrl ? (
-                              <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
-                            ) : (
-                              <span className="font-extrabold text-xs text-slate-700">
-                                {item.name.slice(0, 1).toUpperCase()}
-                              </span>
-                            )}
-                          </div>
+                  ))
+                )
+              )}
 
-                          <div className="min-w-0 flex flex-col sm:flex-row sm:items-center sm:gap-4">
-                            <p className="truncate text-sm font-bold text-slate-900">{item.name}</p>
-                            <span className="font-mono text-xs font-semibold text-slate-500 bg-white/90 px-2 py-0.5 rounded-lg border border-slate-200/60 w-fit">
-                              {item.enrollmentNo}
+              {/* 2. Absentees Tab View */}
+              {reviewTab === "absent" && (
+                filteredAbsentList.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-16 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-3xl bg-slate-50/50">
+                    <CheckCircle2 size={32} className="mb-2 text-emerald-500" />
+                    <p className="font-extrabold text-sm text-slate-800">100% Attendance Recorded!</p>
+                    <p className="mt-0.5">All registered class students are currently marked present.</p>
+                  </div>
+                ) : (
+                  filteredAbsentList.map((item) => (
+                    <div
+                      key={item.enrollmentNo}
+                      className="flex items-center justify-between rounded-2xl border border-rose-200/80 bg-rose-50/30 hover:bg-rose-50/60 p-3.5 transition-colors duration-150"
+                    >
+                      <div className="flex items-center gap-3.5 min-w-0">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white border border-slate-200 overflow-hidden shadow-xs">
+                          {item.photoUrl ? (
+                            <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
+                          ) : (
+                            <span className="font-bold text-xs text-slate-500">
+                              {item.name.slice(0, 1).toUpperCase()}
                             </span>
-                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-lg w-fit">
-                              <Check size={12} /> Verified Present
-                            </span>
-                          </div>
+                          )}
                         </div>
 
-                        {/* Action Button: Remove */}
-                        <div className="flex items-center gap-2 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => onManualAttendance("absent", item.enrollmentNo)}
-                            className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs font-bold text-rose-600 hover:bg-rose-100 hover:border-rose-300 active:scale-95 transition cursor-pointer shadow-2xs"
-                            title="Remove student and mark as absent"
-                          >
-                            <Trash2 size={14} className="text-rose-600" />
-                            <span>Remove</span>
-                          </button>
+                        <div className="min-w-0 flex flex-col sm:flex-row sm:items-center sm:gap-4">
+                          <p className="truncate text-sm font-bold text-slate-800">{item.name}</p>
+                          <span className="font-mono text-xs font-semibold text-slate-500 bg-white/90 px-2 py-0.5 rounded-lg border border-slate-200/60 w-fit">
+                            {item.enrollmentNo}
+                          </span>
+                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-700 bg-rose-100/70 px-2 py-0.5 rounded-lg w-fit">
+                            <UserX size={12} /> Absent
+                          </span>
                         </div>
-                      </motion.div>
-                    ))
-                  )
-                )}
+                      </div>
 
-                {/* 2. Absentees Tab View */}
-                {reviewTab === "absent" && (
-                  filteredAbsentList.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-16 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-3xl bg-slate-50/50">
-                      <CheckCircle2 size={32} className="mb-2 text-emerald-500" />
-                      <p className="font-extrabold text-sm text-slate-800">100% Attendance Recorded!</p>
-                      <p className="mt-0.5">All registered class students are currently marked present.</p>
+                      {/* Action Button: Add */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => onManualAttendance("present", item.enrollmentNo)}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100 hover:border-emerald-400 active:scale-95 transition cursor-pointer shadow-2xs"
+                          title="Add student to presentees"
+                        >
+                          <UserPlus size={14} className="text-emerald-700" />
+                          <span>Add to Present</span>
+                        </button>
+                      </div>
                     </div>
-                  ) : (
-                    filteredAbsentList.map((item) => (
-                      <motion.div
-                        key={item.enrollmentNo}
-                        layout
-                        initial={{ opacity: 0, y: -4 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: 4 }}
-                        className="flex items-center justify-between rounded-2xl border border-rose-200/80 bg-rose-50/30 hover:bg-rose-50/60 p-3.5 transition duration-150"
-                      >
-                        <div className="flex items-center gap-3.5 min-w-0">
-                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white border border-slate-200 overflow-hidden shadow-xs">
-                            {item.photoUrl ? (
-                              <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
-                            ) : (
-                              <span className="font-bold text-xs text-slate-500">
-                                {item.name.slice(0, 1).toUpperCase()}
-                              </span>
-                            )}
-                          </div>
-
-                          <div className="min-w-0 flex flex-col sm:flex-row sm:items-center sm:gap-4">
-                            <p className="truncate text-sm font-bold text-slate-800">{item.name}</p>
-                            <span className="font-mono text-xs font-semibold text-slate-500 bg-white/90 px-2 py-0.5 rounded-lg border border-slate-200/60 w-fit">
-                              {item.enrollmentNo}
-                            </span>
-                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-700 bg-rose-100/70 px-2 py-0.5 rounded-lg w-fit">
-                              <UserX size={12} /> Absent
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Action Button: Add */}
-                        <div className="flex items-center gap-2 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => onManualAttendance("present", item.enrollmentNo)}
-                            className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100 hover:border-emerald-400 active:scale-95 transition cursor-pointer shadow-2xs"
-                            title="Add student to presentees"
-                          >
-                            <UserPlus size={14} className="text-emerald-700" />
-                            <span>Add to Present</span>
-                          </button>
-                        </div>
-                      </motion.div>
-                    ))
-                  )
-                )}
-              </AnimatePresence>
+                  ))
+                )
+              )}
             </div>
 
             {/* Manual Attendance Entry Bar */}

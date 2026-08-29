@@ -142,3 +142,27 @@ export type DeviceRequestItem = {
   requestedPublicKey?: string;
   fingerprint?: string;
 };
+
+export type FinalizedClassSummary = {
+  sessionId: string;
+  subjectName: string;
+  subjectCode: string;
+  departmentName: string;
+  departmentCode: string;
+  section: string;
+  year: number | string;
+  semester: number | string;
+  startTime: any;
+  endTime: any;
+  totalStrength: number;
+  presentCount: number;
+  absentCount: number;
+  attendancePercentage: string;
+  attendees: Array<{
+    enrollmentNo: string;
+    name: string;
+    status: "present" | "absent";
+    photoUrl?: string;
+    timestamp?: any;
+  }>;
+};

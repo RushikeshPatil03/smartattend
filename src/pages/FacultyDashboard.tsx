@@ -23,6 +23,7 @@ import {
   FacultySubjectAnalyticsData,
   LiveAttendanceItem,
   DeviceRequestItem,
+  FinalizedClassSummary,
 } from "./faculty/types";
 import LiveSessionStudio from "./faculty/LiveSessionStudio";
 import SessionSetupCard from "./faculty/SessionSetupCard";
@@ -30,6 +31,7 @@ import AttendanceRosterTable from "./faculty/AttendanceRosterTable";
 import DeviceRequestsView from "./faculty/DeviceRequestsView";
 import FacultyAnalyticsModal from "./faculty/FacultyAnalyticsModal";
 import ManageSubjectsView from "./faculty/ManageSubjectsView";
+import ClassSummaryReportModal from "./faculty/ClassSummaryReportModal";
 
 const QR_REFRESH_MS = Math.max(
   2000,
@@ -82,6 +84,7 @@ const FacultyDashboard: React.FC = () => {
     cancelSession: cancelSessionFromStore,
     updateSessionToken,
     createSessionLocal,
+    endSessionLocal,
     logout,
   } = useApp();
 
@@ -179,12 +182,23 @@ const FacultyDashboard: React.FC = () => {
   const [analyticsAttendanceFilter, setAnalyticsAttendanceFilter] = useState("all");
   const [analyticsSearch, setAnalyticsSearch] = useState("");
 
+  // Post-Finalize Class Summary Report State
+  const [finalizedSummary, setFinalizedSummary] = useState<FinalizedClassSummary | null>(null);
+
   // Refs
   const updateSessionTokenRef = useRef(updateSessionToken);
 
-  // Throttled Realtime Event Queue Buffer
+  // Throttled Realtime Event Queue Buffer & Subscription Ref
   const realtimeEventQueueRef = useRef<any[]>([]);
   const realtimeFlushTimerRef = useRef<number | null>(null);
+  const realtimeUnsubscribeRef = useRef<(() => void) | null>(null);
+
+  // Concurrency & Mutation Sequence Tracker for Optimistic Attendance Updates
+  const pendingMutationVersionsRef = useRef<Map<string, number>>(new Map());
+  const attendanceStatusMapRef = useRef(attendanceStatusMap);
+  attendanceStatusMapRef.current = attendanceStatusMap;
+  const liveAttendanceRef = useRef(liveAttendance);
+  liveAttendanceRef.current = liveAttendance;
 
   // Department and Subject maps
   const departmentMap = useMemo(
@@ -728,19 +742,165 @@ const FacultyDashboard: React.FC = () => {
     persistRecentClasses,
   ]);
 
-  const stop = useCallback(async () => {
+  // Synchronous, immediate Realtime WebSocket Teardown and Buffer Clear
+  const disconnectRealtime = useCallback(() => {
+    if (realtimeUnsubscribeRef.current) {
+      try {
+        realtimeUnsubscribeRef.current();
+      } catch (err) {
+        console.warn("Realtime unsubscribe error:", err);
+      }
+      realtimeUnsubscribeRef.current = null;
+    }
+    if (realtimeFlushTimerRef.current) {
+      window.clearTimeout(realtimeFlushTimerRef.current);
+      realtimeFlushTimerRef.current = null;
+    }
+    realtimeEventQueueRef.current = [];
+  }, []);
+
+  // Finalize Attendance: Snapshots finalized session metrics, opens Class Summary Report modal, and cleans up active state
+  const stop = useCallback(() => {
     if (!activeSessionId) return;
-    const res: any = await stopSession(activeSessionId);
-    if (!res?.ok) alert(res?.error || "Failed to stop session");
+
+    // 1. Build immutable snapshot for the Class Summary Report
+    const presentList: any[] = [];
+    const absentList: any[] = [];
+    const seen = new Set<string>();
+
+    const currentMap = attendanceStatusMapRef.current;
+    const currentList = liveAttendanceRef.current;
+
+    (currentList || []).forEach((item: any) => {
+      const enrollmentNo = String(
+        item?.student?.enrollmentNo || item?.enrollmentNo || ""
+      ).trim();
+      if (!enrollmentNo || seen.has(enrollmentNo)) return;
+      seen.add(enrollmentNo);
+
+      const status =
+        currentMap[enrollmentNo] ||
+        (String(item?.status || "").toLowerCase() === "present"
+          ? "present"
+          : "absent");
+
+      const studentObj = {
+        enrollmentNo,
+        name: item?.student?.name || item?.name || "Student",
+        status,
+        photoUrl: item?.student?.profilePhotoUrl || item?.profilePhotoUrl || "",
+        timestamp: item?.timestamp || item?.markedAt || Date.now(),
+      };
+
+      if (status === "present") {
+        presentList.push(studentObj);
+      } else {
+        absentList.push(studentObj);
+      }
+    });
+
+    const pCount = presentList.length;
+    const aCount = absentList.length;
+    const total = Math.max(
+      Number(
+        totalClassStrength ||
+          (activeSession as any)?.totalStudents ||
+          (activeSession as any)?.totalStrength ||
+          0
+      ),
+      pCount + aCount
+    );
+    const pct = total > 0 ? (pCount / total) * 100 : 0;
+    const formattedPct = pct % 1 === 0 ? pct.toFixed(0) : pct.toFixed(1);
+
+    const summary: FinalizedClassSummary = {
+      sessionId: String(
+        (activeSession as any)?.id || (activeSession as any)?._id || activeSessionId || ""
+      ),
+      subjectName:
+        selectedSubject?.name ||
+        (activeSession as any)?.subjectName ||
+        "Subject",
+      subjectCode:
+        selectedSubject?.code ||
+        (activeSession as any)?.subjectCode ||
+        "SUB",
+      departmentName:
+        selectedDepartment?.name ||
+        (activeSession as any)?.departmentName ||
+        "Department",
+      departmentCode:
+        selectedDepartment?.code ||
+        (activeSession as any)?.departmentCode ||
+        "DEPT",
+      section: String((activeSession as any)?.section || formSection || "A"),
+      year: (activeSession as any)?.year || formYear || "",
+      semester: (activeSession as any)?.semester || formSem || "",
+      startTime: (activeSession as any)?.startTime || Date.now(),
+      endTime: Date.now(),
+      totalStrength: total,
+      presentCount: pCount,
+      absentCount: aCount,
+      attendancePercentage: formattedPct,
+      attendees: [...presentList, ...absentList].sort((a, b) =>
+        a.enrollmentNo.localeCompare(b.enrollmentNo)
+      ),
+    };
+
+    // 2. Open Class Summary Report Modal with full details
+    setFinalizedSummary(summary);
+
+    // 3. Teardown active realtime and local active session state without redundant API calls
+    disconnectRealtime();
+    endSessionLocal(activeSessionId);
     setActiveSessionId(null);
     setActiveSessionSecretKey(null);
     setTotalClassStrength(0);
     setLiveAttendance([]);
     setAttendanceStatusMap({});
-  }, [activeSessionId, stopSession]);
+  }, [
+    activeSessionId,
+    activeSession,
+    selectedSubject,
+    selectedDepartment,
+    totalClassStrength,
+    formSection,
+    formYear,
+    formSem,
+    disconnectRealtime,
+    endSessionLocal,
+  ]);
+
+  const handleViewAttendanceSheetFromSummary = useCallback(
+    (summary: FinalizedClassSummary) => {
+      setFinalizedSummary(null);
+      // Auto-configure sheet filters to match the finalized class
+      const deptId =
+        normalizeId(selectedDepartment) ||
+        normalizeId((activeSession as any)?.department);
+      const subId =
+        normalizeId(selectedSubject) ||
+        normalizeId((activeSession as any)?.subject);
+      setSheetFilters({
+        departmentId: deptId || "",
+        subjectId: subId || "",
+        year: String(summary.year || formYear || ""),
+        semester: String(summary.semester || formSem || ""),
+        section: String(summary.section || formSection || ""),
+      });
+      setActiveTab("MANAGE_ATTENDANCE");
+    },
+    [selectedDepartment, selectedSubject, activeSession, formYear, formSem, formSection]
+  );
+
+  const handleStartNextClassFromSummary = useCallback(() => {
+    setFinalizedSummary(null);
+    setActiveTab("TAKE_ATTENDANCE");
+  }, []);
 
   const cancelSession = useCallback(async () => {
     if (!activeSessionId) return;
+    disconnectRealtime();
     try {
       const res: any = await cancelSessionFromStore(activeSessionId);
       if (!res?.ok && res?.error) {
@@ -756,7 +916,7 @@ const FacultyDashboard: React.FC = () => {
       setLiveAttendance([]);
       setAttendanceStatusMap({});
     }
-  }, [activeSessionId, cancelSessionFromStore]);
+  }, [activeSessionId, cancelSessionFromStore, disconnectRealtime]);
 
   const loadCurrentAttendees = useCallback(async (includeDerived = false) => {
     if (!activeSessionId) return;
@@ -770,29 +930,32 @@ const FacultyDashboard: React.FC = () => {
       if (res?.ok) {
         const nextAttendance = Array.isArray(res.attendance) ? res.attendance : [];
         setLiveAttendance(nextAttendance);
-        const total = Number(res.totalStudents || res.totalStrength || 0);
+        const total = Number(
+          res.totalStudents || res.totalStrength || nextAttendance.length || 0
+        );
         if (total > 0) {
           setTotalClassStrength(total);
         }
-        setAttendanceStatusMap(() => {
-          const next: Record<string, "present" | "absent"> = {};
+        setAttendanceStatusMap((prev) => {
+          const next = { ...prev };
           nextAttendance.forEach((item: any) => {
             const enrollmentNo = String(
               item?.student?.enrollmentNo || item?.enrollmentNo || ""
             ).trim();
             if (!enrollmentNo) return;
-            next[enrollmentNo] =
-              String(item?.status || "").toLowerCase() === "present"
-                ? "present"
-                : "absent";
+            if (!next[enrollmentNo]) {
+              next[enrollmentNo] =
+                String(item?.status || "").toLowerCase() === "present"
+                  ? "present"
+                  : "absent";
+            }
           });
           return next;
         });
         setAttendanceDataLoaded(true);
-      } else {
-        setLiveAttendance([]);
-        setAttendanceStatusMap({});
       }
+    } catch (err) {
+      console.warn("Failed to load attendees:", err);
     } finally {
       setAttendeesLoading(false);
     }
@@ -801,30 +964,145 @@ const FacultyDashboard: React.FC = () => {
   const manual = useCallback(
     async (status: "present" | "absent", enrollmentNo?: string) => {
       if (!activeSessionId) return;
-      const v = String(enrollmentNo || manualEnrollment).trim();
-      if (!v) return;
-      setManualLoading(true);
-      const res: any = await apiClient.manualAttendance({
-        sessionId: activeSessionId,
-        enrollmentNo: v,
-        status,
-      });
-      if (!res?.ok) alert(res?.error || "Manual attendance failed");
-      setAttendanceStatusMap((prev) => ({ ...prev, [v]: status }));
+      const targetEnrollment = String(enrollmentNo || manualEnrollment).trim();
+      if (!targetEnrollment) return;
+
+      const isManualInput = !enrollmentNo;
+      if (isManualInput) {
+        setManualEnrollment("");
+      }
+
+      // 1. Capture snapshot of previous status for atomic rollback on network failure
+      const currentMap = attendanceStatusMapRef.current;
+      const currentList = liveAttendanceRef.current;
+      const prevStatus: "present" | "absent" =
+        currentMap[targetEnrollment] ||
+        (() => {
+          const item = currentList.find(
+            (it: any) =>
+              String(it?.student?.enrollmentNo || it?.enrollmentNo || "").trim() ===
+              targetEnrollment
+          );
+          return String(item?.status || "").toLowerCase() === "present"
+            ? "present"
+            : "absent";
+        })();
+
+      // If already in the target status, skip unnecessary mutations
+      if (prevStatus === status && currentMap[targetEnrollment] === status) {
+        return;
+      }
+
+      // 2. Immediate Optimistic UI Update (< 1ms execution, 0 button lag)
+      setAttendanceStatusMap((prev) => ({ ...prev, [targetEnrollment]: status }));
       setLiveAttendance((prev) => {
         const idx = prev.findIndex(
           (item: any) =>
-            String(item?.student?.enrollmentNo || item?.enrollmentNo || "").trim() === v
+            String(item?.student?.enrollmentNo || item?.enrollmentNo || "").trim() ===
+            targetEnrollment
         );
         if (idx >= 0) {
           const next = [...prev];
           next[idx] = { ...next[idx], status };
           return next;
         }
-        return prev;
+        const newRecord = {
+          _id: `manual-${targetEnrollment}-${Date.now()}`,
+          id: `manual-${targetEnrollment}-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          status,
+          student: {
+            name: targetEnrollment,
+            enrollmentNo: targetEnrollment,
+          },
+          enrollmentNo: targetEnrollment,
+        };
+        return [newRecord, ...prev];
       });
-      setManualEnrollment("");
-      setManualLoading(false);
+
+      // 3. Concurrency Version Tracking: Increment mutation sequence for this student
+      const mutationVersion =
+        (pendingMutationVersionsRef.current.get(targetEnrollment) || 0) + 1;
+      pendingMutationVersionsRef.current.set(targetEnrollment, mutationVersion);
+
+      // 4. Background Non-Blocking API Execution with Rollback on Failure
+      (async () => {
+        try {
+          const res: any = await apiClient.manualAttendance({
+            sessionId: activeSessionId,
+            enrollmentNo: targetEnrollment,
+            status,
+          });
+
+          // Guard against out-of-order responses if superseded by a newer toggle
+          if (
+            pendingMutationVersionsRef.current.get(targetEnrollment) !== mutationVersion
+          ) {
+            return;
+          }
+
+          if (!res?.ok) {
+            console.warn(
+              `Manual attendance update failed for ${targetEnrollment}:`,
+              res?.error
+            );
+            // Rollback state optimistically to previous status
+            setAttendanceStatusMap((prev) => ({
+              ...prev,
+              [targetEnrollment]: prevStatus,
+            }));
+            setLiveAttendance((prev) => {
+              const idx = prev.findIndex(
+                (item: any) =>
+                  String(item?.student?.enrollmentNo || item?.enrollmentNo || "").trim() ===
+                  targetEnrollment
+              );
+              if (idx >= 0) {
+                const next = [...prev];
+                next[idx] = { ...next[idx], status: prevStatus };
+                return next;
+              }
+              return prev;
+            });
+            alert(
+              `Failed to update attendance for ${targetEnrollment}: ${
+                res?.error || "Server error"
+              }. Reverted to previous status.`
+            );
+          }
+        } catch (err: any) {
+          if (
+            pendingMutationVersionsRef.current.get(targetEnrollment) !== mutationVersion
+          ) {
+            return;
+          }
+          console.error(
+            `Network error during manual attendance for ${targetEnrollment}:`,
+            err
+          );
+          // Rollback state optimistically to previous status
+          setAttendanceStatusMap((prev) => ({
+            ...prev,
+            [targetEnrollment]: prevStatus,
+          }));
+          setLiveAttendance((prev) => {
+            const idx = prev.findIndex(
+              (item: any) =>
+                String(item?.student?.enrollmentNo || item?.enrollmentNo || "").trim() ===
+                targetEnrollment
+            );
+            if (idx >= 0) {
+              const next = [...prev];
+              next[idx] = { ...next[idx], status: prevStatus };
+              return next;
+            }
+            return prev;
+          });
+          alert(
+            `Network failure when updating ${targetEnrollment}. Reverted to previous status.`
+          );
+        }
+      })();
     },
     [activeSessionId, manualEnrollment]
   );
@@ -836,8 +1114,9 @@ const FacultyDashboard: React.FC = () => {
       ).trim();
       if (!enrollmentNo || !activeSessionId) return;
 
+      const currentMap = attendanceStatusMapRef.current;
       const currentStatus =
-        attendanceStatusMap[enrollmentNo] ||
+        currentMap[enrollmentNo] ||
         (String(item?.status || "").toLowerCase() === "present"
           ? "present"
           : "absent");
@@ -846,7 +1125,7 @@ const FacultyDashboard: React.FC = () => {
 
       await manual(nextStatus, enrollmentNo);
     },
-    [activeSessionId, manual, attendanceStatusMap]
+    [activeSessionId, manual]
   );
 
   // Flush Throttled Realtime Events to State
@@ -897,7 +1176,10 @@ const FacultyDashboard: React.FC = () => {
 
   // Supabase Realtime Attendance Subscription with 150ms Buffer
   useEffect(() => {
-    if (!activeSessionId) return;
+    if (!activeSessionId) {
+      disconnectRealtime();
+      return;
+    }
 
     loadCurrentAttendees();
 
@@ -916,14 +1198,12 @@ const FacultyDashboard: React.FC = () => {
       }
     );
 
+    realtimeUnsubscribeRef.current = unsubscribe;
+
     return () => {
-      unsubscribe();
-      if (realtimeFlushTimerRef.current) {
-        window.clearTimeout(realtimeFlushTimerRef.current);
-        realtimeFlushTimerRef.current = null;
-      }
+      disconnectRealtime();
     };
-  }, [activeSessionId, flushRealtimeQueue, loadCurrentAttendees]);
+  }, [activeSessionId, disconnectRealtime, flushRealtimeQueue, loadCurrentAttendees]);
 
   // Load Device Requests
   const loadDeviceRequests = useCallback(async () => {
@@ -1368,6 +1648,7 @@ const FacultyDashboard: React.FC = () => {
                   onToggleAttendanceItem={handleAttendanceItemToggle}
                   onStopSession={stop}
                   onCancelSession={cancelSession}
+                  onDisconnectRealtime={disconnectRealtime}
                   selectedSubject={selectedSubject}
                   selectedDepartment={selectedDepartment}
                 />
@@ -1485,6 +1766,15 @@ const FacultyDashboard: React.FC = () => {
             }
           }}
           onClose={closeSubjectAnalytics}
+        />
+
+        {/* Post-Finalize Class Summary Report Modal */}
+        <ClassSummaryReportModal
+          isOpen={Boolean(finalizedSummary)}
+          summary={finalizedSummary}
+          onClose={() => setFinalizedSummary(null)}
+          onViewAttendanceSheet={handleViewAttendanceSheetFromSummary}
+          onStartNextClass={handleStartNextClassFromSummary}
         />
       </div>
     </div>

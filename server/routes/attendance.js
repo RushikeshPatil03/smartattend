@@ -666,7 +666,7 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
 
       let allRegisteredStudents = [];
       if (shouldIncludeDerived) {
-        // Query students enrolled for this session's year, semester, section
+        // Query all students enrolled for this session's department, year, semester, section
         let studentQuery = supabase
           .from("students")
           .select("id, name, enrollment_no, email, profile_photo_url, department, year, semester, section")
@@ -678,22 +678,19 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
           studentQuery = studentQuery.eq("section", normalizedSec);
         }
 
-        const adminId = rawSession.subj?.created_by_admin;
-        if (adminId) {
-          studentQuery = studentQuery.eq("created_by_admin", String(adminId));
+        if (rawSession.department) {
+          studentQuery = studentQuery.eq("department", String(rawSession.department));
         }
 
         const { data: studentsList } = await studentQuery;
-        allRegisteredStudents = (studentsList || []).filter((stu) => {
-          if (rawSession.department) {
-            return String(stu.department) === String(rawSession.department);
-          }
-          const allowedDepts = rawSession.subj?.departments || [];
-          if (allowedDepts.length > 0) {
-            return allowedDepts.some((d) => String(d) === String(stu.department));
-          }
-          return true;
-        });
+        allRegisteredStudents = studentsList || [];
+
+        // Fallback filter if department wasn't directly in session table but in subject's allowed departments
+        if (!rawSession.department && Array.isArray(rawSession.subj?.departments) && rawSession.subj.departments.length > 0) {
+          allRegisteredStudents = allRegisteredStudents.filter((stu) =>
+            rawSession.subj.departments.some((d) => String(d) === String(stu.department))
+          );
+        }
       }
 
       // Build absent derived list for students who haven't marked attendance

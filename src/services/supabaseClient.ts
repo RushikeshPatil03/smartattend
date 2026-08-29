@@ -68,6 +68,7 @@ export function subscribeToSessionAttendance(
 
   const client = getSupabase();
   const channelName = `session:${sessionId}`;
+  let isCleanedUp = false;
 
   const channel: RealtimeChannel = client.channel(channelName, {
     config: {
@@ -77,6 +78,8 @@ export function subscribeToSessionAttendance(
 
   channel
     .on("broadcast", { event: "ATTENDANCE_MARKED" }, (response) => {
+      // Concurrency barrier: immediately drop events if cleanup has been triggered
+      if (isCleanedUp) return;
       if (response && response.payload) {
         onAttendance(response.payload as AttendanceBroadcastPayload);
       }
@@ -88,6 +91,13 @@ export function subscribeToSessionAttendance(
     });
 
   return () => {
+    if (isCleanedUp) return;
+    isCleanedUp = true;
+    try {
+      channel.unsubscribe();
+    } catch {
+      // Ignored
+    }
     try {
       client.removeChannel(channel);
     } catch {
