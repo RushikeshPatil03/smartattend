@@ -37,29 +37,29 @@ export const ClassSummaryReportModal: React.FC<ClassSummaryReportModalProps> = R
   const [searchQuery, setSearchQuery] = useState("");
   const [copiedCsv, setCopiedCsv] = useState(false);
 
-  if (!isOpen || !summary) return null;
-
   const formattedDate = useMemo(() => {
-    const d = summary.startTime ? new Date(summary.startTime) : new Date();
+    if (!summary?.startTime) return new Date().toLocaleDateString();
+    const d = new Date(summary.startTime);
     return d.toLocaleDateString([], {
       weekday: "short",
       year: "numeric",
       month: "short",
       day: "numeric",
     });
-  }, [summary.startTime]);
+  }, [summary?.startTime]);
 
   const formattedTime = useMemo(() => {
-    const d = summary.startTime ? new Date(summary.startTime) : new Date();
+    if (!summary?.startTime) return new Date().toLocaleTimeString();
+    const d = new Date(summary.startTime);
     return d.toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
     });
-  }, [summary.startTime]);
+  }, [summary?.startTime]);
 
   // Filtered attendees for the preview list
   const filteredAttendees = useMemo(() => {
-    let list = summary.attendees || [];
+    let list = summary?.attendees || [];
     if (activeRosterTab === "present") {
       list = list.filter((a) => a.status === "present");
     } else if (activeRosterTab === "absent") {
@@ -73,7 +73,7 @@ export const ClassSummaryReportModal: React.FC<ClassSummaryReportModalProps> = R
         a.name.toLowerCase().includes(q) ||
         a.enrollmentNo.toLowerCase().includes(q)
     );
-  }, [summary.attendees, activeRosterTab, searchQuery]);
+  }, [summary?.attendees, activeRosterTab, searchQuery]);
 
   // Export CSV Handler
   const handleExportCsv = useCallback(() => {
@@ -125,7 +125,9 @@ export const ClassSummaryReportModal: React.FC<ClassSummaryReportModalProps> = R
     setTimeout(() => setCopiedCsv(false), 2500);
   }, [summary, formattedDate, formattedTime]);
 
-  const pctNumber = parseFloat(summary.attendancePercentage) || 0;
+  const pctNumber = parseFloat(summary?.attendancePercentage || "0") || 0;
+
+  if (!isOpen || !summary) return null;
 
   return (
     <div className="fixed inset-0 z-[110] flex items-center justify-center overflow-y-auto bg-slate-950/75 p-4 backdrop-blur-md animate-in fade-in duration-200">
