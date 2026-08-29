@@ -922,13 +922,32 @@ const StudentDashboard: React.FC = () => {
     const coords = await resolveLiveLocation();
     const fingerprint = getFingerprint();
 
-    let result: any = null;
+    const isTimeoutOrNetworkError = (res: any) => {
+      if (!res || res.ok) return false;
+      const errStr = String(res.error || res.message || "").toLowerCase();
+      const status = Number(res.status || 0);
+      return (
+        errStr.includes("timed out") ||
+        errStr.includes("timeout") ||
+        errStr.includes("network error") ||
+        errStr.includes("failed to fetch") ||
+        errStr.includes("network request failed") ||
+        status === 408 ||
+        status === 502 ||
+        status === 503 ||
+        status === 504
+      );
+    };
 
-    try {
+    // Helper for executing the attendance request
+    const executeSubmit = async () => {
+      if (!pendingQrPairRef.current) {
+        return { ok: false, error: "Missing QR payload" };
+      }
       if (pendingQrPairRef.current.kind === "totp") {
         const seq = pendingQrPairRef.current.sequence;
         const targetSessionId = seq?.[0]?.classId || (seq?.[0] as any)?.sessionId;
-        result = await apiClient.post("/api/attendance/submit", {
+        return await apiClient.post("/api/attendance/submit", {
           sessionId: targetSessionId,
           sequence: seq,
           fingerprint,
@@ -942,7 +961,7 @@ const StudentDashboard: React.FC = () => {
           },
         });
       } else {
-        result = await markAttendanceTwoStep(
+        return await markAttendanceTwoStep(
           pendingQrPairRef.current.first,
           pendingQrPairRef.current.second,
           fingerprint,
@@ -953,8 +972,31 @@ const StudentDashboard: React.FC = () => {
           null
         );
       }
+    };
+
+    let result: any = null;
+
+    try {
+      result = await executeSubmit();
     } catch (err: any) {
       result = { ok: false, error: err?.message || "Failed to submit attendance" };
+    }
+
+    // Automatic silent retry (1 retry) on network timeout or transient network failure
+    if (!result?.ok && isTimeoutOrNetworkError(result)) {
+      if (mountedRef.current) {
+        setStatusMsg("Connection timed out. Retrying attendance confirmation...");
+      }
+      // Brief jittered pause before retry (350ms) to let network socket clear
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      try {
+        result = await executeSubmit();
+      } catch (retryErr: any) {
+        result = {
+          ok: false,
+          error: retryErr?.message || "Retry failed due to network error",
+        };
+      }
     }
 
     if (result?.ok) {

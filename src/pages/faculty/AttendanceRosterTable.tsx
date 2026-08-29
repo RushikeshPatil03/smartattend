@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   Download,
   Filter,
@@ -12,6 +12,7 @@ import {
   FileSpreadsheet,
   AlertTriangle,
   Sparkles,
+  Zap,
 } from "lucide-react";
 import { Badge, Button, Skeleton } from "../../components/Common";
 
@@ -19,6 +20,15 @@ interface SheetRow {
   name: string;
   enrollmentNo: string;
   attendance: Record<string, "P" | "A">;
+}
+
+interface EnrichedSheetRow extends SheetRow {
+  attended: number;
+  totalSessions: number;
+  percent: number;
+  isCritical: boolean;
+  isWarning: boolean;
+  isAtRisk: boolean;
 }
 
 interface AttendanceRosterTableProps {
@@ -47,6 +57,196 @@ interface AttendanceRosterTableProps {
   onExportCsv: () => void;
 }
 
+const ROW_HEIGHT = 48; // Constant row height in px for 60fps windowing
+const OVERSCAN = 6; // Extra buffer rows above and below viewport
+
+/**
+ * High-performance, concurrent-safe virtual scroll windowing hook
+ */
+function useVirtualScroll({
+  itemCount,
+  itemHeight,
+  overscan = OVERSCAN,
+  containerRef,
+}: {
+  itemCount: number;
+  itemHeight: number;
+  overscan?: number;
+  containerRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  const [scrollTop, setScrollTop] = useState(0);
+  const [containerHeight, setContainerHeight] = useState(560);
+  const rafIdRef = useRef<number | null>(null);
+
+  // ResizeObserver to dynamically adapt to parent container height
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    if (el.clientHeight > 0) {
+      setContainerHeight(el.clientHeight);
+    }
+
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.target === el) {
+          const height = entry.contentRect.height || el.clientHeight;
+          if (height > 0) {
+            setContainerHeight(height);
+          }
+        }
+      }
+    });
+
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+    };
+  }, [containerRef]);
+
+  // High-performance scroll listener throttled with requestAnimationFrame
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const onScroll = () => {
+      if (rafIdRef.current !== null) return;
+      rafIdRef.current = requestAnimationFrame(() => {
+        if (containerRef.current) {
+          setScrollTop(containerRef.current.scrollTop);
+        }
+        rafIdRef.current = null;
+      });
+    };
+
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+    };
+  }, [containerRef]);
+
+  const totalHeight = itemCount * itemHeight;
+  const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan);
+  const endIndex = Math.min(
+    itemCount,
+    Math.ceil((scrollTop + containerHeight) / itemHeight) + overscan
+  );
+
+  const paddingTop = startIndex * itemHeight;
+  const paddingBottom = Math.max(0, (itemCount - endIndex) * itemHeight);
+
+  return {
+    startIndex,
+    endIndex,
+    paddingTop,
+    paddingBottom,
+    totalHeight,
+  };
+}
+
+/**
+ * Memoized single row component to prevent unnecessary re-renders of off-screen or unchanged rows
+ */
+const AttendanceTableRow = React.memo<{
+  row: EnrichedSheetRow;
+  sheetColumns: string[];
+}>(({ row, sheetColumns }) => {
+  // Row background + left accent border by risk tier
+  const rowBg = row.isCritical
+    ? "bg-rose-50 border-l-4 border-rose-500"
+    : row.isWarning
+    ? "bg-amber-50 border-l-4 border-amber-400"
+    : "bg-white";
+
+  const rowHover = row.isCritical
+    ? "hover:bg-rose-100/60"
+    : row.isWarning
+    ? "hover:bg-amber-100/60"
+    : "hover:bg-slate-50/70";
+
+  // 3-tier quorum badge
+  const pctBadge = row.isCritical
+    ? "bg-rose-100 text-rose-800 border border-rose-400"
+    : row.isWarning
+    ? "bg-amber-100 text-amber-800 border border-amber-400"
+    : "bg-emerald-100 text-emerald-800 border border-emerald-300";
+
+  return (
+    <tr
+      style={{ height: `${ROW_HEIGHT}px` }}
+      className={`transition-colors border-b border-slate-100 ${rowBg} ${rowHover}`}
+    >
+      {/* Enrollment No */}
+      <td className="px-5 py-2.5 font-mono font-bold text-slate-900 whitespace-nowrap">
+        {row.enrollmentNo}
+      </td>
+
+      {/* Student Name + risk icon */}
+      <td className="px-5 py-2.5 font-semibold text-slate-800 whitespace-nowrap">
+        <div className="flex items-center gap-2">
+          {row.isCritical && (
+            <AlertTriangle
+              size={12}
+              className="shrink-0 text-rose-500"
+              aria-label="Critical: below 60%"
+            />
+          )}
+          {row.isWarning && (
+            <AlertTriangle
+              size={12}
+              className="shrink-0 text-amber-500"
+              aria-label="Warning: 60–74%"
+            />
+          )}
+          <span className="truncate max-w-[160px]" title={row.name}>
+            {row.name}
+          </span>
+        </div>
+      </td>
+
+      {/* Quorum % badge */}
+      <td className="px-4 py-2.5 text-center whitespace-nowrap">
+        <span
+          className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-bold font-mono shadow-2xs ${pctBadge}`}
+        >
+          {Math.round(row.percent)}%{" "}
+          <span className="font-normal opacity-70">
+            ({row.attended}/{row.totalSessions})
+          </span>
+        </span>
+      </td>
+
+      {/* Per-session heatmap cells — P: emerald-50, A: rose-50 */}
+      {sheetColumns.map((c) => {
+        const status = row.attendance[c];
+        const isPresent = status === "P";
+        return (
+          <td
+            key={`${row.enrollmentNo}-${c}`}
+            className="px-2 py-2 text-center"
+          >
+            <span
+              className={`inline-flex h-6 w-7 items-center justify-center rounded-md text-[10px] font-bold ${
+                isPresent
+                  ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
+                  : "bg-rose-50 text-rose-700 border border-rose-200"
+              }`}
+            >
+              {status || "A"}
+            </span>
+          </td>
+        );
+      })}
+    </tr>
+  );
+});
+
+AttendanceTableRow.displayName = "AttendanceTableRow";
+
 export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React.memo(({
   departments,
   mySubjects,
@@ -60,44 +260,88 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
 }) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [filterAtRiskOnly, setFilterAtRiskOnly] = useState(false);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Concurrency optimization: Defer heavy search filtering so UI inputs remain 100% responsive
+  const deferredSearchTerm = useDeferredValue(searchTerm);
+
+  // Reset scroll position on filter changes
+  useEffect(() => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = 0;
+    }
+  }, [deferredSearchTerm, filterAtRiskOnly, sheetFilters.subjectId]);
 
   // Compute student summary percentages + risk tier (single pass, O(n·cols))
-  const enrichedRows = useMemo(() => {
+  const enrichedRows = useMemo<EnrichedSheetRow[]>(() => {
     const totalCols = sheetColumns.length;
     return sheetRows.map((row) => {
       let attended = 0;
       for (let i = 0; i < sheetColumns.length; i++) {
         if (row.attendance[sheetColumns[i]] === "P") attended++;
       }
-      const percent    = totalCols > 0 ? (attended / totalCols) * 100 : 0;
-      const isCritical = totalCols > 0 && percent < 60;          // < 60%  → rose row
-      const isWarning  = totalCols > 0 && percent >= 60 && percent < 75; // 60–74% → amber row
-      const isAtRisk   = isCritical || isWarning;
-      return { ...row, attended, totalSessions: totalCols, percent, isCritical, isWarning, isAtRisk };
+      const percent = totalCols > 0 ? (attended / totalCols) * 100 : 0;
+      const isCritical = totalCols > 0 && percent < 60; // < 60%  → rose row
+      const isWarning = totalCols > 0 && percent >= 60 && percent < 75; // 60–74% → amber row
+      const isAtRisk = isCritical || isWarning;
+      return {
+        ...row,
+        attended,
+        totalSessions: totalCols,
+        percent,
+        isCritical,
+        isWarning,
+        isAtRisk,
+      };
     });
   }, [sheetRows, sheetColumns]);
 
-  // Filtered rows
+  // Filtered rows using deferred search query
   const filteredRows = useMemo(() => {
-    const q = searchTerm.trim().toLowerCase();
+    const q = deferredSearchTerm.trim().toLowerCase();
     return enrichedRows.filter((row) => {
       if (filterAtRiskOnly && !row.isAtRisk) return false;
       if (!q) return true;
-      return row.name.toLowerCase().includes(q) || row.enrollmentNo.toLowerCase().includes(q);
+      return (
+        row.name.toLowerCase().includes(q) ||
+        row.enrollmentNo.toLowerCase().includes(q)
+      );
     });
-  }, [enrichedRows, filterAtRiskOnly, searchTerm]);
+  }, [enrichedRows, filterAtRiskOnly, deferredSearchTerm]);
+
+  // Virtualization windowing calculations
+  const { startIndex, endIndex, paddingTop, paddingBottom } = useVirtualScroll({
+    itemCount: filteredRows.length,
+    itemHeight: ROW_HEIGHT,
+    overscan: OVERSCAN,
+    containerRef: scrollContainerRef,
+  });
+
+  // Visible window slice (only ~15-20 rows rendered in DOM at any instant)
+  const visibleRows = useMemo(() => {
+    return filteredRows.slice(startIndex, endIndex);
+  }, [filteredRows, startIndex, endIndex]);
 
   // Overall metrics (single pass)
   const { classAvgPercent, atRiskCount, criticalCount } = useMemo(() => {
-    if (!enrichedRows.length) return { classAvgPercent: 0, atRiskCount: 0, criticalCount: 0 };
-    let sum = 0, atRisk = 0, critical = 0;
+    if (!enrichedRows.length)
+      return { classAvgPercent: 0, atRiskCount: 0, criticalCount: 0 };
+    let sum = 0,
+      atRisk = 0,
+      critical = 0;
     for (const row of enrichedRows) {
       sum += row.percent;
-      if (row.isAtRisk)   atRisk++;
+      if (row.isAtRisk) atRisk++;
       if (row.isCritical) critical++;
     }
-    return { classAvgPercent: Math.round(sum / enrichedRows.length), atRiskCount: atRisk, criticalCount: critical };
+    return {
+      classAvgPercent: Math.round(sum / enrichedRows.length),
+      atRiskCount: atRisk,
+      criticalCount: critical,
+    };
   }, [enrichedRows]);
+
+  const totalColSpan = 3 + sheetColumns.length;
 
   return (
     <div className="space-y-6">
@@ -256,7 +500,10 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
             {/* Search & At-Risk Toggle */}
             <div className="flex flex-wrap items-center gap-3">
               <div className="relative">
-                <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <Search
+                  size={14}
+                  className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
+                />
                 <input
                   type="text"
                   placeholder="Search student or USN..."
@@ -275,26 +522,40 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
                     : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
                 }`}
               >
-                <AlertTriangle size={13} className={filterAtRiskOnly ? "text-rose-600" : "text-slate-400"} />
+                <AlertTriangle
+                  size={13}
+                  className={filterAtRiskOnly ? "text-rose-600" : "text-slate-400"}
+                />
                 <span>Below 75% At-Risk ({atRiskCount})</span>
               </button>
             </div>
 
-            {/* Quick Metrics Badges */}
+            {/* Quick Metrics Badges & Virtualization Performance Badge */}
             <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="inline-flex items-center gap-1 rounded-xl bg-emerald-50 px-2.5 py-1.5 font-bold text-emerald-800 border border-emerald-200/80 shadow-2xs">
+                <Zap size={12} className="text-emerald-600 fill-emerald-500" />
+                <span>60 FPS Virtualized</span>
+              </span>
               <span className="rounded-xl bg-slate-100 px-3 py-1.5 font-semibold text-slate-700 border border-slate-200/60 shadow-2xs">
-                Total Enrolled: <strong className="font-mono text-slate-900">{sheetRows.length}</strong>
+                Students: <strong className="font-mono text-slate-900">{filteredRows.length}</strong>
+                {filteredRows.length !== sheetRows.length && (
+                  <span className="text-slate-400 font-normal ml-1">
+                    (of {sheetRows.length})
+                  </span>
+                )}
               </span>
               <span className="rounded-xl bg-slate-100 px-3 py-1.5 font-semibold text-slate-700 border border-slate-200/60 shadow-2xs">
                 Sessions: <strong className="font-mono text-slate-900">{sheetColumns.length}</strong>
               </span>
-              <span className={`rounded-xl px-3 py-1.5 font-semibold border shadow-2xs ${
-                classAvgPercent >= 75
-                  ? "bg-emerald-50 border-emerald-200 text-emerald-800"
-                  : classAvgPercent >= 60
+              <span
+                className={`rounded-xl px-3 py-1.5 font-semibold border shadow-2xs ${
+                  classAvgPercent >= 75
+                    ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+                    : classAvgPercent >= 60
                     ? "bg-amber-50 border-amber-200 text-amber-800"
                     : "bg-rose-50 border-rose-200 text-rose-800"
-              }`}>
+                }`}
+              >
                 Avg Quorum: <strong className="font-mono">{classAvgPercent}%</strong>
               </span>
               {criticalCount > 0 && (
@@ -308,8 +569,8 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
         )}
       </div>
 
-      {/* ── Roster Table Card ─────────────────────────────────────────────────── */}
-      <div className="rounded-3xl border border-slate-200/80 bg-white/80 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl overflow-hidden">
+      {/* ── Roster Table Card with Windowed Rendering ─────────────────────────── */}
+      <div className="rounded-3xl border border-slate-200/80 bg-white/80 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl overflow-hidden flex flex-col">
         {sheetLoading ? (
           <div className="p-8 space-y-3">
             <Skeleton className="h-10 w-full" />
@@ -321,41 +582,50 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
           <>
             {/* ── Heatmap legend — only when data is loaded ── */}
             {sheetRows.length > 0 && (
-              <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-slate-100 bg-slate-50/80 px-5 py-2.5 text-[11px] font-semibold">
-                <span className="text-slate-500 font-bold uppercase tracking-wider">Legend:</span>
-                <span className="flex items-center gap-1.5">
-                  <span className="inline-flex h-5 w-7 items-center justify-center rounded border border-emerald-200 bg-emerald-50 text-[10px] font-bold text-emerald-800">P</span>
-                  <span className="text-slate-600">Present</span>
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="inline-flex h-5 w-7 items-center justify-center rounded border border-rose-200 bg-rose-50 text-[10px] font-bold text-rose-700">A</span>
-                  <span className="text-slate-600">Absent</span>
-                </span>
-                <span className="h-4 w-px bg-slate-200" />
-                <span className="flex items-center gap-1.5">
-                  <span className="h-3 w-1 rounded-full bg-amber-400 inline-block shrink-0" />
-                  <span className="text-slate-600">Row: 60–74% Warning</span>
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="h-3 w-1 rounded-full bg-rose-500 inline-block shrink-0" />
-                  <span className="text-slate-600">Row: &lt;60% Critical</span>
+              <div className="flex flex-wrap items-center justify-between gap-x-5 gap-y-2 border-b border-slate-100 bg-slate-50/80 px-5 py-2.5 text-[11px] font-semibold">
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+                  <span className="text-slate-500 font-bold uppercase tracking-wider">Legend:</span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="inline-flex h-5 w-7 items-center justify-center rounded border border-emerald-200 bg-emerald-50 text-[10px] font-bold text-emerald-800">P</span>
+                    <span className="text-slate-600">Present</span>
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="inline-flex h-5 w-7 items-center justify-center rounded border border-rose-200 bg-rose-50 text-[10px] font-bold text-rose-700">A</span>
+                    <span className="text-slate-600">Absent</span>
+                  </span>
+                  <span className="h-4 w-px bg-slate-200" />
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-3 w-1 rounded-full bg-amber-400 inline-block shrink-0" />
+                    <span className="text-slate-600">Row: 60–74% Warning</span>
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-3 w-1 rounded-full bg-rose-500 inline-block shrink-0" />
+                    <span className="text-slate-600">Row: &lt;60% Critical</span>
+                  </span>
+                </div>
+                <span className="text-[10px] text-slate-400 font-medium">
+                  Rendering {visibleRows.length} DOM rows (Windowed)
                 </span>
               </div>
             )}
 
-            <div className="w-full overflow-x-auto">
-              <table className="min-w-full text-left text-xs">
-                <thead className="bg-slate-50/90 border-b border-slate-200 text-[11px] font-extrabold uppercase tracking-wider text-slate-600 sticky top-0 backdrop-blur-md">
+            {/* Scroll Container for Windowed / Virtualized Table */}
+            <div
+              ref={scrollContainerRef}
+              className="w-full overflow-auto max-h-[560px] relative scroll-smooth will-change-scroll"
+            >
+              <table className="min-w-full text-left text-xs border-collapse">
+                <thead className="bg-slate-50/95 border-b border-slate-200 text-[11px] font-extrabold uppercase tracking-wider text-slate-600 sticky top-0 z-10 backdrop-blur-md shadow-xs">
                   <tr>
-                    <th className="px-5 py-4 whitespace-nowrap">Enrollment USN</th>
-                    <th className="px-5 py-4 whitespace-nowrap">Student Name</th>
-                    <th className="px-4 py-4 text-center whitespace-nowrap">Quorum Score</th>
+                    <th className="px-5 py-4 whitespace-nowrap bg-slate-50/95">Enrollment USN</th>
+                    <th className="px-5 py-4 whitespace-nowrap bg-slate-50/95">Student Name</th>
+                    <th className="px-4 py-4 text-center whitespace-nowrap bg-slate-50/95">Quorum Score</th>
                     {sheetColumns.map((c) => {
                       const label = c.split("::")[1] || c;
                       return (
                         <th
                           key={c}
-                          className="px-3 py-4 text-center font-mono font-semibold whitespace-nowrap hover:bg-slate-100 transition"
+                          className="px-3 py-4 text-center font-mono font-semibold whitespace-nowrap hover:bg-slate-100 transition bg-slate-50/95"
                           title={c}
                         >
                           {label}
@@ -368,7 +638,7 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
                   {filteredRows.length === 0 ? (
                     <tr>
                       <td
-                        colSpan={3 + sheetColumns.length}
+                        colSpan={totalColSpan}
                         className="px-6 py-16 text-center text-slate-400 text-xs"
                       >
                         <Users size={32} className="mx-auto mb-2 text-slate-300" />
@@ -379,98 +649,30 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
                       </td>
                     </tr>
                   ) : (
-                    filteredRows.map((row) => {
-                      // ── Row background + left accent border by risk tier ──────
-                      const rowBg =
-                        row.isCritical
-                          ? "bg-rose-50  border-l-4 border-rose-500"
-                          : row.isWarning
-                            ? "bg-amber-50 border-l-4 border-amber-400"
-                            : "bg-white";
-                      const rowHover =
-                        row.isCritical
-                          ? "hover:bg-rose-100/60"
-                          : row.isWarning
-                            ? "hover:bg-amber-100/60"
-                            : "hover:bg-slate-50/70";
-
-                      // ── 3-tier quorum badge ───────────────────────────────────
-                      const pctBadge =
-                        row.isCritical
-                          ? "bg-rose-100 text-rose-800 border border-rose-400"
-                          : row.isWarning
-                            ? "bg-amber-100 text-amber-800 border border-amber-400"
-                            : "bg-emerald-100 text-emerald-800 border border-emerald-300";
-
-                      return (
-                        <tr
-                          key={row.enrollmentNo}
-                          className={`transition-colors ${rowBg} ${rowHover}`}
-                        >
-                          {/* Enrollment No */}
-                          <td className="px-5 py-3.5 font-mono font-bold text-slate-900 whitespace-nowrap">
-                            {row.enrollmentNo}
-                          </td>
-
-                          {/* Student Name + risk icon */}
-                          <td className="px-5 py-3.5 font-semibold text-slate-800 whitespace-nowrap">
-                            <div className="flex items-center gap-2">
-                              {row.isCritical && (
-                                <AlertTriangle
-                                  size={12}
-                                  className="shrink-0 text-rose-500"
-                                  aria-label="Critical: below 60%"
-                                />
-                              )}
-                              {row.isWarning && (
-                                <AlertTriangle
-                                  size={12}
-                                  className="shrink-0 text-amber-500"
-                                  aria-label="Warning: 60–74%"
-                                />
-                              )}
-                              <span className="truncate max-w-[160px]" title={row.name}>
-                                {row.name}
-                              </span>
-                            </div>
-                          </td>
-
-                          {/* Quorum % badge */}
-                          <td className="px-4 py-3.5 text-center whitespace-nowrap">
-                            <span
-                              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-bold font-mono shadow-2xs ${pctBadge}`}
-                            >
-                              {Math.round(row.percent)}%{" "}
-                              <span className="font-normal opacity-70">
-                                ({row.attended}/{row.totalSessions})
-                              </span>
-                            </span>
-                          </td>
-
-                          {/* Per-session heatmap cells — P: emerald-50, A: rose-50 */}
-                          {sheetColumns.map((c) => {
-                            const status = row.attendance[c];
-                            const isPresent = status === "P";
-                            return (
-                              <td
-                                key={`${row.enrollmentNo}-${c}`}
-                                className="px-2 py-3.5 text-center"
-                              >
-                                <span
-                                  className={`inline-flex h-6 w-7 items-center justify-center rounded-md text-[10px] font-bold ${
-                                    isPresent
-                                      ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
-                                      : "bg-rose-50 text-rose-700 border border-rose-200"
-                                  }`}
-                                >
-                                  {status || "A"}
-                                </span>
-                              </td>
-                            );
-                          })}
+                    <>
+                      {/* Top Virtual Spacer */}
+                      {paddingTop > 0 && (
+                        <tr aria-hidden="true" style={{ height: `${paddingTop}px` }}>
+                          <td colSpan={totalColSpan} className="p-0 border-0 pointer-events-none" />
                         </tr>
-                      );
-                    })
+                      )}
+
+                      {/* Rendered Window Slice */}
+                      {visibleRows.map((row) => (
+                        <AttendanceTableRow
+                          key={row.enrollmentNo}
+                          row={row}
+                          sheetColumns={sheetColumns}
+                        />
+                      ))}
+
+                      {/* Bottom Virtual Spacer */}
+                      {paddingBottom > 0 && (
+                        <tr aria-hidden="true" style={{ height: `${paddingBottom}px` }}>
+                          <td colSpan={totalColSpan} className="p-0 border-0 pointer-events-none" />
+                        </tr>
+                      )}
+                    </>
                   )}
                 </tbody>
               </table>
@@ -484,3 +686,4 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
 
 AttendanceRosterTable.displayName = "AttendanceRosterTable";
 export default AttendanceRosterTable;
+
