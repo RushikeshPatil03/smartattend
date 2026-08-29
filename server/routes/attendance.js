@@ -93,7 +93,7 @@ async function recordAttendanceAudit(entry) {
   if (!supabase) return;
 
   try {
-    await supabase.from("attendance_audits").insert({
+    const fullAudit = {
       attendance: entry.attendanceId || null,
       session: String(entry.sessionId),
       student: entry.studentId ? String(entry.studentId) : null,
@@ -111,7 +111,28 @@ async function recordAttendanceAudit(entry) {
       qr: entry.qr || null,
       face_verification: entry.faceVerification || null,
       request_meta: entry.requestMeta || null,
-    });
+    };
+
+    let { error } = await supabase.from("attendance_audits").insert(fullAudit);
+    if (error && (error.code === "PGRST204" || error.code === "42703" || String(error.message || "").includes("column"))) {
+      const baseAudit = {
+        attendance: entry.attendanceId || null,
+        session: String(entry.sessionId),
+        student: entry.studentId ? String(entry.studentId) : null,
+        faculty: String(entry.facultyId),
+        subject: String(entry.subjectId),
+        action: entry.action,
+        method: entry.method,
+        actor_role: entry.actorRole,
+        actor: String(entry.actorId),
+        device_fingerprint: String(entry.deviceFingerprint || ""),
+        location: entry.location || null,
+        qr: entry.qr || null,
+        face_verification: entry.faceVerification || null,
+        request_meta: entry.requestMeta || null,
+      };
+      await supabase.from("attendance_audits").insert(baseAudit);
+    }
   } catch (err) {
     console.error("Attendance audit log error:", err.message);
   }
@@ -475,21 +496,41 @@ router.post(
         };
       }
 
-      // Insert Attendance atomically with USN snapshot
-      const { data: attendance, error: insertError } = await supabase
+      // Insert Attendance atomically with USN snapshot (with schema-resilient fallback)
+      const fullAttendancePayload = {
+        session: sessionId,
+        student: student.id,
+        faculty: session.faculty,
+        subject: session.subject,
+        enrollment_no: student.enrollment_no || null,
+        student_name: student.name || null,
+        student_email: student.email || null,
+        department_code: student.dept?.code || student.departmentCode || null,
+        semester: Number(student.semester || session.semester) || null,
+        section: String(student.section || session.section || "").toUpperCase() || null,
+        year: Number(student.year || session.year) || null,
+        timestamp: new Date().toISOString(),
+        status: "present",
+        location: {
+          lat: Number(location.lat),
+          lng: Number(location.lng),
+        },
+        device_fingerprint: normalizedFp,
+        face_verification: faceVerificationResult,
+      };
+
+      let { data: attendance, error: insertError } = await supabase
         .from("attendances")
-        .insert({
+        .insert(fullAttendancePayload)
+        .select("*")
+        .single();
+
+      if (insertError && (insertError.code === "PGRST204" || insertError.code === "42703" || String(insertError.message || "").includes("column"))) {
+        const baseAttendancePayload = {
           session: sessionId,
           student: student.id,
           faculty: session.faculty,
           subject: session.subject,
-          enrollment_no: student.enrollment_no || null,
-          student_name: student.name || null,
-          student_email: student.email || null,
-          department_code: student.dept?.code || student.departmentCode || null,
-          semester: Number(student.semester || session.semester) || null,
-          section: String(student.section || session.section || "").toUpperCase() || null,
-          year: Number(student.year || session.year) || null,
           timestamp: new Date().toISOString(),
           status: "present",
           location: {
@@ -498,9 +539,15 @@ router.post(
           },
           device_fingerprint: normalizedFp,
           face_verification: faceVerificationResult,
-        })
-        .select("*")
-        .single();
+        };
+        const retryRes = await supabase
+          .from("attendances")
+          .insert(baseAttendancePayload)
+          .select("*")
+          .single();
+        attendance = retryRes.data;
+        insertError = retryRes.error;
+      }
 
       if (insertError || !attendance) {
         if (insertError?.code === "23505") {
@@ -938,7 +985,34 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
         if (studentId) attQuery = attQuery.eq("student", String(studentId));
         if (req.userRole === "STUDENT") attQuery = attQuery.eq("student", req.userId);
 
-        const { data: rawAttendances, error: attErr } = await attQuery;
+        let { data: rawAttendances, error: attErr } = await attQuery;
+        if (attErr && (attErr.code === "PGRST204" || attErr.code === "42703" || String(attErr.message || "").includes("column"))) {
+          let retryQuery = supabase
+            .from("attendances")
+            .select(`
+              id,
+              session,
+              student,
+              faculty,
+              subject,
+              timestamp,
+              status,
+              device_fingerprint,
+              location,
+              face_verification,
+              stu:students(id, name, enrollment_no, email, profile_photo_url),
+              subj:subjects(id, name, code),
+              fac:faculties(id, name),
+              sess:sessions(id, year, semester, section, department, start_time, end_time)
+            `)
+            .in("session", sessionIds)
+            .order("timestamp", { ascending: false });
+          if (studentId) retryQuery = retryQuery.eq("student", String(studentId));
+          if (req.userRole === "STUDENT") retryQuery = retryQuery.eq("student", req.userId);
+          const retryRes = await retryQuery;
+          rawAttendances = retryRes.data;
+          attErr = retryRes.error;
+        }
         if (attErr) throw attErr;
 
         records = (rawAttendances || []).map((item) => {
@@ -1033,7 +1107,43 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
       query = query.gte("timestamp", dStart.toISOString()).lte("timestamp", dEnd.toISOString());
     }
 
-    const { data: rawData, error } = await query;
+    let { data: rawData, error } = await query;
+    if (error && (error.code === "PGRST204" || error.code === "42703" || String(error.message || "").includes("column"))) {
+      let baseQuery = supabase
+        .from("attendances")
+        .select(`
+          id,
+          session,
+          student,
+          faculty,
+          subject,
+          timestamp,
+          status,
+          device_fingerprint,
+          location,
+          face_verification,
+          stu:students(id, name, enrollment_no, email, profile_photo_url),
+          subj:subjects(id, name, code),
+          fac:faculties(id, name),
+          sess:sessions(id, year, semester, section, department, start_time, end_time)
+        `)
+        .order("timestamp", { ascending: false })
+        .limit(500);
+
+      if (req.userRole === "FACULTY") baseQuery = baseQuery.eq("faculty", req.userId);
+      if (studentId) baseQuery = baseQuery.eq("student", String(studentId));
+      if (req.userRole === "STUDENT") baseQuery = baseQuery.eq("student", req.userId);
+      if (targetDate) {
+        const dStart = new Date(targetDate);
+        dStart.setUTCHours(0, 0, 0, 0);
+        const dEnd = new Date(endDate || targetDate);
+        dEnd.setUTCHours(23, 59, 59, 999);
+        baseQuery = baseQuery.gte("timestamp", dStart.toISOString()).lte("timestamp", dEnd.toISOString());
+      }
+      const retryRes = await baseQuery;
+      rawData = retryRes.data;
+      error = retryRes.error;
+    }
     if (error) throw error;
 
     const filtered = (rawData || []).filter((item) => {
@@ -1439,8 +1549,22 @@ async function handleManualAttendance(req, res) {
       return res.status(404).json({ ok: false, error: "Session not found" });
     }
 
-    if (req.userRole === "FACULTY" && String(session.faculty) !== String(req.userId)) {
-      return res.status(403).json({ ok: false, error: "Forbidden" });
+    if (req.userRole === "FACULTY") {
+      const isDirectFaculty = String(session.faculty) === String(req.userId);
+      let isSubjectAllotted = false;
+      if (!isDirectFaculty) {
+        const { data: subj } = await supabase
+          .from("subjects")
+          .select("allotted_faculties")
+          .eq("id", String(session.subject))
+          .single();
+        isSubjectAllotted =
+          Array.isArray(subj?.allotted_faculties) &&
+          subj.allotted_faculties.some((f) => String(f) === String(req.userId));
+      }
+      if (!isDirectFaculty && !isSubjectAllotted) {
+        return res.status(403).json({ ok: false, error: "Forbidden: Not allotted to this session" });
+      }
     }
 
     let student = null;
@@ -1466,29 +1590,48 @@ async function handleManualAttendance(req, res) {
 
     let attendance = null;
     if (status === "present") {
-      const { data: upserted, error } = await supabase
+      const fullPayload = {
+        session: String(sessionId),
+        student: String(student.id),
+        faculty: session.faculty,
+        subject: session.subject,
+        enrollment_no: student.enrollment_no || null,
+        student_name: student.name || null,
+        student_email: student.email || null,
+        department_code: student.dept?.code || student.departmentCode || null,
+        semester: Number(student.semester || session.semester) || null,
+        section: String(student.section || session.section || "").toUpperCase() || null,
+        year: Number(student.year || session.year) || null,
+        status: "present",
+        timestamp: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      let { data: upserted, error } = await supabase
         .from("attendances")
-        .upsert(
-          {
-            session: String(sessionId),
-            student: String(student.id),
-            faculty: session.faculty,
-            subject: session.subject,
-            enrollment_no: student.enrollment_no || null,
-            student_name: student.name || null,
-            student_email: student.email || null,
-            department_code: student.dept?.code || student.departmentCode || session.departmentCode || null,
-            semester: Number(student.semester || session.semester) || null,
-            section: String(student.section || session.section || "").toUpperCase() || null,
-            year: Number(student.year || session.year) || null,
-            status: "present",
-            timestamp: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "session,student" }
-        )
+        .upsert(fullPayload, { onConflict: "session,student" })
         .select("*")
         .single();
+
+      // If custom columns don't exist yet in Supabase schema, gracefully retry with base columns
+      if (error && (error.code === "PGRST204" || error.code === "42703" || String(error.message || "").includes("column"))) {
+        const basePayload = {
+          session: String(sessionId),
+          student: String(student.id),
+          faculty: session.faculty,
+          subject: session.subject,
+          status: "present",
+          timestamp: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        const retryRes = await supabase
+          .from("attendances")
+          .upsert(basePayload, { onConflict: "session,student" })
+          .select("*")
+          .single();
+        upserted = retryRes.data;
+        error = retryRes.error;
+      }
 
       if (error || !upserted) throw error || new Error("Failed to mark manual attendance");
       attendance = upserted;
@@ -1540,7 +1683,10 @@ async function handleManualAttendance(req, res) {
     });
   } catch (err) {
     console.error("Manual attendance error:", err);
-    return res.status(500).json({ ok: false, error: "Server error" });
+    return res.status(500).json({
+      ok: false,
+      error: err?.message || err?.details || "Failed to update attendance",
+    });
   }
 }
 
