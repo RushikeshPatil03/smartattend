@@ -2,7 +2,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useApp } from "../store";
 import { Button, Card, Badge } from "../components/Common";
 import CollegeHeader from "../components/CollegeHeader";
-import { Scan, MapPin, CheckCircle, XCircle, History, Camera, LoaderCircle, X } from "lucide-react";
+import {
+  Scan, MapPin, CheckCircle, XCircle, History, Camera, LoaderCircle, X,
+  BookOpen, TrendingUp, AlertTriangle, RefreshCw, ChevronDown,
+  Award, Clock
+} from "lucide-react";
 import { markAttendanceTwoStep, getFingerprint } from "../services/attendanceClient";
 import apiClient from "../services/apiClient";
 import {
@@ -62,6 +66,27 @@ type TodayClassRow = {
   isActive: boolean;
   status: "present" | "absent";
   attendanceCode: "P" | "A";
+};
+
+type SubjectAttendanceRow = {
+  subjectId: string;
+  subjectName: string;
+  subjectCode: string;
+  totalClassesConducted: number;
+  classesAttended: number;
+  classesMissed: number;
+  attendancePercentage: number;
+};
+
+type AttendanceOverviewData = {
+  overview: {
+    totalClassesConducted: number;
+    classesAttended: number;
+    classesMissed: number;
+    overallAttendancePercentage: number;
+    subjectCount: number;
+  };
+  subjects: SubjectAttendanceRow[];
 };
 
 function isSameLocalDay(value: string | number | Date, reference = new Date()) {
@@ -137,6 +162,387 @@ function decodeDynamicQrPayload(token: string): DynamicQrPayload | null {
     return null;
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MY ATTENDANCE CARD
+// Compact subject-wise attendance breakdown with animated progress bars,
+// smart risk tiers, overall summary, and self-contained data fetching.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ATTENDANCE_THRESHOLDS = {
+  SAFE: 75,      // ≥ 75% — Safe zone ✅
+  WARNING: 60,   // 60–74% — Warning zone ⚠️
+  CRITICAL: 40,  // 40–59% — Critical ❌
+  // < 40% — Danger 🚨
+} as const;
+
+function getAttendanceTier(pct: number) {
+  if (pct >= ATTENDANCE_THRESHOLDS.SAFE)     return { label: "✅",      color: "emerald", barColor: "bg-emerald-500", textColor: "text-emerald-700", bgColor: "bg-emerald-50",   borderColor: "border-emerald-200" } as const;
+  if (pct >= ATTENDANCE_THRESHOLDS.WARNING)  return { label: "⚠️",      color: "amber",   barColor: "bg-amber-400",  textColor: "text-amber-700",   bgColor: "bg-amber-50",    borderColor: "border-amber-200" } as const;
+  if (pct >= ATTENDANCE_THRESHOLDS.CRITICAL) return { label: "❌",      color: "rose",    barColor: "bg-rose-500",   textColor: "text-rose-700",    bgColor: "bg-rose-50",     borderColor: "border-rose-200" } as const;
+  return                                            { label: "🚨",      color: "red",     barColor: "bg-red-600",    textColor: "text-red-700",     bgColor: "bg-red-50",      borderColor: "border-red-200" } as const;
+}
+
+function classesNeededToReach75(attended: number, total: number): number | null {
+  // How many consecutive classes must the student attend to reach 75%?
+  // Solve: (attended + x) / (total + x) >= 0.75
+  if (total === 0) return null;
+  const pct = attended / total;
+  if (pct >= 0.75) return 0; // already safe
+  // (attended + x) >= 0.75 * (total + x)
+  // attended + x >= 0.75*total + 0.75x
+  // 0.25x >= 0.75*total - attended
+  // x >= (0.75*total - attended) / 0.25
+  const needed = Math.ceil((0.75 * total - attended) / 0.25);
+  return Math.max(0, needed);
+}
+
+function canSkipClasses(attended: number, total: number): number | null {
+  // How many classes can the student miss and still stay ≥ 75%?
+  // (attended) / (total + x) >= 0.75  — student skips but still has 'attended' present
+  // attended >= 0.75 * (total + x)
+  // x <= (attended / 0.75) - total
+  if (total === 0) return null;
+  const canSkip = Math.floor(attended / 0.75 - total);
+  return canSkip > 0 ? canSkip : 0;
+}
+
+const OverallRingGauge: React.FC<{ pct: number }> = ({ pct }) => {
+  const radius = 30;
+  const circ = 2 * Math.PI * radius;
+  const filled = (Math.min(pct, 100) / 100) * circ;
+  const tier = getAttendanceTier(pct);
+
+  const strokeColor =
+    tier.color === "emerald" ? "#10b981"
+    : tier.color === "amber"   ? "#f59e0b"
+    : tier.color === "rose"    ? "#f43f5e"
+    :                            "#dc2626";
+
+  return (
+    <svg width="80" height="80" viewBox="0 0 80 80" className="shrink-0" aria-label={`Overall attendance ${pct}%`}>
+      {/* Track */}
+      <circle cx="40" cy="40" r={radius} fill="none" stroke="#e2e8f0" strokeWidth="7" />
+      {/* Filled arc */}
+      <circle
+        cx="40" cy="40" r={radius}
+        fill="none"
+        stroke={strokeColor}
+        strokeWidth="7"
+        strokeLinecap="round"
+        strokeDasharray={`${filled} ${circ}`}
+        strokeDashoffset={0}
+        transform="rotate(-90 40 40)"
+        style={{ transition: "stroke-dasharray 0.8s cubic-bezier(0.4,0,0.2,1)" }}
+      />
+      <text x="40" y="44" textAnchor="middle" fontSize="14" fontWeight="700" fill={strokeColor}>
+        {Math.round(pct)}%
+      </text>
+    </svg>
+  );
+};
+
+const SubjectProgressBar: React.FC<{ subject: SubjectAttendanceRow; animDelay: number }> = ({
+  subject,
+  animDelay,
+}) => {
+  const pct = subject.attendancePercentage;
+  const tier = getAttendanceTier(pct);
+  const needed = classesNeededToReach75(subject.classesAttended, subject.totalClassesConducted);
+  const canSkip = canSkipClasses(subject.classesAttended, subject.totalClassesConducted);
+
+  // Tooltip-style contextual hint
+  const hint =
+    pct >= 75
+      ? canSkip !== null && canSkip > 0
+        ? `Can skip ~${canSkip} more class${canSkip !== 1 ? "es" : ""}`
+        : "At safe threshold"
+      : needed !== null && needed > 0
+        ? `Attend ${needed} more to reach 75%`
+        : "";
+
+  return (
+    <div
+      className="group py-2.5 transition-colors hover:bg-slate-50/80 rounded-xl px-3 -mx-1"
+      style={{ animationDelay: `${animDelay}ms` }}
+    >
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        {/* Subject name + code */}
+        <div className="flex min-w-0 items-center gap-2">
+          <BookOpen size={13} className="shrink-0 text-slate-400" />
+          <span className="truncate text-[13px] font-semibold text-slate-800 leading-none">
+            {subject.subjectName}
+          </span>
+          <span className="hidden sm:inline shrink-0 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+            {subject.subjectCode}
+          </span>
+        </div>
+
+        {/* Right: percentage + emoji */}
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span className={`text-[13px] font-bold tabular-nums ${tier.textColor}`}>
+            {pct.toFixed(pct % 1 === 0 ? 0 : 1)}%
+          </span>
+          <span className="text-sm leading-none">{tier.label}</span>
+        </div>
+      </div>
+
+      {/* Progress bar */}
+      <div className="relative h-2 w-full overflow-hidden rounded-full bg-slate-100">
+        <div
+          className={`h-full rounded-full transition-all duration-700 ease-out ${tier.barColor}`}
+          style={{
+            width: `${Math.min(pct, 100)}%`,
+            transitionDelay: `${animDelay + 100}ms`,
+          }}
+        />
+        {/* 75% marker */}
+        <div
+          className="absolute top-0 h-full w-[1.5px] bg-slate-400/60"
+          style={{ left: "75%" }}
+          title="75% threshold"
+        />
+      </div>
+
+      {/* Stats row */}
+      <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400">
+        <span>
+          {subject.classesAttended}/{subject.totalClassesConducted} classes
+        </span>
+        {hint && (
+          <span className={`font-medium ${tier.textColor} opacity-80`}>{hint}</span>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const MyAttendanceCard: React.FC = () => {
+  const [overviewData, setOverviewData] = useState<AttendanceOverviewData | null>(null);
+  const [loadState, setLoadState] = useState<"idle" | "loading" | "loaded" | "error">("idle");
+  const [expanded, setExpanded] = useState(false);
+  const [lastFetchedAt, setLastFetchedAt] = useState<Date | null>(null);
+  const fetchingRef = useRef(false);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  const fetchOverview = useCallback(async (silent = false) => {
+    if (fetchingRef.current) return;
+    fetchingRef.current = true;
+    if (!silent) setLoadState("loading");
+
+    try {
+      const res: any = await apiClient.getStudentAttendanceOverview();
+      if (!mountedRef.current) return;
+
+      if (res?.ok) {
+        setOverviewData({
+          overview: res.overview || {
+            totalClassesConducted: 0, classesAttended: 0,
+            classesMissed: 0, overallAttendancePercentage: 0, subjectCount: 0,
+          },
+          subjects: Array.isArray(res.subjects) ? res.subjects : [],
+        });
+        setLoadState("loaded");
+        setLastFetchedAt(new Date());
+      } else {
+        setLoadState("error");
+      }
+    } catch {
+      if (mountedRef.current) setLoadState("error");
+    } finally {
+      fetchingRef.current = false;
+    }
+  }, []);
+
+  // Auto-load when first expanded
+  useEffect(() => {
+    if (expanded && loadState === "idle") {
+      void fetchOverview(false);
+    }
+  }, [expanded, loadState, fetchOverview]);
+
+  const sorted = useMemo(() => {
+    if (!overviewData) return [];
+    return [...overviewData.subjects].sort(
+      (a, b) => a.attendancePercentage - b.attendancePercentage
+    );
+  }, [overviewData]);
+
+  const overallPct = overviewData?.overview?.overallAttendancePercentage ?? 0;
+  const overallTier = getAttendanceTier(overallPct);
+
+  // Subjects at risk (< 75%)
+  const atRisk = sorted.filter((s) => s.attendancePercentage < ATTENDANCE_THRESHOLDS.SAFE);
+  const hasData = loadState === "loaded" && overviewData;
+
+  return (
+    <div className="mx-auto w-full max-w-lg">
+      {/* Card header — always visible, acts as toggle */}
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full rounded-[20px] border border-slate-200 bg-white px-5 py-4 shadow-[0_8px_28px_-12px_rgba(15,23,42,0.18)] transition hover:-translate-y-0.5 hover:shadow-[0_12px_32px_-12px_rgba(15,23,42,0.22)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2"
+        aria-expanded={expanded}
+        aria-label="Toggle My Attendance overview"
+      >
+        <div className="flex items-center justify-between gap-3">
+          {/* Left: icon + title + badge */}
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-50 to-sky-50 border border-indigo-100 text-indigo-600">
+              <TrendingUp size={18} />
+            </div>
+            <div className="min-w-0 text-left">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                Cumulative
+              </p>
+              <p className="text-sm font-bold tracking-tight text-slate-900">My Attendance</p>
+            </div>
+          </div>
+
+          {/* Right: quick overall % or loading state */}
+          <div className="flex shrink-0 items-center gap-2">
+            {hasData && (
+              <div className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-bold ${overallTier.bgColor} ${overallTier.borderColor} ${overallTier.textColor}`}>
+                <Award size={11} />
+                {overallPct.toFixed(overallPct % 1 === 0 ? 0 : 1)}%
+              </div>
+            )}
+            {loadState === "loading" && (
+              <LoaderCircle size={16} className="animate-spin text-slate-400" />
+            )}
+            <div className="text-slate-400 transition-transform duration-200" style={{ transform: expanded ? "rotate(180deg)" : "rotate(0deg)" }}>
+              <ChevronDown size={18} />
+            </div>
+          </div>
+        </div>
+
+        {/* Risk alert strip — always visible if loaded and there are at-risk subjects */}
+        {hasData && atRisk.length > 0 && (
+          <div className="mt-3 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-left">
+            <AlertTriangle size={13} className="shrink-0 text-amber-600" />
+            <p className="text-[12px] font-semibold text-amber-700">
+              {atRisk.length === 1
+                ? `${atRisk[0].subjectName} is below 75%`
+                : `${atRisk.length} subjects are below 75% attendance`}
+            </p>
+          </div>
+        )}
+      </button>
+
+      {/* Expanded panel */}
+      {expanded && (
+        <div className="mt-2 overflow-hidden rounded-[20px] border border-slate-200 bg-white shadow-[0_12px_32px_-12px_rgba(15,23,42,0.18)]">
+
+          {/* Loading skeleton */}
+          {loadState === "loading" && (
+            <div className="space-y-4 p-5">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="animate-pulse space-y-2">
+                  <div className="flex justify-between">
+                    <div className="h-3.5 w-40 rounded-full bg-slate-200" />
+                    <div className="h-3.5 w-10 rounded-full bg-slate-200" />
+                  </div>
+                  <div className="h-2 w-full rounded-full bg-slate-200" />
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Error state */}
+          {loadState === "error" && (
+            <div className="flex flex-col items-center gap-3 py-10 text-center px-6">
+              <XCircle size={32} className="text-rose-400" />
+              <p className="text-sm font-semibold text-slate-700">Could not load attendance data</p>
+              <p className="text-xs text-slate-400">Check your connection and try again.</p>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); void fetchOverview(false); }}
+                className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-white transition cursor-pointer"
+              >
+                <RefreshCw size={13} /> Retry
+              </button>
+            </div>
+          )}
+
+          {/* Loaded data */}
+          {hasData && (
+            <>
+              {/* Overall summary strip */}
+              <div className="border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white px-5 py-4">
+                <div className="flex items-center gap-5">
+                  <OverallRingGauge pct={overallPct} />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 mb-1">
+                      Overall Attendance
+                    </p>
+                    <p className={`text-2xl font-black tabular-nums tracking-tight ${overallTier.textColor}`}>
+                      {overallPct.toFixed(overallPct % 1 === 0 ? 0 : 1)}%
+                    </p>
+                    <div className="mt-1.5 flex flex-wrap gap-2 text-[11px] font-medium text-slate-500">
+                      <span className="flex items-center gap-1 text-emerald-700">
+                        <span className="h-2 w-2 rounded-full bg-emerald-500 inline-block" />
+                        {overviewData.overview.classesAttended} Present
+                      </span>
+                      <span className="flex items-center gap-1 text-rose-600">
+                        <span className="h-2 w-2 rounded-full bg-rose-500 inline-block" />
+                        {overviewData.overview.classesMissed} Absent
+                      </span>
+                      <span className="text-slate-400">
+                        / {overviewData.overview.totalClassesConducted} Total
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Subject list */}
+              <div className="px-4 pb-4 pt-3">
+                {sorted.length === 0 ? (
+                  <div className="py-8 text-center">
+                    <Clock size={28} className="mx-auto mb-3 text-slate-300" />
+                    <p className="text-sm font-medium text-slate-500">No completed sessions yet</p>
+                    <p className="mt-1 text-xs text-slate-400">
+                      Subject-wise stats appear once faculty ends a session.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-100/80">
+                    {sorted.map((subj, idx) => (
+                      <SubjectProgressBar key={subj.subjectId} subject={subj} animDelay={idx * 60} />
+                    ))}
+                  </div>
+                )}
+
+                {/* Legend + last updated */}
+                <div className="mt-4 flex items-center justify-between gap-3">
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-semibold text-slate-400">
+                    <span className="flex items-center gap-1"><span className="h-1.5 w-3 rounded-full bg-emerald-500 inline-block" />≥75% Safe</span>
+                    <span className="flex items-center gap-1"><span className="h-1.5 w-3 rounded-full bg-amber-400 inline-block" />60–74% Warn</span>
+                    <span className="flex items-center gap-1"><span className="h-1.5 w-3 rounded-full bg-rose-500 inline-block" />&lt;60% Risk</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); void fetchOverview(true); }}
+                    className="flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition cursor-pointer"
+                    title="Refresh attendance data"
+                  >
+                    <RefreshCw size={11} />
+                    {lastFetchedAt ? `Updated ${lastFetchedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Refresh"}
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
 
 const StudentDashboard: React.FC = () => {
   const { currentUser, departments = [], fetchDepartments, logout } = useApp();
@@ -1068,6 +1474,12 @@ const StudentDashboard: React.FC = () => {
         )}
       </div>
 
+      {/* ── My Attendance Card ─────────────────────────────────────────── */}
+      <div className="mx-auto mb-3 w-full max-w-lg">
+        <MyAttendanceCard />
+      </div>
+
+      {/* ── Today's Attendance Quick Access ────────────────────────────── */}
       <div className="mx-auto flex w-full max-w-lg justify-center pb-8">
         <button
           type="button"
