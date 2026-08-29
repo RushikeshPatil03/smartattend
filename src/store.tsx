@@ -53,9 +53,9 @@ interface AppContextValue {
     maxRegistrations?: number
   ) => Promise<any>;
 
-  fetchSubjects: (forceRefresh?: boolean) => Promise<any[]>;
-  fetchDepartments: (forceRefresh?: boolean) => Promise<any[]>;
-  fetchUsers: () => Promise<void>;
+  fetchSubjects: (forceRefresh?: boolean, signal?: AbortSignal) => Promise<any[]>;
+  fetchDepartments: (forceRefresh?: boolean, signal?: AbortSignal) => Promise<any[]>;
+  fetchUsers: (signal?: AbortSignal) => Promise<any[]>;
   updateFacultyDeviceLock: (facultyId: string, enabled: boolean) => Promise<any>;
 
   sessions: any[];
@@ -65,6 +65,7 @@ interface AppContextValue {
   users: any[];
 
   addDepartment: (payload: any) => Promise<any>;
+  updateDepartment: (id: string, payload: any) => Promise<any>;
   deleteDepartment: (id: string) => Promise<any>;
   addSubject: (payload: any) => Promise<any>;
   deleteSubject: (id: string) => Promise<any>;
@@ -110,6 +111,7 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 let inflightDepartmentsPromise: Promise<any[]> | null = null;
 let inflightSubjectsPromise: Promise<any[]> | null = null;
+let lastSubjectsFetchTimestamp = 0;
 
 export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [view, setView] = useState<ViewType>(View.LOGIN);
@@ -236,9 +238,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [normalizeFrontendOrigin]);
 
-  // ---------------- FETCH HELPERS WITH 5-MIN CACHE & DEDUPLICATION ----------------
-  const fetchDepartments = useCallback(async (forceRefresh = false) => {
-    if (!apiClient.token) return [];
+  // ---------------- FETCH HELPERS WITH 3-MIN STALENESS & DEDUPLICATION ----------------
+  const fetchDepartments = useCallback(async (forceRefresh = false, signal?: AbortSignal) => {
+    if (!apiClient.token || signal?.aborted) return [];
 
     const cached = getCache<any[]>(CACHE_KEYS.DEPARTMENTS);
     const hasCachedData = Array.isArray(cached.data) && cached.data.length > 0;
@@ -255,7 +257,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     inflightDepartmentsPromise = (async () => {
       try {
-        const res = await apiClient.getDepartments();
+        const res = await apiClient.getDepartments(signal);
+        if (signal?.aborted) return [];
         if (res?.ok && Array.isArray(res.departments)) {
           setDepartments(res.departments);
           setCache(CACHE_KEYS.DEPARTMENTS, res.departments);
@@ -277,15 +280,19 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     return inflightDepartmentsPromise;
   }, []);
 
-  const fetchSubjects = useCallback(async (forceRefresh = false) => {
-    if (!apiClient.token) return [];
+  const fetchSubjects = useCallback(async (forceRefresh = false, signal?: AbortSignal) => {
+    if (!apiClient.token || signal?.aborted) return [];
 
+    const now = Date.now();
     const cached = getCache<any[]>(CACHE_KEYS.SUBJECTS);
     const hasCachedData = Array.isArray(cached.data) && cached.data.length > 0;
+    const isWithinStaleWindow =
+      lastSubjectsFetchTimestamp > 0 &&
+      now - lastSubjectsFetchTimestamp < 3 * 60 * 1000;
 
-    // Return immediately from cache if fresh and not forced
-    if (!forceRefresh && hasCachedData && !cached.isStale) {
-      return cached.data!;
+    // Return immediately from memory/cache if fresh within 3 minutes and not forced
+    if (!forceRefresh && (isWithinStaleWindow || (hasCachedData && !cached.isStale))) {
+      return subjects.length > 0 ? subjects : (cached.data || []);
     }
 
     // Deduplicate in-flight concurrent requests
@@ -295,8 +302,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     inflightSubjectsPromise = (async () => {
       try {
-        const res = await apiClient.getSubjects();
+        const res = await apiClient.getSubjects(signal);
+        if (signal?.aborted) return [];
         if (res?.ok && Array.isArray(res.subjects)) {
+          lastSubjectsFetchTimestamp = Date.now();
           setSubjects(res.subjects);
           setCache(CACHE_KEYS.SUBJECTS, res.subjects);
           return res.subjects;
@@ -315,11 +324,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
 
     return inflightSubjectsPromise;
-  }, []);
+  }, [subjects]);
 
-  const fetchUsers = useCallback(async () => {
-    if (!apiClient.token) return [];
-    const res = await apiClient.getUsers();
+  const fetchUsers = useCallback(async (signal?: AbortSignal) => {
+    if (!apiClient.token || signal?.aborted) return [];
+    const res = await apiClient.getUsers(signal);
+    if (signal?.aborted) return [];
     if (res?.ok) setUsers(res.users || []);
     return res?.users || [];
   }, []);
@@ -576,27 +586,128 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   // ---------------- CRUD ----------------
   const addDepartment = async (payload: any) => {
-    const res = await apiClient.createDepartment(payload);
-    if (res?.ok && res.department) {
-      setDepartments((d) => {
-        const next = [...d, res.department];
-        setCache(CACHE_KEYS.DEPARTMENTS, next);
-        return next;
-      });
+    const tempId = "temp_dept_" + Date.now();
+    const optimisticDept = {
+      _id: tempId,
+      id: tempId,
+      name: payload.name,
+      code: payload.code,
+      _isOptimistic: true,
+    };
+
+    // Optimistically add to state
+    setDepartments((prev) => [...prev, optimisticDept]);
+
+    try {
+      const res = await apiClient.createDepartment(payload);
+      if (res?.ok && res.department) {
+        setDepartments((prev) => {
+          const next = prev.map((d) =>
+            (d._id === tempId || d.id === tempId) ? res.department : d
+          );
+          setCache(CACHE_KEYS.DEPARTMENTS, next);
+          return next;
+        });
+        return res;
+      } else {
+        // Rollback
+        setDepartments((prev) => prev.filter((d) => d._id !== tempId && d.id !== tempId));
+        return res || { ok: false, error: "Failed to create department" };
+      }
+    } catch (err: any) {
+      // Rollback
+      setDepartments((prev) => prev.filter((d) => d._id !== tempId && d.id !== tempId));
+      return { ok: false, error: err?.message || "Failed to create department" };
     }
-    return res;
+  };
+
+  const updateDepartment = async (id: string, payload: { name: string; code: string }) => {
+    let prevDept: any = null;
+    // Optimistic update
+    setDepartments((prev) => {
+      return prev.map((d) => {
+        if ((d._id || d.id) === id) {
+          prevDept = d;
+          return { ...d, name: payload.name, code: payload.code };
+        }
+        return d;
+      });
+    });
+
+    try {
+      const res: any = await apiClient.put(`/api/department/${encodeURIComponent(id)}`, payload);
+      if (res?.ok) {
+        setDepartments((prev) => {
+          const next = prev.map((d) =>
+            (d._id || d.id) === id ? (res.department || { ...d, ...payload }) : d
+          );
+          setCache(CACHE_KEYS.DEPARTMENTS, next);
+          return next;
+        });
+        return res;
+      } else {
+        // Rollback
+        if (prevDept) {
+          setDepartments((prev) =>
+            prev.map((d) => ((d._id || d.id) === id ? prevDept : d))
+          );
+        }
+        return res || { ok: false, error: "Failed to update department" };
+      }
+    } catch (err: any) {
+      if (prevDept) {
+        setDepartments((prev) =>
+          prev.map((d) => ((d._id || d.id) === id ? prevDept : d))
+        );
+      }
+      return { ok: false, error: err?.message || "Failed to update department" };
+    }
   };
 
   const deleteDepartment = async (id: string) => {
-    const res = await apiClient.deleteDepartment(id);
-    if (res?.ok) {
-      setDepartments((d) => {
-        const next = d.filter((x) => (x.id || x._id) !== id);
-        setCache(CACHE_KEYS.DEPARTMENTS, next);
-        return next;
-      });
+    let deletedDept: any = null;
+    let originalIndex = -1;
+
+    // Optimistically remove from state
+    setDepartments((prev) => {
+      originalIndex = prev.findIndex((x) => (x.id || x._id) === id);
+      if (originalIndex !== -1) {
+        deletedDept = prev[originalIndex];
+      }
+      return prev.filter((x) => (x.id || x._id) !== id);
+    });
+
+    try {
+      const res = await apiClient.deleteDepartment(id);
+      if (res?.ok) {
+        setDepartments((prev) => {
+          const next = prev.filter((x) => (x.id || x._id) !== id);
+          setCache(CACHE_KEYS.DEPARTMENTS, next);
+          return next;
+        });
+        return res;
+      } else {
+        // Rollback
+        if (deletedDept) {
+          setDepartments((prev) => {
+            const next = [...prev];
+            next.splice(originalIndex >= 0 ? originalIndex : next.length, 0, deletedDept);
+            return next;
+          });
+        }
+        return res || { ok: false, error: "Failed to delete department" };
+      }
+    } catch (err: any) {
+      // Rollback
+      if (deletedDept) {
+        setDepartments((prev) => {
+          const next = [...prev];
+          next.splice(originalIndex >= 0 ? originalIndex : next.length, 0, deletedDept);
+          return next;
+        });
+      }
+      return { ok: false, error: err?.message || "Failed to delete department" };
     }
-    return res;
   };
 
   const addSubject = async (payload: any) => {
@@ -675,6 +786,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     users,
 
     addDepartment,
+    updateDepartment,
     deleteDepartment,
     addSubject,
     deleteSubject,

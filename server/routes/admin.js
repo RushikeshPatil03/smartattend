@@ -777,4 +777,185 @@ router.delete("/subjects/:id", adminAuth, async (req, res) => {
   }
 });
 
+// ------------------------------------------------------
+// 6) STUDENT LIFECYCLE, DELETION & RETENTION (ADMIN-SCOPED)
+// ------------------------------------------------------
+
+// DELETE /api/admin/students/:id
+// Safely removes student account while preserving all USN-tagged attendance logs
+router.delete("/students/:id", adminAuth, async (req, res) => {
+  try {
+    const studentId = req.params.id;
+    const adminId = req.userId;
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
+
+    // 1. Fetch student to get enrollment number for audit & count
+    const { data: student, error: fetchErr } = await supabase
+      .from("students")
+      .select("id, name, enrollment_no, email")
+      .eq("id", studentId)
+      .eq("created_by_admin", adminId)
+      .single();
+
+    if (fetchErr || !student) {
+      return res.status(404).json({ ok: false, error: "Student not found" });
+    }
+
+    // 2. Count preserved attendance logs
+    const { count: preservedCount } = await supabase
+      .from("attendances")
+      .select("id", { count: "exact", head: true })
+      .or(`student.eq.${studentId},enrollment_no.eq.${student.enrollment_no}`);
+
+    // 3. Ensure any attendances referencing this student have snapshot columns populated
+    await supabase
+      .from("attendances")
+      .update({
+        enrollment_no: student.enrollment_no,
+        student_name: student.name,
+        student_email: student.email,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("student", studentId)
+      .is("enrollment_no", null);
+
+    // 4. Delete student from students table
+    const { error: deleteErr } = await supabase
+      .from("students")
+      .delete()
+      .eq("id", studentId)
+      .eq("created_by_admin", adminId);
+
+    if (deleteErr) throw deleteErr;
+
+    return res.json({
+      ok: true,
+      message: "Student deleted successfully. Attendance logs preserved with USN.",
+      enrollmentNo: student.enrollment_no,
+      preservedAttendanceCount: preservedCount || 0,
+    });
+  } catch (err) {
+    console.error("Delete student error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to delete student" });
+  }
+});
+
+// POST /api/admin/students/promote
+// Promotes students to the next semester or academic year while retaining attendance logs
+router.post("/students/promote", adminAuth, async (req, res) => {
+  try {
+    const adminId = req.userId;
+    const { studentIds, targetSemester, targetYear, targetSection, departmentId } = req.body || {};
+
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
+
+    let query = supabase
+      .from("students")
+      .select("id, name, enrollment_no, year, semester, section, department")
+      .eq("created_by_admin", adminId);
+
+    if (Array.isArray(studentIds) && studentIds.length > 0) {
+      query = query.in("id", studentIds);
+    } else if (departmentId) {
+      query = query.eq("department", departmentId);
+    } else {
+      return res.status(400).json({ ok: false, error: "studentIds or departmentId required" });
+    }
+
+    const { data: students, error: fetchErr } = await query;
+    if (fetchErr) throw fetchErr;
+
+    if (!students || students.length === 0) {
+      return res.status(404).json({ ok: false, error: "No matching students found to promote" });
+    }
+
+    const updates = [];
+    for (const student of students) {
+      const currentYear = Number(student.year || 1);
+      const currentSem = Number(student.semester || 1);
+
+      let nextSem = targetSemester ? Number(targetSemester) : currentSem + 1;
+      let nextYear = targetYear
+        ? Number(targetYear)
+        : nextSem % 2 === 1 && currentSem % 2 === 0
+        ? currentYear + 1
+        : currentYear;
+
+      nextYear = Math.min(Math.max(nextYear, 1), 4);
+      nextSem = Math.min(Math.max(nextSem, 1), 8);
+
+      const payload = {
+        year: nextYear,
+        semester: nextSem,
+        updated_at: new Date().toISOString(),
+      };
+      if (targetSection) payload.section = String(targetSection).toUpperCase();
+
+      updates.push(
+        supabase
+          .from("students")
+          .update(payload)
+          .eq("id", student.id)
+          .eq("created_by_admin", adminId)
+      );
+    }
+
+    await Promise.all(updates);
+
+    return res.json({
+      ok: true,
+      message: `Successfully promoted ${students.length} student(s). All historical attendance logs preserved.`,
+      promotedCount: students.length,
+    });
+  } catch (err) {
+    console.error("Promote students error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to promote students" });
+  }
+});
+
+// POST /api/admin/attendance/purge
+// Explicit database-level purge for attendance logs (Admin Only)
+router.post("/attendance/purge", adminAuth, async (req, res) => {
+  try {
+    const adminId = req.userId;
+    const { enrollmentNo, beforeDate, subjectId, confirmPurge } = req.body || {};
+
+    if (!confirmPurge) {
+      return res.status(400).json({
+        ok: false,
+        error: "Confirmation required to purge attendance records permanently.",
+      });
+    }
+
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
+
+    let deleteQuery = supabase.from("attendances").delete();
+
+    if (enrollmentNo) {
+      deleteQuery = deleteQuery.eq("enrollment_no", String(enrollmentNo).trim().toUpperCase());
+    }
+    if (beforeDate) {
+      deleteQuery = deleteQuery.lte("timestamp", new Date(beforeDate).toISOString());
+    }
+    if (subjectId) {
+      deleteQuery = deleteQuery.eq("subject", subjectId);
+    }
+
+    const { data: deleted, error: delErr } = await deleteQuery.select("id");
+    if (delErr) throw delErr;
+
+    return res.json({
+      ok: true,
+      message: "Explicit attendance purge completed successfully.",
+      purgedCount: (deleted || []).length,
+    });
+  } catch (err) {
+    console.error("Purge attendance error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to purge attendance records" });
+  }
+});
+
 module.exports = router;

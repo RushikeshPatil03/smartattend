@@ -62,11 +62,29 @@ class ApiClient {
   // ------------------------------------
   // Core request wrapper (STRICT + SAFE)
   // ------------------------------------
-  async request(method: string, url: string, body?: any, retryOnAuth = true) {
+  async request(
+    method: string,
+    url: string,
+    body?: any,
+    retryOnAuth = true,
+    externalSignal?: AbortSignal
+  ) {
+    if (externalSignal?.aborted) {
+      return { ok: false, error: "Request cancelled", aborted: true };
+    }
+
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => {
       controller.abort();
     }, DEFAULT_REQUEST_TIMEOUT_MS);
+
+    const onExternalAbort = () => {
+      controller.abort();
+    };
+
+    if (externalSignal) {
+      externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+    }
 
     try {
       const headers: Record<string, string> = {
@@ -101,7 +119,7 @@ class ApiClient {
         if (res.status === 401 && retryOnAuth && !url.startsWith("/api/auth/")) {
           const refreshed = await this.refreshSession();
           if (refreshed?.ok && this.token) {
-            return this.request(method, url, body, false);
+            return this.request(method, url, body, false, externalSignal);
           }
         }
         if (res.status === 401 && !url.startsWith("/api/auth/refresh")) {
@@ -116,7 +134,10 @@ class ApiClient {
 
       return data;
     } catch (err: any) {
-      if (err?.name === "AbortError") {
+      if (err?.name === "AbortError" || externalSignal?.aborted) {
+        if (externalSignal?.aborted) {
+          return { ok: false, error: "Request cancelled", aborted: true };
+        }
         return {
           ok: false,
           error: `Request timed out after ${Math.round(
@@ -127,20 +148,23 @@ class ApiClient {
       return { ok: false, error: err?.message || "Network error" };
     } finally {
       window.clearTimeout(timeoutId);
+      if (externalSignal) {
+        externalSignal.removeEventListener("abort", onExternalAbort);
+      }
     }
   }
 
-  get(url: string) {
-    return this.request("GET", url);
+  get(url: string, signal?: AbortSignal) {
+    return this.request("GET", url, undefined, true, signal);
   }
-  post(url: string, data?: any) {
-    return this.request("POST", url, data);
+  post(url: string, data?: any, signal?: AbortSignal) {
+    return this.request("POST", url, data, true, signal);
   }
-  put(url: string, data?: any) {
-    return this.request("PUT", url, data);
+  put(url: string, data?: any, signal?: AbortSignal) {
+    return this.request("PUT", url, data, true, signal);
   }
-  delete(url: string) {
-    return this.request("DELETE", url);
+  delete(url: string, signal?: AbortSignal) {
+    return this.request("DELETE", url, undefined, true, signal);
   }
 
   // ------------------------------------
@@ -220,25 +244,25 @@ class ApiClient {
     maxRegistrations: number;
   }) => this.post("/api/admin/generate-registration-link", data);
 
-  getUsers = () => this.get("/api/admin/users");
+  getUsers = (signal?: AbortSignal) => this.get("/api/admin/users", signal);
   updateFacultyDeviceLock = (facultyId: string, enabled: boolean) =>
     this.put(`/api/admin/faculty/${encodeURIComponent(facultyId)}/device-lock`, {
       enabled,
     });
-  getStudentAnalytics = (studentId: string) =>
-    this.get(`/api/admin/students/${encodeURIComponent(studentId)}/analytics`);
+  getStudentAnalytics = (studentId: string, signal?: AbortSignal) =>
+    this.get(`/api/admin/students/${encodeURIComponent(studentId)}/analytics`, signal);
   updateAdminProfile = (data: { collegeName?: string; profilePhotoUrl?: string | null }) =>
     this.put("/api/admin/profile", data);
 
   // Departments
-  getDepartments = () => this.get("/api/department");
+  getDepartments = (signal?: AbortSignal) => this.get("/api/department", signal);
   createDepartment = (data: any) =>
     this.post("/api/department", data);
   deleteDepartment = (id: string) =>
     this.delete(`/api/department/${id}`);
 
   // Subjects
-  getSubjects = () => this.get("/api/subject");
+  getSubjects = (signal?: AbortSignal) => this.get("/api/subject", signal);
   createSubject = (data: any) =>
     this.post("/api/subject", data);
   deleteSubject = (id: string) =>

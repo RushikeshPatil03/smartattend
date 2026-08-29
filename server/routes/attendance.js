@@ -96,9 +96,12 @@ async function recordAttendanceAudit(entry) {
     await supabase.from("attendance_audits").insert({
       attendance: entry.attendanceId || null,
       session: String(entry.sessionId),
-      student: String(entry.studentId),
+      student: entry.studentId ? String(entry.studentId) : null,
       faculty: String(entry.facultyId),
       subject: String(entry.subjectId),
+      enrollment_no: entry.enrollmentNo || entry.enrollment_no || null,
+      student_name: entry.studentName || entry.student_name || null,
+      student_email: entry.studentEmail || entry.student_email || null,
       action: entry.action,
       method: entry.method,
       actor_role: entry.actorRole,
@@ -472,7 +475,7 @@ router.post(
         };
       }
 
-      // Insert Attendance atomically
+      // Insert Attendance atomically with USN snapshot
       const { data: attendance, error: insertError } = await supabase
         .from("attendances")
         .insert({
@@ -480,6 +483,13 @@ router.post(
           student: student.id,
           faculty: session.faculty,
           subject: session.subject,
+          enrollment_no: student.enrollment_no || null,
+          student_name: student.name || null,
+          student_email: student.email || null,
+          department_code: student.dept?.code || student.departmentCode || null,
+          semester: Number(student.semester || session.semester) || null,
+          section: String(student.section || session.section || "").toUpperCase() || null,
+          year: Number(student.year || session.year) || null,
           timestamp: new Date().toISOString(),
           status: "present",
           location: {
@@ -508,6 +518,9 @@ router.post(
         studentId: student.id,
         facultyId: session.faculty,
         subjectId: session.subject,
+        enrollmentNo: student.enrollment_no,
+        studentName: student.name,
+        studentEmail: student.email,
         action: "MARK_PRESENT",
         method: "QR_TWO_STEP",
         actorRole: "STUDENT",
@@ -627,6 +640,13 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
           device_fingerprint,
           face_verification,
           location,
+          enrollment_no,
+          student_name,
+          student_email,
+          department_code,
+          semester,
+          section,
+          year,
           student:students(id, name, enrollment_no, email, profile_photo_url, department, year, semester, section)
         `)
         .eq("session", String(sessionId))
@@ -636,19 +656,27 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
       const presentEnrollmentNos = new Set();
       const presentRecords = (rawAttendances || []).map((att) => {
         const studentObj = att.student || {};
+        const effectiveEnrollmentNo = studentObj.enrollment_no || att.enrollment_no || "";
+        const effectiveName = studentObj.name || att.student_name || "Student (Archived)";
+        const effectiveEmail = studentObj.email || att.student_email || "";
+        const effectiveStudentId = studentObj.id || att.student || (effectiveEnrollmentNo ? `archived_${effectiveEnrollmentNo}` : `archived_${att.id}`);
+
         if (studentObj.id) presentStudentIds.add(String(studentObj.id));
-        if (studentObj.enrollment_no) presentEnrollmentNos.add(String(studentObj.enrollment_no).trim().toUpperCase());
+        if (effectiveEnrollmentNo) presentEnrollmentNos.add(String(effectiveEnrollmentNo).trim().toUpperCase());
+
         return {
           id: att.id,
           _id: att.id,
           attendanceId: att.id,
           student: {
-            id: studentObj.id || att.student,
-            _id: studentObj.id || att.student,
-            name: studentObj.name || "Student",
-            enrollmentNo: studentObj.enrollment_no || "",
-            email: studentObj.email || "",
+            id: effectiveStudentId,
+            _id: effectiveStudentId,
+            name: effectiveName,
+            enrollmentNo: effectiveEnrollmentNo,
+            enrollment_no: effectiveEnrollmentNo,
+            email: effectiveEmail,
             profilePhotoUrl: studentObj.profile_photo_url || "",
+            isArchived: !studentObj.id,
           },
           status: att.status || "present",
           timestamp: att.timestamp,
@@ -887,6 +915,13 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
             student,
             faculty,
             subject,
+            enrollment_no,
+            student_name,
+            student_email,
+            department_code,
+            semester,
+            section,
+            year,
             timestamp,
             status,
             device_fingerprint,
@@ -906,36 +941,44 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
         const { data: rawAttendances, error: attErr } = await attQuery;
         if (attErr) throw attErr;
 
-        records = (rawAttendances || []).map((item) => ({
-          id: item.id,
-          _id: item.id,
-          attendanceId: item.id,
-          sessionId: item.session,
-          session: item.session,
-          student: {
-            id: item.stu?.id || item.student,
-            _id: item.stu?.id || item.student,
-            name: item.stu?.name || "Student",
-            enrollmentNo: item.stu?.enrollment_no || "",
-            enrollment_no: item.stu?.enrollment_no || "",
-            email: item.stu?.email || "",
-            profilePhotoUrl: item.stu?.profile_photo_url || "",
-          },
-          subject: {
-            id: item.subj?.id || item.subject,
-            _id: item.subj?.id || item.subject,
-            name: item.subj?.name || "Subject",
-            code: item.subj?.code || "",
-          },
-          faculty: {
-            id: item.fac?.id || item.faculty,
-            _id: item.fac?.id || item.faculty,
-            name: item.fac?.name || "Faculty",
-          },
-          status: item.status || "present",
-          timestamp: item.timestamp,
-          markedAt: item.timestamp,
-        }));
+        records = (rawAttendances || []).map((item) => {
+          const effectiveEnrollmentNo = item.stu?.enrollment_no || item.enrollment_no || "";
+          const effectiveName = item.stu?.name || item.student_name || "Student (Archived)";
+          const effectiveEmail = item.stu?.email || item.student_email || "";
+          const effectiveStudentId = item.stu?.id || item.student || (effectiveEnrollmentNo ? `archived_${effectiveEnrollmentNo}` : `archived_${item.id}`);
+
+          return {
+            id: item.id,
+            _id: item.id,
+            attendanceId: item.id,
+            sessionId: item.session,
+            session: item.session,
+            student: {
+              id: effectiveStudentId,
+              _id: effectiveStudentId,
+              name: effectiveName,
+              enrollmentNo: effectiveEnrollmentNo,
+              enrollment_no: effectiveEnrollmentNo,
+              email: effectiveEmail,
+              profilePhotoUrl: item.stu?.profile_photo_url || "",
+              isArchived: !item.stu,
+            },
+            subject: {
+              id: item.subj?.id || item.subject,
+              _id: item.subj?.id || item.subject,
+              name: item.subj?.name || "Subject",
+              code: item.subj?.code || "",
+            },
+            faculty: {
+              id: item.fac?.id || item.faculty,
+              _id: item.fac?.id || item.faculty,
+              name: item.fac?.name || "Faculty",
+            },
+            status: item.status || "present",
+            timestamp: item.timestamp,
+            markedAt: item.timestamp,
+          };
+        });
       }
 
       // 4) Return Enriched Payload
@@ -957,6 +1000,13 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
         student,
         faculty,
         subject,
+        enrollment_no,
+        student_name,
+        student_email,
+        department_code,
+        semester,
+        section,
+        year,
         timestamp,
         status,
         device_fingerprint,
@@ -994,34 +1044,42 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
       return true;
     });
 
-    const records = filtered.map((item) => ({
-      id: item.id,
-      _id: item.id,
-      attendanceId: item.id,
-      sessionId: item.session,
-      student: {
-        id: item.stu?.id || item.student,
-        _id: item.stu?.id || item.student,
-        name: item.stu?.name || "Student",
-        enrollmentNo: item.stu?.enrollment_no || "",
-        email: item.stu?.email || "",
-        profilePhotoUrl: item.stu?.profile_photo_url || "",
-      },
-      subject: {
-        id: item.subj?.id || item.subject,
-        _id: item.subj?.id || item.subject,
-        name: item.subj?.name || "Subject",
-        code: item.subj?.code || "",
-      },
-      faculty: {
-        id: item.fac?.id || item.faculty,
-        _id: item.fac?.id || item.faculty,
-        name: item.fac?.name || "Faculty",
-      },
-      status: item.status || "present",
-      timestamp: item.timestamp,
-      markedAt: item.timestamp,
-    }));
+    const records = filtered.map((item) => {
+      const effectiveEnrollmentNo = item.stu?.enrollment_no || item.enrollment_no || "";
+      const effectiveName = item.stu?.name || item.student_name || "Student (Archived)";
+      const effectiveEmail = item.stu?.email || item.student_email || "";
+      const effectiveStudentId = item.stu?.id || item.student || (effectiveEnrollmentNo ? `archived_${effectiveEnrollmentNo}` : `archived_${item.id}`);
+
+      return {
+        id: item.id,
+        _id: item.id,
+        attendanceId: item.id,
+        sessionId: item.session,
+        student: {
+          id: effectiveStudentId,
+          _id: effectiveStudentId,
+          name: effectiveName,
+          enrollmentNo: effectiveEnrollmentNo,
+          email: effectiveEmail,
+          profilePhotoUrl: item.stu?.profile_photo_url || "",
+          isArchived: !item.stu,
+        },
+        subject: {
+          id: item.subj?.id || item.subject,
+          _id: item.subj?.id || item.subject,
+          name: item.subj?.name || "Subject",
+          code: item.subj?.code || "",
+        },
+        faculty: {
+          id: item.fac?.id || item.faculty,
+          _id: item.fac?.id || item.faculty,
+          name: item.fac?.name || "Faculty",
+        },
+        status: item.status || "present",
+        timestamp: item.timestamp,
+        markedAt: item.timestamp,
+      };
+    });
 
     return res.json({
       ok: true,
@@ -1416,6 +1474,13 @@ async function handleManualAttendance(req, res) {
             student: String(student.id),
             faculty: session.faculty,
             subject: session.subject,
+            enrollment_no: student.enrollment_no || null,
+            student_name: student.name || null,
+            student_email: student.email || null,
+            department_code: student.dept?.code || student.departmentCode || session.departmentCode || null,
+            semester: Number(student.semester || session.semester) || null,
+            section: String(student.section || session.section || "").toUpperCase() || null,
+            year: Number(student.year || session.year) || null,
             status: "present",
             timestamp: new Date().toISOString(),
             updated_at: new Date().toISOString(),
@@ -1442,6 +1507,9 @@ async function handleManualAttendance(req, res) {
       studentId: String(student.id),
       facultyId: session.faculty,
       subjectId: session.subject,
+      enrollmentNo: student.enrollment_no,
+      studentName: student.name,
+      studentEmail: student.email,
       action: status === "present" ? "MANUAL_PRESENT" : "MANUAL_ABSENT",
       method: "MANUAL",
       actorRole: req.userRole,

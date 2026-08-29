@@ -9,6 +9,7 @@ const ManageDepartments: React.FC = () => {
   const {
     departments = [],
     addDepartment,
+    updateDepartment,
     deleteDepartment,
     fetchDepartments,
   } = useApp();
@@ -22,26 +23,37 @@ const ManageDepartments: React.FC = () => {
   const [editCode, setEditCode] = useState("");
 
   useEffect(() => {
-    fetchDepartments();
-  }, []);
+    const controller = new AbortController();
+    if (!departments.length) {
+      void fetchDepartments(false, controller.signal);
+    }
+    return () => {
+      controller.abort();
+    };
+  }, [fetchDepartments, departments.length]);
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !code.trim()) return;
+    const newName = name.trim();
+    const newCode = code.trim();
+    if (!newName || !newCode) return;
 
+    // Reset inputs immediately for instant feedback
+    setName("");
+    setCode("");
+    setShowAdd(false);
     setLoading(true);
+
     const res = await addDepartment({
-      name: name.trim(),
-      code: code.trim(),
+      name: newName,
+      code: newCode,
     });
 
-    if (res?.ok) {
-      await fetchDepartments();
-      setName("");
-      setCode("");
-      setShowAdd(false);
-    } else {
+    if (!res?.ok) {
       alert(res?.error || "Failed to create department");
+      setName(newName);
+      setCode(newCode);
+      setShowAdd(true);
     }
     setLoading(false);
   };
@@ -51,9 +63,7 @@ const ManageDepartments: React.FC = () => {
     setLoading(true);
 
     const res = await deleteDepartment(id);
-    if (res?.ok) {
-      await fetchDepartments();
-    } else {
+    if (!res?.ok) {
       alert(res?.error || "Failed to delete department");
     }
 
@@ -73,24 +83,22 @@ const ManageDepartments: React.FC = () => {
   };
 
   const saveEdit = async (id: string) => {
-    if (!editName.trim() || !editCode.trim()) return alert("Please provide name and code");
+    const nextName = editName.trim();
+    const nextCode = editCode.trim();
+    if (!nextName || !nextCode) return alert("Please provide name and code");
+
+    cancelEdit();
     setLoading(true);
-    try {
-      const res: any = await apiClient.put(`/api/department/${encodeURIComponent(id)}`, {
-        name: editName.trim(),
-        code: editCode.trim(),
-      });
-      if (!res?.ok) {
-        alert(res?.error || "Failed to update department");
-      } else {
-        await fetchDepartments();
-        cancelEdit();
-      }
-    } catch (err: any) {
-      alert(err?.message || "Failed to update department");
-    } finally {
-      setLoading(false);
+
+    const res = await updateDepartment(id, {
+      name: nextName,
+      code: nextCode,
+    });
+
+    if (!res?.ok) {
+      alert(res?.error || "Failed to update department");
     }
+    setLoading(false);
   };
 
   return (

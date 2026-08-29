@@ -84,6 +84,24 @@ ALTER TABLE IF EXISTS device_change_requests ADD COLUMN IF NOT EXISTS requested_
 CREATE UNIQUE INDEX IF NOT EXISTS idx_faculties_credential_id ON faculties (credential_id) WHERE credential_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_students_credential_id ON students (credential_id) WHERE credential_id IS NOT NULL;
 
+-- Attendance Retention & USN Audit Snapshot Migration
+ALTER TABLE IF EXISTS attendances ADD COLUMN IF NOT EXISTS enrollment_no VARCHAR(50) DEFAULT NULL;
+ALTER TABLE IF EXISTS attendances ADD COLUMN IF NOT EXISTS student_name VARCHAR(120) DEFAULT NULL;
+ALTER TABLE IF EXISTS attendances ADD COLUMN IF NOT EXISTS student_email VARCHAR(255) DEFAULT NULL;
+ALTER TABLE IF EXISTS attendances ADD COLUMN IF NOT EXISTS department_code VARCHAR(30) DEFAULT NULL;
+ALTER TABLE IF EXISTS attendances ADD COLUMN IF NOT EXISTS semester SMALLINT DEFAULT NULL;
+ALTER TABLE IF EXISTS attendances ADD COLUMN IF NOT EXISTS section VARCHAR(20) DEFAULT NULL;
+ALTER TABLE IF EXISTS attendances ADD COLUMN IF NOT EXISTS year SMALLINT DEFAULT NULL;
+ALTER TABLE IF EXISTS attendances ALTER COLUMN student DROP NOT NULL;
+
+ALTER TABLE IF EXISTS attendance_audits ADD COLUMN IF NOT EXISTS enrollment_no VARCHAR(50) DEFAULT NULL;
+ALTER TABLE IF EXISTS attendance_audits ADD COLUMN IF NOT EXISTS student_name VARCHAR(120) DEFAULT NULL;
+ALTER TABLE IF EXISTS attendance_audits ADD COLUMN IF NOT EXISTS student_email VARCHAR(255) DEFAULT NULL;
+ALTER TABLE IF EXISTS attendance_audits ALTER COLUMN student DROP NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_attendances_enrollment_no ON attendances (enrollment_no, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_audits_enrollment_no ON attendance_audits (enrollment_no, created_at DESC);
+
 -- 1.4 FACULTIES TABLE
 CREATE TABLE IF NOT EXISTS faculties (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -218,9 +236,16 @@ CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions (is_active) WHERE is_
 CREATE TABLE IF NOT EXISTS attendances (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    student UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+    student UUID REFERENCES students(id) ON DELETE SET NULL,
     faculty UUID NOT NULL REFERENCES faculties(id) ON DELETE CASCADE,
     subject UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+    enrollment_no VARCHAR(50) DEFAULT NULL,
+    student_name VARCHAR(120) DEFAULT NULL,
+    student_email VARCHAR(255) DEFAULT NULL,
+    department_code VARCHAR(30) DEFAULT NULL,
+    semester SMALLINT DEFAULT NULL,
+    section VARCHAR(20) DEFAULT NULL,
+    year SMALLINT DEFAULT NULL,
     timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
     status VARCHAR(20) NOT NULL DEFAULT 'present' CHECK (status IN ('present', 'absent')),
     location JSONB DEFAULT NULL,
@@ -233,6 +258,7 @@ CREATE TABLE IF NOT EXISTS attendances (
 
 CREATE INDEX IF NOT EXISTS idx_attendances_session_status ON attendances (session, status, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_attendances_student_time ON attendances (student, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_attendances_enrollment_no ON attendances (enrollment_no, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_attendances_subject_faculty ON attendances (subject, faculty, timestamp DESC);
 
 -- 2.3 ATTENDANCE AUDITS TABLE (Auto-Pruned)
@@ -240,9 +266,12 @@ CREATE TABLE IF NOT EXISTS attendance_audits (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     attendance UUID REFERENCES attendances(id) ON DELETE SET NULL,
     session UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    student UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+    student UUID REFERENCES students(id) ON DELETE SET NULL,
     faculty UUID NOT NULL REFERENCES faculties(id) ON DELETE CASCADE,
     subject UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+    enrollment_no VARCHAR(50) DEFAULT NULL,
+    student_name VARCHAR(120) DEFAULT NULL,
+    student_email VARCHAR(255) DEFAULT NULL,
     action VARCHAR(50) NOT NULL,
     method VARCHAR(30) NOT NULL,
     actor_role VARCHAR(20) NOT NULL CHECK (actor_role IN ('STUDENT', 'FACULTY', 'ADMIN')),
@@ -256,6 +285,7 @@ CREATE TABLE IF NOT EXISTS attendance_audits (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audits_session_student ON attendance_audits (session, student);
+CREATE INDEX IF NOT EXISTS idx_audits_enrollment_no ON attendance_audits (enrollment_no, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audits_created_at ON attendance_audits (created_at DESC);
 
 -- 2.4 DEVICE CHANGE REQUESTS TABLE

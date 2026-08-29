@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useApp } from "../store";
 import { Button, Card, Input, Badge } from "../components/Common";
 import CollegeHeader from "../components/CollegeHeader";
@@ -24,7 +24,15 @@ import {
   Sparkles,
   Lock,
   Unlock,
+  Search,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  ChevronLeft,
+  ChevronRight,
+  QrCode,
 } from "lucide-react";
+import QRCode from "react-qr-code";
 import apiClient from "../services/apiClient";
 
 type StudentAnalyticsSubject = {
@@ -120,6 +128,59 @@ function getAttendanceTone(percentage: number) {
   };
 }
 
+const normalizeId = (value: any): string => {
+  if (!value) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number") return String(value);
+  if (typeof value === "object") {
+    const raw =
+      value._id ??
+      value.id ??
+      value.$oid ??
+      (typeof value.toString === "function" && value.toString() !== "[object Object]"
+        ? value.toString()
+        : "");
+    if (raw) {
+      return typeof raw === "object" ? normalizeId(raw) : String(raw).trim();
+    }
+  }
+  return "";
+};
+
+const extractUserDepartmentId = (user: any): string => {
+  if (!user) return "";
+  return (
+    normalizeId(user.departmentId) ||
+    normalizeId(user.department) ||
+    normalizeId(user.department_id) ||
+    ""
+  );
+};
+
+const NAV_ITEMS = [
+  {
+    id: "users" as const,
+    label: "Manage Users",
+    icon: Users,
+    iconBg: "bg-blue-50 text-blue-600 border border-blue-100/80",
+    activeIconBg: "bg-blue-600 text-white shadow-xs",
+  },
+  {
+    id: "depts" as const,
+    label: "Departments",
+    icon: Building2,
+    iconBg: "bg-purple-50 text-purple-600 border border-purple-100/80",
+    activeIconBg: "bg-purple-600 text-white shadow-xs",
+  },
+  {
+    id: "subjects" as const,
+    label: "Subjects",
+    icon: BookOpen,
+    iconBg: "bg-teal-50 text-teal-600 border border-teal-100/80",
+    activeIconBg: "bg-teal-600 text-white shadow-xs",
+  },
+] as const;
+
 const AdminDashboard: React.FC = () => {
   const {
     currentUser,
@@ -158,18 +219,99 @@ const AdminDashboard: React.FC = () => {
   const [copyMessage, setCopyMessage] = useState("");
   const [genLoading, setGenLoading] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
+  const [genCooldownRemaining, setGenCooldownRemaining] = useState<number>(0);
   const [activeMetricModal, setActiveMetricModal] = useState<
     null | "all" | "students" | "faculty"
   >(null);
   const [metricDepartmentFilter, setMetricDepartmentFilter] = useState("");
   const [metricSemesterFilter, setMetricSemesterFilter] = useState("");
   const [metricSectionFilter, setMetricSectionFilter] = useState("");
+  const [metricSearchInput, setMetricSearchInput] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [metricSortField, setMetricSortField] = useState<
+    "name" | "department" | "semester" | "role" | "status"
+  >("name");
+  const [metricSortDirection, setMetricSortDirection] = useState<"asc" | "desc">(
+    "asc"
+  );
+  const [metricPage, setMetricPage] = useState(1);
+  const [metricPageSize, setMetricPageSize] = useState(25);
+
   const [studentAnalyticsOpen, setStudentAnalyticsOpen] = useState(false);
   const [studentAnalyticsLoading, setStudentAnalyticsLoading] = useState(false);
   const [studentAnalyticsError, setStudentAnalyticsError] = useState<string | null>(null);
   const [studentAnalyticsData, setStudentAnalyticsData] = useState<StudentAnalyticsData | null>(null);
   const [lockingFacultyIds, setLockingFacultyIds] = useState<Record<string, boolean>>({});
-  const [deviceLockMessage, setDeviceLockMessage] = useState<string | null>(null);
+  const [deviceLockMessages, setDeviceLockMessages] = useState<Record<string, string>>({});
+
+  const [linkCountdown, setLinkCountdown] = useState("");
+  const [isLinkExpired, setIsLinkExpired] = useState(false);
+
+  useEffect(() => {
+    if (genCooldownRemaining <= 0) return;
+    const timer = setInterval(() => {
+      setGenCooldownRemaining((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [genCooldownRemaining]);
+
+  useEffect(() => {
+    if (!generatedLink || !generatedConfig) {
+      setLinkCountdown("");
+      setIsLinkExpired(false);
+      return;
+    }
+
+    const expiryTimestamp = generatedConfig?.expiresAt
+      ? new Date(generatedConfig.expiresAt).getTime()
+      : Date.now() + (Number(generatedConfig?.expiryHours) || expiryHours || 24) * 3600 * 1000;
+
+    const updateCountdown = () => {
+      const now = Date.now();
+      const diffMs = expiryTimestamp - now;
+
+      if (diffMs <= 0) {
+        setLinkCountdown("Expired");
+        setIsLinkExpired(true);
+        return;
+      }
+
+      setIsLinkExpired(false);
+      const totalSeconds = Math.floor(diffMs / 1000);
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+
+      if (hours > 0) {
+        setLinkCountdown(`${hours}h ${minutes}m`);
+      } else if (minutes > 0) {
+        setLinkCountdown(`${minutes}m ${seconds}s`);
+      } else {
+        setLinkCountdown(`${seconds}s`);
+      }
+    };
+
+    updateCountdown();
+    const interval = setInterval(updateCountdown, 1000);
+    return () => clearInterval(interval);
+  }, [generatedLink, generatedConfig, expiryHours]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(metricSearchInput.trim().toLowerCase());
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [metricSearchInput]);
+
+  useEffect(() => {
+    setMetricPage(1);
+  }, [
+    metricDepartmentFilter,
+    metricSemesterFilter,
+    metricSectionFilter,
+    debouncedSearch,
+    activeMetricModal,
+  ]);
 
   useEffect(() => {
     setCollegeName(currentUser?.collegeName || "Your College Name");
@@ -177,10 +319,32 @@ const AdminDashboard: React.FC = () => {
   }, [currentUser?.collegeName, currentUser?.profilePhotoUrl]);
 
   useEffect(() => {
+    const controller = new AbortController();
+    const signal = controller.signal;
+
     if (!departments.length || !subjects.length || !users.length) {
-      void Promise.all([fetchDepartments(), fetchSubjects(), fetchUsers()]);
+      Promise.all([
+        fetchDepartments(false, signal),
+        fetchSubjects(false, signal),
+        fetchUsers(signal),
+      ]).catch((err) => {
+        if (err?.name !== "AbortError" && !signal.aborted) {
+          console.error("Admin dashboard data fetch error:", err);
+        }
+      });
     }
-  }, [departments.length, subjects.length, users.length, fetchDepartments, fetchSubjects, fetchUsers]);
+
+    return () => {
+      controller.abort();
+    };
+  }, [
+    departments.length,
+    subjects.length,
+    users.length,
+    fetchDepartments,
+    fetchSubjects,
+    fetchUsers,
+  ]);
 
   const sortedUsers = useMemo(
     () =>
@@ -196,23 +360,59 @@ const AdminDashboard: React.FC = () => {
 
   const stats = useMemo(() => {
     const allUsers = users || [];
-    const students = allUsers.filter(
-      (u: any) => String(u?.role).toUpperCase() === "STUDENT"
-    );
-    const faculty = allUsers.filter(
-      (u: any) => String(u?.role).toUpperCase() === "FACULTY"
-    );
+    let studentCount = 0;
+    let facultyCount = 0;
+    let boundedStudents = 0;
+    let unboundedStudents = 0;
+    let boundedFaculty = 0;
+    let unboundedFaculty = 0;
+    let lockedFaculty = 0;
+    let anyDeviceFaculty = 0;
+
+    for (const u of allUsers) {
+      const role = String(u?.role || "").toUpperCase();
+      const isBounded = String(u?.status || "") === "Bounded";
+
+      if (role === "STUDENT") {
+        studentCount++;
+        if (isBounded) boundedStudents++;
+        else unboundedStudents++;
+      } else if (role === "FACULTY") {
+        facultyCount++;
+        if (isBounded) boundedFaculty++;
+        else unboundedFaculty++;
+
+        if (u?.deviceLockEnabled === false) {
+          anyDeviceFaculty++;
+        } else {
+          lockedFaculty++;
+        }
+      }
+    }
+
+    const totalUsers = allUsers.length;
+    const totalBounded = boundedStudents + boundedFaculty;
+    const totalBoundedPct =
+      totalUsers > 0 ? Math.round((totalBounded / totalUsers) * 100) : 0;
+    const studentBoundedPct =
+      studentCount > 0 ? Math.round((boundedStudents / studentCount) * 100) : 0;
+    const facultyBoundedPct =
+      facultyCount > 0 ? Math.round((boundedFaculty / facultyCount) * 100) : 0;
 
     return {
-      totalUsers: allUsers.length,
-      totalStudents: students.length,
-      totalFaculty: faculty.length,
-      unboundedStudents: students.filter(
-        (u: any) => String(u?.status) !== "Bounded"
-      ).length,
-      unboundedFaculty: faculty.filter(
-        (u: any) => String(u?.status) !== "Bounded"
-      ).length,
+      totalUsers,
+      totalStudents: studentCount,
+      totalFaculty: facultyCount,
+      boundedStudents,
+      unboundedStudents,
+      studentBoundedPct,
+      boundedFaculty,
+      unboundedFaculty,
+      facultyBoundedPct,
+      lockedFaculty,
+      anyDeviceFaculty,
+      totalBounded,
+      totalBoundedPct,
     };
   }, [users]);
 
@@ -222,28 +422,69 @@ const AdminDashboard: React.FC = () => {
         key: "all" as const,
         label: "Total Users",
         value: stats.totalUsers,
-        helperLabel: "Active Accounts",
-        helperValue: stats.totalUsers,
         icon: Users,
         accent: "text-blue-700 bg-blue-50 border-blue-200",
+        progressPct: stats.totalBoundedPct,
+        progressLabel: "Bound to Device",
+        progressColor: "bg-gradient-to-r from-blue-500 to-indigo-600",
+        renderSecondary: (
+          <div className="flex items-center gap-1.5 text-xs text-slate-600">
+            <span>
+              <strong className="font-bold text-slate-900">{stats.totalFaculty}</strong>{" "}
+              Faculty
+            </span>
+            <span className="font-bold text-slate-300">|</span>
+            <span>
+              <strong className="font-bold text-slate-900">{stats.totalStudents}</strong>{" "}
+              Students
+            </span>
+          </div>
+        ),
       },
       {
         key: "students" as const,
         label: "Students",
         value: stats.totalStudents,
-        helperLabel: "Unbounded",
-        helperValue: stats.unboundedStudents,
         icon: GraduationCap,
         accent: "text-emerald-700 bg-emerald-50 border-emerald-200",
+        progressPct: stats.studentBoundedPct,
+        progressLabel: "Bound to Device",
+        progressColor: "bg-gradient-to-r from-emerald-500 to-teal-500",
+        renderSecondary:
+          stats.unboundedStudents > 0 ? (
+            <span className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-700">
+              <TriangleAlert size={13} className="shrink-0 text-amber-600" />
+              <span>{stats.unboundedStudents} Unbounded (no device)</span>
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">
+              <CheckCircle2 size={13} className="shrink-0 text-emerald-600" />
+              <span>All Devices Bound</span>
+            </span>
+          ),
       },
       {
         key: "faculty" as const,
         label: "Faculty",
         value: stats.totalFaculty,
-        helperLabel: "Unbounded",
-        helperValue: stats.unboundedFaculty,
         icon: UserCheck,
         accent: "text-amber-700 bg-amber-50 border-amber-200",
+        progressPct: stats.facultyBoundedPct,
+        progressLabel: "Bound to Device",
+        progressColor: "bg-gradient-to-r from-amber-500 to-orange-500",
+        renderSecondary: (
+          <div className="flex items-center gap-1.5 text-xs text-slate-600">
+            <span>
+              <strong className="font-bold text-slate-900">{stats.lockedFaculty}</strong>{" "}
+              Device Locked
+            </span>
+            <span className="font-bold text-slate-300">|</span>
+            <span>
+              <strong className="font-bold text-slate-900">{stats.anyDeviceFaculty}</strong>{" "}
+              Any-Device
+            </span>
+          </div>
+        ),
       },
     ],
     [stats]
@@ -256,7 +497,28 @@ const AdminDashboard: React.FC = () => {
     setMetricDepartmentFilter("");
     setMetricSemesterFilter("");
     setMetricSectionFilter("");
+    setMetricSearchInput("");
+    setDebouncedSearch("");
+    setMetricPage(1);
+    setMetricSortField("name");
+    setMetricSortDirection("asc");
   };
+
+  const handleMetricSort = useCallback(
+    (field: "name" | "department" | "semester" | "role" | "status") => {
+      setMetricSortField((prevField) => {
+        if (prevField === field) {
+          setMetricSortDirection((prevDir) =>
+            prevDir === "asc" ? "desc" : "asc"
+          );
+          return prevField;
+        }
+        setMetricSortDirection("asc");
+        return field;
+      });
+    },
+    []
+  );
 
   const metricModalTitle = useMemo(() => {
     switch (activeMetricModal) {
@@ -271,39 +533,46 @@ const AdminDashboard: React.FC = () => {
     }
   }, [activeMetricModal]);
 
-  const metricUsers = useMemo(() => {
-    const nextUsers = [...sortedUsers];
-    const scopedUsers = nextUsers.filter((user: any) => {
-      if (activeMetricModal === "students") {
-        return String(user?.role).toUpperCase() === "STUDENT";
-      }
-      if (activeMetricModal === "faculty") {
-        return String(user?.role).toUpperCase() === "FACULTY";
-      }
-      return true;
-    });
+  const departmentMap = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const d of departments || []) {
+      const id = normalizeId(d);
+      if (id) map.set(id, d);
+    }
+    return map;
+  }, [departments]);
 
-    return scopedUsers.filter((user: any) => {
-      if (
-        metricDepartmentFilter &&
-        String(user?.departmentId || "") !== metricDepartmentFilter
-      ) {
-        return false;
+  const metricUsers = useMemo(() => {
+    const targetDept = metricDepartmentFilter.trim();
+    const targetSem = metricSemesterFilter.trim();
+    const targetSec = metricSectionFilter.trim().toUpperCase();
+    const isStudents = activeMetricModal === "students";
+    const isFaculty = activeMetricModal === "faculty";
+
+    return (sortedUsers || []).filter((user: any) => {
+      const userRole = String(user?.role || "").toUpperCase();
+      if (isStudents && userRole !== "STUDENT") return false;
+      if (isFaculty && userRole !== "FACULTY") return false;
+
+      if (targetDept) {
+        const userDept = extractUserDepartmentId(user);
+        if (userDept !== targetDept) {
+          return false;
+        }
       }
-      if (
-        activeMetricModal === "students" &&
-        metricSemesterFilter &&
-        String(user?.semester || "") !== metricSemesterFilter
-      ) {
-        return false;
+
+      if (isStudents) {
+        if (targetSem && String(user?.semester ?? "").trim() !== targetSem) {
+          return false;
+        }
+        if (
+          targetSec &&
+          String(user?.section ?? "").trim().toUpperCase() !== targetSec
+        ) {
+          return false;
+        }
       }
-      if (
-        activeMetricModal === "students" &&
-        metricSectionFilter &&
-        String(user?.section || "").toUpperCase() !== metricSectionFilter
-      ) {
-        return false;
-      }
+
       return true;
     });
   }, [
@@ -314,7 +583,108 @@ const AdminDashboard: React.FC = () => {
     metricSectionFilter,
   ]);
 
+  const filteredAndSortedMetricUsers = useMemo(() => {
+    let result = metricUsers;
+
+    if (debouncedSearch) {
+      result = result.filter((u: any) => {
+        const name = String(u?.name || "").toLowerCase();
+        const email = String(u?.email || "").toLowerCase();
+        const enrollment = String(
+          u?.enrollmentNo || u?.enrollment_no || ""
+        ).toLowerCase();
+        const deptName = String(
+          u?.departmentName ||
+            (typeof u?.department === "object" ? u?.department?.name : "") ||
+            departmentMap.get(extractUserDepartmentId(u))?.name ||
+            ""
+        ).toLowerCase();
+
+        return (
+          name.includes(debouncedSearch) ||
+          email.includes(debouncedSearch) ||
+          enrollment.includes(debouncedSearch) ||
+          deptName.includes(debouncedSearch)
+        );
+      });
+    }
+
+    if (metricSortField) {
+      result = [...result].sort((a: any, b: any) => {
+        let valA = "";
+        let valB = "";
+
+        if (metricSortField === "name") {
+          valA = String(a?.name || "").toLowerCase();
+          valB = String(b?.name || "").toLowerCase();
+        } else if (metricSortField === "department") {
+          valA = String(
+            a?.departmentName ||
+              (typeof a?.department === "object" ? a?.department?.name : "") ||
+              departmentMap.get(extractUserDepartmentId(a))?.name ||
+              ""
+          ).toLowerCase();
+          valB = String(
+            b?.departmentName ||
+              (typeof b?.department === "object" ? b?.department?.name : "") ||
+              departmentMap.get(extractUserDepartmentId(b))?.name ||
+              ""
+          ).toLowerCase();
+        } else if (metricSortField === "semester") {
+          const semA = Number(a?.semester) || 0;
+          const semB = Number(b?.semester) || 0;
+          return metricSortDirection === "asc" ? semA - semB : semB - semA;
+        } else if (metricSortField === "role") {
+          valA = String(a?.role || "").toLowerCase();
+          valB = String(b?.role || "").toLowerCase();
+        } else if (metricSortField === "status") {
+          valA = String(a?.status || "").toLowerCase();
+          valB = String(b?.status || "").toLowerCase();
+        }
+
+        const cmp = valA.localeCompare(valB);
+        return metricSortDirection === "asc" ? cmp : -cmp;
+      });
+    }
+
+    return result;
+  }, [
+    metricUsers,
+    debouncedSearch,
+    metricSortField,
+    metricSortDirection,
+    departmentMap,
+  ]);
+
+  const totalFilteredMetricUsers = filteredAndSortedMetricUsers.length;
+  const totalMetricPages = Math.max(
+    1,
+    Math.ceil(totalFilteredMetricUsers / metricPageSize)
+  );
+  const safeMetricPage = Math.min(Math.max(1, metricPage), totalMetricPages);
+
+  const paginatedMetricUsers = useMemo(() => {
+    const startIndex = (safeMetricPage - 1) * metricPageSize;
+    return filteredAndSortedMetricUsers.slice(
+      startIndex,
+      startIndex + metricPageSize
+    );
+  }, [filteredAndSortedMetricUsers, safeMetricPage, metricPageSize]);
+
+  const handleOpenGenModal = useCallback(() => {
+    setShowGenModal(true);
+    setGenError(null);
+    setGeneratedLink(null);
+    setGeneratedToken(null);
+    setGeneratedConfig(null);
+    setCopyMessage("");
+    setExpiryHours(24);
+    setMaxRegistrations(1);
+  }, []);
+
   const handleGenerate = async () => {
+    if (genLoading || genCooldownRemaining > 0) return;
+
     setGenError(null);
     setGeneratedToken(null);
     setGeneratedLink(null);
@@ -369,6 +739,7 @@ const AdminDashboard: React.FC = () => {
           maxRegistrations: safeMaxRegistrations,
         }
       );
+      setGenCooldownRemaining(5);
     } catch (err: any) {
       setGenError(err?.message || "Network error");
     } finally {
@@ -440,16 +811,26 @@ const AdminDashboard: React.FC = () => {
     if (!facultyId || lockingFacultyIds[facultyId]) return;
 
     const nextEnabled = !(faculty?.deviceLockEnabled !== false);
-    setDeviceLockMessage(null);
+    setDeviceLockMessages((prev) => {
+      const next = { ...prev };
+      delete next[facultyId];
+      return next;
+    });
     setLockingFacultyIds((prev) => ({ ...prev, [facultyId]: true }));
 
     try {
       const res: any = await updateFacultyDeviceLock(facultyId, nextEnabled);
       if (!res?.ok) {
-        setDeviceLockMessage(res?.error || "Unable to update faculty device access.");
+        setDeviceLockMessages((prev) => ({
+          ...prev,
+          [facultyId]: res?.error || "Unable to update faculty device access.",
+        }));
       }
     } catch (err: any) {
-      setDeviceLockMessage(err?.message || "Unable to update faculty device access.");
+      setDeviceLockMessages((prev) => ({
+        ...prev,
+        [facultyId]: err?.message || "Unable to update faculty device access.",
+      }));
     } finally {
       setLockingFacultyIds((prev) => {
         const next = { ...prev };
@@ -514,60 +895,53 @@ const AdminDashboard: React.FC = () => {
 
       {/* LEFT SIDEBAR */}
       <div className="lg:col-span-1">
-        <Card className="sticky top-4">
-          <div className="flex flex-col gap-2">
+        <Card className="sticky top-4 !p-3 sm:!p-4">
+          <div className="flex flex-col gap-1.5">
+            <div className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+              Navigation
+            </div>
 
-            <button
-              onClick={() => setActiveTab("users")}
-              className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium ${
-                activeTab === "users"
-                  ? "bg-blue-50 text-blue-700"
-                  : "text-slate-600 hover:bg-slate-50"
-              }`}
-            >
-              <Users size={18} /> Manage Users
-            </button>
+            {NAV_ITEMS.map((item) => {
+              const Icon = item.icon;
+              const isActive = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setActiveTab(item.id)}
+                  aria-current={isActive ? "page" : undefined}
+                  className={`group relative flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium transition-all duration-150 ${
+                    isActive
+                      ? "border-l-[3px] border-blue-600 bg-blue-50/80 font-semibold text-blue-800 shadow-xs"
+                      : "border-l-[3px] border-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                  }`}
+                >
+                  <span
+                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors ${
+                      isActive ? item.activeIconBg : item.iconBg
+                    }`}
+                  >
+                    <Icon size={17} />
+                  </span>
+                  <span className="truncate">{item.label}</span>
+                </button>
+              );
+            })}
 
-            <button
-              onClick={() => setActiveTab("depts")}
-              className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium ${
-                activeTab === "depts"
-                  ? "bg-blue-50 text-blue-700"
-                  : "text-slate-600 hover:bg-slate-50"
-              }`}
-            >
-              <Building2 size={18} /> Departments
-            </button>
+            <div className="my-2.5 border-t border-slate-100" />
 
-            <button
-              onClick={() => setActiveTab("subjects")}
-              className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium ${
-                activeTab === "subjects"
-                  ? "bg-blue-50 text-blue-700"
-                  : "text-slate-600 hover:bg-slate-50"
-              }`}
-            >
-              <BookOpen size={18} /> Subjects
-            </button>
-
-            <div className="h-px bg-slate-100 my-2" />
-
-            <button
-              onClick={() => {
-                setShowGenModal(true);
-                setGenError(null);
-                setGeneratedLink(null);
-                setGeneratedToken(null);
-                setGeneratedConfig(null);
-                setCopyMessage("");
-                setExpiryHours(24);
-                setMaxRegistrations(1);
-              }}
-              className="flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              <Plus size={18} /> Generate Registration Link
-            </button>
-
+            <div className="px-1">
+              <button
+                type="button"
+                onClick={handleOpenGenModal}
+                className="group relative flex w-full items-center justify-center gap-2.5 overflow-hidden rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 px-4 py-3 text-sm font-semibold text-white shadow-md shadow-blue-500/20 transition-all duration-200 hover:shadow-lg hover:shadow-blue-500/30 hover:brightness-105 active:scale-[0.98]"
+              >
+                <span className="flex h-6 w-6 items-center justify-center rounded-md bg-white/20 text-white backdrop-blur-xs">
+                  <Plus size={15} strokeWidth={2.5} />
+                </span>
+                <span className="truncate">Generate Registration Link</span>
+              </button>
+            </div>
           </div>
         </Card>
       </div>
@@ -588,36 +962,56 @@ const AdminDashboard: React.FC = () => {
                     key={card.key}
                     type="button"
                     onClick={() => openMetricModal(card.key)}
-                    className="min-w-0 text-left"
+                    className="group min-w-0 text-left focus:outline-none"
                   >
-                    <Card className="flex min-h-[150px] flex-col justify-between p-5 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md">
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="min-w-0">
-                          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-                            {card.label}
-                          </p>
-                          <p className="mt-2 text-3xl font-bold leading-none text-slate-950">
-                            {card.value}
-                          </p>
+                    <Card className="flex min-h-[175px] flex-col justify-between p-5 transition-all duration-200 group-hover:-translate-y-0.5 group-hover:border-slate-300 group-hover:shadow-md">
+                      <div>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                              {card.label}
+                            </p>
+                            <p className="mt-1.5 text-3xl font-bold leading-none text-slate-950">
+                              {card.value}
+                            </p>
+                          </div>
+                          <div
+                            className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border ${card.accent}`}
+                          >
+                            <Icon size={19} />
+                          </div>
                         </div>
-                        <div
-                          className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border ${card.accent}`}
-                        >
-                          <Icon size={19} />
+
+                        <div className="mt-3.5 flex items-center">
+                          {card.renderSecondary}
                         </div>
                       </div>
-                      <div className="mt-5 flex items-center justify-between gap-3">
-                        <div className="inline-flex min-h-9 items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-                          <span className="text-xs font-medium text-slate-500">
-                            {card.helperLabel}
+
+                      <div className="mt-4 border-t border-slate-100/90 pt-3">
+                        <div className="mb-1.5 flex items-center justify-between text-[11px] font-medium text-slate-500">
+                          <span className="flex items-center gap-1">
+                            <span>{card.progressLabel}</span>
                           </span>
-                          <span className="text-sm font-bold text-slate-950">
-                            {card.helperValue}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-slate-700">
+                              {card.progressPct}%
+                            </span>
+                            <span className="flex items-center gap-1 text-slate-400 transition-colors group-hover:text-blue-600">
+                              <span className="relative flex h-1.5 w-1.5">
+                                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-75"></span>
+                                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-blue-500"></span>
+                              </span>
+                            </span>
+                          </div>
                         </div>
-                        <span className="text-xs font-medium text-slate-400">
-                          Click to view
-                        </span>
+                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+                          <div
+                            className={`h-full rounded-full transition-all duration-500 ${card.progressColor}`}
+                            style={{
+                              width: `${Math.min(Math.max(card.progressPct, 0), 100)}%`,
+                            }}
+                          />
+                        </div>
                       </div>
                     </Card>
                   </button>
@@ -634,50 +1028,86 @@ const AdminDashboard: React.FC = () => {
         {activeTab === "subjects" && <ManageSubjectsCatalog />}
       </div>
 
-      {/* TOKEN MODAL */}
+      {/* TOKEN / USER METRIC MODAL */}
       {activeMetricModal && (
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 sm:p-5">
           <div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl bg-white shadow-xl">
-            <div className="flex items-center justify-between gap-4 border-b border-slate-200 px-4 py-4 sm:px-6">
+            {/* STICKY MODAL HEADER WITH SEARCH */}
+            <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3.5 sm:px-6">
               <div>
-                <h3 className="text-lg font-semibold text-slate-900">
+                <h3 className="text-lg font-bold text-slate-900">
                   {metricModalTitle}
                 </h3>
-                <p className="text-sm text-slate-500">
-                  {metricUsers.length} record{metricUsers.length === 1 ? "" : "s"}
+                <p className="text-xs text-slate-500">
+                  Showing {paginatedMetricUsers.length} of {totalFilteredMetricUsers} record
+                  {totalFilteredMetricUsers === 1 ? "" : "s"}
+                  {totalFilteredMetricUsers !== metricUsers.length
+                    ? ` (filtered from ${metricUsers.length})`
+                    : ""}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setActiveMetricModal(null)}
-                className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
-              >
-                <X size={18} />
-              </button>
+
+              <div className="flex items-center gap-2.5">
+                {/* SEARCH BAR */}
+                <div className="relative w-56 sm:w-72">
+                  <Search
+                    size={15}
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Search name, email, roll no..."
+                    value={metricSearchInput}
+                    onChange={(e) => setMetricSearchInput(e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 py-1.5 pl-9 pr-8 text-xs font-medium text-slate-800 placeholder-slate-400 outline-none transition focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100"
+                  />
+                  {metricSearchInput && (
+                    <button
+                      type="button"
+                      onClick={() => setMetricSearchInput("")}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-slate-400 hover:bg-slate-200 hover:text-slate-700"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveMetricModal(null)}
+                  className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                >
+                  <X size={18} />
+                </button>
+              </div>
             </div>
 
+            {/* FILTERS */}
             {(activeMetricModal === "students" ||
               activeMetricModal === "faculty") && (
-              <div className="border-b border-slate-200 px-4 py-4 sm:px-6">
+              <div className="border-b border-slate-200 bg-slate-50/50 px-4 py-3.5 sm:px-6">
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
                   <div>
                     <label className="mb-1 block text-xs font-semibold text-slate-600">
                       Department
                     </label>
                     <select
-                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 outline-none focus:border-blue-500"
                       value={metricDepartmentFilter}
                       onChange={(e) => setMetricDepartmentFilter(e.target.value)}
                     >
                       <option value="">All Departments</option>
-                      {departments.map((department: any) => (
-                        <option
-                          key={department._id || department.id}
-                          value={department._id || department.id}
-                        >
-                          {department.name}
-                        </option>
-                      ))}
+                      {departments.map((department: any) => {
+                        const deptId = normalizeId(department);
+                        return (
+                          <option
+                            key={deptId || department.name}
+                            value={deptId}
+                          >
+                            {department.name}
+                          </option>
+                        );
+                      })}
                     </select>
                   </div>
 
@@ -688,7 +1118,7 @@ const AdminDashboard: React.FC = () => {
                           Semester
                         </label>
                         <select
-                          className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 outline-none focus:border-blue-500"
                           value={metricSemesterFilter}
                           onChange={(e) => setMetricSemesterFilter(e.target.value)}
                         >
@@ -705,7 +1135,7 @@ const AdminDashboard: React.FC = () => {
                           Section
                         </label>
                         <select
-                          className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 outline-none focus:border-blue-500"
                           value={metricSectionFilter}
                           onChange={(e) => setMetricSectionFilter(e.target.value)}
                         >
@@ -723,11 +1153,12 @@ const AdminDashboard: React.FC = () => {
                   <div className="flex items-end">
                     <Button
                       variant="secondary"
-                      className="w-full"
+                      className="!py-1.5 !text-xs w-full"
                       onClick={() => {
                         setMetricDepartmentFilter("");
                         setMetricSemesterFilter("");
                         setMetricSectionFilter("");
+                        setMetricSearchInput("");
                       }}
                     >
                       Reset Filters
@@ -737,43 +1168,126 @@ const AdminDashboard: React.FC = () => {
               </div>
             )}
 
-            <div className="overflow-auto px-4 py-4 sm:px-6">
-              {deviceLockMessage ? (
-                <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                  {deviceLockMessage}
-                </div>
-              ) : null}
+            {/* TABLE */}
+            <div className="flex-1 overflow-auto px-4 py-4 sm:px-6">
               <table className="w-full min-w-[760px] text-left text-sm">
-                <thead className="sticky top-0 bg-slate-50">
+                <thead className="sticky top-0 z-10 bg-slate-50 shadow-xs">
                   <tr>
-                    <th className="px-4 py-3">Name</th>
-                    <th className="px-4 py-3">Role</th>
-                    <th className="px-4 py-3">Department</th>
+                    <th
+                      onClick={() => handleMetricSort("name")}
+                      className="cursor-pointer select-none px-4 py-3 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span>Name</span>
+                        {metricSortField === "name" ? (
+                          metricSortDirection === "asc" ? (
+                            <ArrowUp size={13} className="text-blue-600" />
+                          ) : (
+                            <ArrowDown size={13} className="text-blue-600" />
+                          )
+                        ) : (
+                          <ArrowUpDown size={13} className="text-slate-400" />
+                        )}
+                      </div>
+                    </th>
+                    <th
+                      onClick={() => handleMetricSort("role")}
+                      className="cursor-pointer select-none px-4 py-3 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span>Role</span>
+                        {metricSortField === "role" ? (
+                          metricSortDirection === "asc" ? (
+                            <ArrowUp size={13} className="text-blue-600" />
+                          ) : (
+                            <ArrowDown size={13} className="text-blue-600" />
+                          )
+                        ) : (
+                          <ArrowUpDown size={13} className="text-slate-400" />
+                        )}
+                      </div>
+                    </th>
+                    <th
+                      onClick={() => handleMetricSort("department")}
+                      className="cursor-pointer select-none px-4 py-3 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span>Department</span>
+                        {metricSortField === "department" ? (
+                          metricSortDirection === "asc" ? (
+                            <ArrowUp size={13} className="text-blue-600" />
+                          ) : (
+                            <ArrowDown size={13} className="text-blue-600" />
+                          )
+                        ) : (
+                          <ArrowUpDown size={13} className="text-slate-400" />
+                        )}
+                      </div>
+                    </th>
                     {activeMetricModal === "students" ? (
                       <>
-                        <th className="px-4 py-3">Semester</th>
-                        <th className="px-4 py-3">Section</th>
+                        <th
+                          onClick={() => handleMetricSort("semester")}
+                          className="cursor-pointer select-none px-4 py-3 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <span>Semester</span>
+                            {metricSortField === "semester" ? (
+                              metricSortDirection === "asc" ? (
+                                <ArrowUp size={13} className="text-blue-600" />
+                              ) : (
+                                <ArrowDown size={13} className="text-blue-600" />
+                              )
+                            ) : (
+                              <ArrowUpDown size={13} className="text-slate-400" />
+                            )}
+                          </div>
+                        </th>
+                        <th className="px-4 py-3 text-xs font-semibold text-slate-600">
+                          Section
+                        </th>
                       </>
                     ) : null}
-                    <th className="px-4 py-3">Status</th>
+                    <th
+                      onClick={() => handleMetricSort("status")}
+                      className="cursor-pointer select-none px-4 py-3 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span>Status</span>
+                        {metricSortField === "status" ? (
+                          metricSortDirection === "asc" ? (
+                            <ArrowUp size={13} className="text-blue-600" />
+                          ) : (
+                            <ArrowDown size={13} className="text-blue-600" />
+                          )
+                        ) : (
+                          <ArrowUpDown size={13} className="text-slate-400" />
+                        )}
+                      </div>
+                    </th>
                     {activeMetricModal === "students" ? (
-                      <th className="px-4 py-3 text-right">Analytics</th>
+                      <th className="px-4 py-3 text-right text-xs font-semibold text-slate-600">
+                        Analytics
+                      </th>
                     ) : null}
                   </tr>
                 </thead>
                 <tbody>
-                  {metricUsers.length === 0 ? (
+                  {paginatedMetricUsers.length === 0 ? (
                     <tr>
                       <td
                         colSpan={activeMetricModal === "students" ? 7 : 4}
-                        className="px-4 py-10 text-center text-sm text-slate-400"
+                        className="px-4 py-12 text-center text-sm text-slate-400"
                       >
-                        No records match the selected filters.
+                        No records match your search or filter criteria.
                       </td>
                     </tr>
                   ) : (
-                    metricUsers.map((user: any) => (
-                      <tr key={`${activeMetricModal}-${user.id}`} className="border-t">
+                    paginatedMetricUsers.map((user: any) => (
+                      <tr
+                        key={`${activeMetricModal}-${user.id || user._id}`}
+                        className="border-t transition-colors hover:bg-slate-50/70"
+                      >
                         <td className="px-4 py-3">
                           <div className="font-semibold text-slate-800">
                             {user.name}
@@ -786,7 +1300,12 @@ const AdminDashboard: React.FC = () => {
                           <Badge>{user.role}</Badge>
                         </td>
                         <td className="px-4 py-3">
-                          {user.departmentName || "Unassigned"}
+                          {user.departmentName ||
+                            (typeof user.department === "object"
+                              ? user.department?.name
+                              : null) ||
+                            departmentMap.get(extractUserDepartmentId(user))?.name ||
+                            "Unassigned"}
                         </td>
                         {activeMetricModal === "students" ? (
                           <>
@@ -835,14 +1354,24 @@ const AdminDashboard: React.FC = () => {
                                   </span>
                                 </span>
                                 <span className="min-w-24 text-left text-xs font-semibold">
-                                  {user.deviceLockEnabled !== false ? "Device locked" : "Any device"}
+                                  {user.deviceLockEnabled !== false
+                                    ? "Device locked"
+                                    : "Any device"}
                                 </span>
                               </button>
-                              <span className="text-xs text-slate-500">
-                                {user.deviceLockEnabled !== false
-                                  ? "Login allowed only from registered device"
-                                  : "Password login allowed from any device"}
-                              </span>
+
+                              {deviceLockMessages[String(user.id || "")] ? (
+                                <div className="flex items-center gap-1.5 text-xs font-semibold text-rose-600">
+                                  <TriangleAlert size={13} className="shrink-0" />
+                                  <span>{deviceLockMessages[String(user.id || "")]}</span>
+                                </div>
+                              ) : (
+                                <span className="text-xs text-slate-500">
+                                  {user.deviceLockEnabled !== false
+                                    ? "Login allowed only from registered device"
+                                    : "Password login allowed from any device"}
+                                </span>
+                              )}
                             </div>
                           ) : (
                             <Badge color={user.status === "Bounded" ? "green" : "red"}>
@@ -854,10 +1383,10 @@ const AdminDashboard: React.FC = () => {
                           <td className="px-4 py-3 text-right">
                             <Button
                               variant="outline"
-                              className="whitespace-nowrap"
+                              className="whitespace-nowrap !text-xs !py-1.5"
                               onClick={() => openStudentAnalytics(user)}
                             >
-                              <BarChart3 size={16} />
+                              <BarChart3 size={15} />
                               See Analytics
                             </Button>
                           </td>
@@ -867,6 +1396,73 @@ const AdminDashboard: React.FC = () => {
                   )}
                 </tbody>
               </table>
+            </div>
+
+            {/* PAGINATION FOOTER */}
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/90 px-4 py-3 sm:px-6">
+              <div className="flex items-center gap-3 text-xs text-slate-600">
+                <span>
+                  Showing{" "}
+                  <strong className="font-semibold text-slate-800">
+                    {totalFilteredMetricUsers === 0
+                      ? 0
+                      : (safeMetricPage - 1) * metricPageSize + 1}
+                  </strong>{" "}
+                  to{" "}
+                  <strong className="font-semibold text-slate-800">
+                    {Math.min(safeMetricPage * metricPageSize, totalFilteredMetricUsers)}
+                  </strong>{" "}
+                  of{" "}
+                  <strong className="font-semibold text-slate-800">
+                    {totalFilteredMetricUsers}
+                  </strong>{" "}
+                  records
+                </span>
+
+                <div className="flex items-center gap-1.5">
+                  <label className="text-slate-500">Rows:</label>
+                  <select
+                    value={metricPageSize}
+                    onChange={(e) => {
+                      setMetricPageSize(Number(e.target.value));
+                      setMetricPage(1);
+                    }}
+                    className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 outline-none focus:border-blue-500"
+                  >
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  className="!px-2.5 !py-1 !text-xs"
+                  disabled={safeMetricPage <= 1}
+                  onClick={() => setMetricPage((p) => Math.max(1, p - 1))}
+                >
+                  <ChevronLeft size={14} />
+                  Previous
+                </Button>
+
+                <span className="text-xs font-semibold text-slate-700">
+                  Page {safeMetricPage} of {totalMetricPages}
+                </span>
+
+                <Button
+                  variant="outline"
+                  className="!px-2.5 !py-1 !text-xs"
+                  disabled={safeMetricPage >= totalMetricPages}
+                  onClick={() =>
+                    setMetricPage((p) => Math.min(totalMetricPages, p + 1))
+                  }
+                >
+                  Next
+                  <ChevronRight size={14} />
+                </Button>
+              </div>
             </div>
           </div>
         </div>
@@ -1285,11 +1881,50 @@ const AdminDashboard: React.FC = () => {
                 ) : null}
 
                 {generatedLink ? (
-                  <div className="min-w-0 space-y-4 rounded-3xl border border-slate-200 bg-slate-50 p-4 text-sm">
-                    <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-                      <Link2 size={16} className="text-sky-600" />
-                      Registration link ready
+                  <div className="min-w-0 space-y-4 rounded-3xl border border-slate-200 bg-slate-50 p-4 text-sm sm:p-5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-sm font-bold text-slate-800">
+                        <Link2 size={16} className="text-blue-600" />
+                        <span>Registration Link Ready</span>
+                      </div>
+
+                      {linkCountdown ? (
+                        <span
+                          className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold shadow-xs ${
+                            isLinkExpired
+                              ? "border border-rose-200 bg-rose-50 text-rose-700"
+                              : "border border-amber-200 bg-amber-50 text-amber-800"
+                          }`}
+                        >
+                          <span>⏳</span>
+                          <span>
+                            {isLinkExpired ? "Link Expired" : `Expires in ${linkCountdown}`}
+                          </span>
+                        </span>
+                      ) : null}
                     </div>
+
+                    {/* QR CODE DISPLAY */}
+                    <div className="flex flex-col items-center justify-center rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+                      <div className="rounded-2xl border-4 border-slate-100 bg-white p-3 shadow-md">
+                        <QRCode
+                          value={generatedLink}
+                          size={168}
+                          level="M"
+                          style={{ height: "auto", maxWidth: "100%", width: "100%" }}
+                        />
+                      </div>
+                      <div className="mt-3 text-center">
+                        <p className="flex items-center justify-center gap-1.5 text-xs font-bold text-slate-800">
+                          <QrCode size={14} className="text-blue-600" />
+                          Scan to Register ({genType === "student" ? "Student" : "Faculty"})
+                        </p>
+                        <p className="mt-0.5 text-[11px] text-slate-400">
+                          Project on screen or screenshot to share directly with applicants
+                        </p>
+                      </div>
+                    </div>
+
                     <div className="flex min-w-0 flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-3 sm:flex-row sm:items-center">
                       <input
                         readOnly
@@ -1298,7 +1933,7 @@ const AdminDashboard: React.FC = () => {
                         className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                       />
                       <Button onClick={copyToken} className="w-full shrink-0 sm:w-auto">
-                        <Copy size={16} /> Copy
+                        <Copy size={16} /> Copy Link
                       </Button>
                     </div>
                     {copyMessage ? (
@@ -1312,7 +1947,7 @@ const AdminDashboard: React.FC = () => {
                         </p>
                       </div>
                       <div className="rounded-xl bg-white p-3 border border-slate-200">
-                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Expiry</p>
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Expiry Window</p>
                         <p className="mt-1 text-lg font-semibold text-slate-900">
                           {generatedConfig?.expiryHours || expiryHours} hours
                         </p>
@@ -1336,14 +1971,22 @@ const AdminDashboard: React.FC = () => {
                           setCopyMessage("");
                         }}
                       >
-                        Create Another
+                        Create Another Link
                       </Button>
                     </div>
                   </div>
                 ) : (
                   <div className="flex flex-col gap-3 sm:flex-row">
-                    <Button disabled={genLoading} onClick={handleGenerate} className="w-full sm:w-auto">
-                      {genLoading ? "Generating..." : "Generate Link"}
+                    <Button
+                      disabled={genLoading || genCooldownRemaining > 0}
+                      onClick={handleGenerate}
+                      className="w-full sm:w-auto"
+                    >
+                      {genLoading
+                        ? "Generating..."
+                        : genCooldownRemaining > 0
+                        ? `Wait ${genCooldownRemaining}s...`
+                        : "Generate Link"}
                     </Button>
                     <Button variant="secondary" onClick={() => setShowGenModal(false)} className="w-full sm:w-auto">
                       Cancel
