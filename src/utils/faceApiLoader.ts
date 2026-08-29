@@ -110,11 +110,31 @@ export function loadModelsIfNeeded() {
   return modelsPromise;
 }
 
-function drawSmallSquare(source: CanvasImageSource, width: number, height: number) {
-  const canvas = document.createElement("canvas");
-  canvas.width = FACE_API_INPUT_SIZE;
-  canvas.height = FACE_API_INPUT_SIZE;
-  const context = canvas.getContext("2d", { willReadFrequently: true });
+let reusableVideoCanvas: HTMLCanvasElement | null = null;
+let reusableVideoContext: CanvasRenderingContext2D | null = null;
+
+function getReusableCanvas(width: number, height: number): HTMLCanvasElement {
+  if (!reusableVideoCanvas) {
+    reusableVideoCanvas = document.createElement("canvas");
+    reusableVideoCanvas.width = FACE_API_INPUT_SIZE;
+    reusableVideoCanvas.height = FACE_API_INPUT_SIZE;
+    reusableVideoContext = reusableVideoCanvas.getContext("2d", { willReadFrequently: true });
+  }
+  return reusableVideoCanvas;
+}
+
+function drawSmallSquare(source: CanvasImageSource, width: number, height: number, reuse = false) {
+  const canvas = reuse
+    ? getReusableCanvas(FACE_API_INPUT_SIZE, FACE_API_INPUT_SIZE)
+    : document.createElement("canvas");
+  if (!reuse) {
+    canvas.width = FACE_API_INPUT_SIZE;
+    canvas.height = FACE_API_INPUT_SIZE;
+  }
+  const context = reuse && reusableVideoContext
+    ? reusableVideoContext
+    : canvas.getContext("2d", { willReadFrequently: true });
+
   if (!context || !width || !height) {
     throw new Error("Unable to prepare the face frame.");
   }
@@ -199,13 +219,13 @@ export async function computeDescriptorFromImageURL(url: string) {
 
 export async function computeDescriptorFromVideoFrame(video: HTMLVideoElement) {
   const faceapi = await loadModelsIfNeeded();
-  const canvas = drawSmallSquare(video, video.videoWidth, video.videoHeight);
+  const canvas = drawSmallSquare(video, video.videoWidth, video.videoHeight, true);
   return detectDescriptor(faceapi, canvas);
 }
 
 export async function computeLandmarksFromVideoFrame(video: HTMLVideoElement) {
   const faceapi = await loadModelsIfNeeded();
-  const canvas = drawSmallSquare(video, video.videoWidth, video.videoHeight);
+  const canvas = drawSmallSquare(video, video.videoWidth, video.videoHeight, true);
   const result = await faceapi
     .detectSingleFace(canvas, detectorOptions(faceapi))
     .withFaceLandmarks(true);

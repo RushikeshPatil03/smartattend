@@ -22,8 +22,8 @@ export const DEFAULT_MOVEMENT_MAX_TIME_MS = Math.max(
   Number(import.meta.env.VITE_FACEAPI_MOVEMENT_MAX_TIME_MS || 3200)
 );
 export const DEFAULT_MOVEMENT_SAMPLE_FPS = Math.max(
-  5,
-  Math.min(10, Number(import.meta.env.VITE_FACEAPI_MOVEMENT_SAMPLE_FPS || 8))
+  8,
+  Math.min(20, Number(import.meta.env.VITE_FACEAPI_MOVEMENT_SAMPLE_FPS || 15))
 );
 export const DEFAULT_MOVEMENT_TRANSLATE_THRESHOLD = Number(
   import.meta.env.VITE_FACEAPI_MOVEMENT_TRANSLATE_THRESHOLD || 0.045
@@ -32,10 +32,23 @@ export const DEFAULT_MOVEMENT_ROTATION_THRESHOLD = Number(
   import.meta.env.VITE_FACEAPI_MOVEMENT_ROTATION_THRESHOLD || 0.045
 );
 
-export const RELATIVE_PITCH_DELTA_THRESHOLD = 0.055;
-export const RELATIVE_YAW_DELTA_THRESHOLD = 0.075;
-export const MIN_LIVENESS_DURATION_MS = 500;
-export const CONSECUTIVE_FRAMES_REQUIRED = 3;
+export const RELATIVE_PITCH_DELTA_THRESHOLD = 0.052;
+export const RELATIVE_YAW_DELTA_THRESHOLD = 0.070;
+export const MIN_LIVENESS_DURATION_MS = 350;
+export const CONSECUTIVE_FRAMES_REQUIRED = 2;
+
+export type ChallengeDirection = "UP" | "DOWN" | "LEFT" | "RIGHT";
+
+export type ChallengeUpdate = {
+  challenge: LivenessChallenge;
+  direction: ChallengeDirection;
+  prompt: string;
+  progress: number; // 0.0 to 1.0
+  passed: boolean;
+  rawDelta: number;
+  targetThreshold: number;
+  reason?: string;
+};
 
 export type MovementLivenessOptions = {
   maxTimeMs?: number;
@@ -43,13 +56,7 @@ export type MovementLivenessOptions = {
   translateThreshold?: number;
   rotThreshold?: number;
   challenge?: LivenessChallenge;
-  onChallengeUpdate?: (update: {
-    challenge: LivenessChallenge;
-    prompt: string;
-    progress: number;
-    passed: boolean;
-    reason?: string;
-  }) => void;
+  onChallengeUpdate?: (update: ChallengeUpdate) => void;
 };
 
 export type MovementLivenessResult = {
@@ -101,12 +108,27 @@ export function getRandomLivenessChallenge(): LivenessChallenge {
   return CHALLENGES[index];
 }
 
+export function getChallengeDirection(challenge: LivenessChallenge): ChallengeDirection {
+  switch (challenge) {
+    case "TILT_UP":
+      return "UP";
+    case "TILT_DOWN":
+      return "DOWN";
+    case "TURN_LEFT":
+      return "LEFT";
+    case "TURN_RIGHT":
+      return "RIGHT";
+    default:
+      return "UP";
+  }
+}
+
 export function getChallengePrompt(challenge: LivenessChallenge): string {
   switch (challenge) {
     case "TURN_LEFT":
-      return "Turn head slightly to the left";
+      return "Turn head slightly left";
     case "TURN_RIGHT":
-      return "Turn head slightly to the right";
+      return "Turn head slightly right";
     case "TILT_UP":
       return "Tilt head slightly upwards";
     case "TILT_DOWN":
@@ -169,13 +191,19 @@ export async function runMovementLiveness(
   const sampleIntervalMs = Math.round(1000 / sampleFps);
 
   const challenge = options.challenge || getRandomLivenessChallenge();
+  const direction = getChallengeDirection(challenge);
   const challengePrompt = getChallengePrompt(challenge);
 
   options.onChallengeUpdate?.({
     challenge,
+    direction,
     prompt: challengePrompt,
     progress: 0,
     passed: false,
+    rawDelta: 0,
+    targetThreshold: challenge.startsWith("TILT")
+      ? RELATIVE_PITCH_DELTA_THRESHOLD
+      : RELATIVE_YAW_DELTA_THRESHOLD,
   });
 
   const startedAt = performance.now();
@@ -229,97 +257,48 @@ export async function runMovementLiveness(
     }
 
     const elapsed = performance.now() - startedAt;
-    const timeProgress = Math.min(elapsed / maxTimeMs, 1);
 
-    // --- Check Challenge Conditions (Strict Relative Movements) ---
+    // Determine motion delta towards the target challenge
+    let currentDelta = 0;
+    let targetThreshold = 1;
+
     if (challenge === "TILT_UP") {
-      // Relative pitch change upwards (nose moves upward relative to eye midpoint, pitchRatio decreases)
-      const tiltUpDelta = baseline.pitchRatio - pose.pitchRatio;
-      if (tiltUpDelta >= RELATIVE_PITCH_DELTA_THRESHOLD) {
-        consecutiveFrames += 1;
-        options.onChallengeUpdate?.({
-          challenge,
-          prompt: "Holding head tilt up...",
-          progress: Math.min(
-            0.35 + (consecutiveFrames / CONSECUTIVE_FRAMES_REQUIRED) * 0.55,
-            0.9
-          ),
-          passed: false,
-        });
-        if (consecutiveFrames >= CONSECUTIVE_FRAMES_REQUIRED) {
-          challengePassed = true;
-        }
-      } else {
-        consecutiveFrames = Math.max(0, consecutiveFrames - 1);
-      }
+      targetThreshold = RELATIVE_PITCH_DELTA_THRESHOLD;
+      currentDelta = baseline.pitchRatio - pose.pitchRatio;
     } else if (challenge === "TILT_DOWN") {
-      // Relative pitch change downwards (nose moves downward relative to eye midpoint, pitchRatio increases)
-      const tiltDownDelta = pose.pitchRatio - baseline.pitchRatio;
-      if (tiltDownDelta >= RELATIVE_PITCH_DELTA_THRESHOLD) {
-        consecutiveFrames += 1;
-        options.onChallengeUpdate?.({
-          challenge,
-          prompt: "Holding head tilt down...",
-          progress: Math.min(
-            0.35 + (consecutiveFrames / CONSECUTIVE_FRAMES_REQUIRED) * 0.55,
-            0.9
-          ),
-          passed: false,
-        });
-        if (consecutiveFrames >= CONSECUTIVE_FRAMES_REQUIRED) {
-          challengePassed = true;
-        }
-      } else {
-        consecutiveFrames = Math.max(0, consecutiveFrames - 1);
-      }
+      targetThreshold = RELATIVE_PITCH_DELTA_THRESHOLD;
+      currentDelta = pose.pitchRatio - baseline.pitchRatio;
     } else if (challenge === "TURN_LEFT") {
-      // Relative yaw change to left from initial baseline
-      if (yawDelta >= RELATIVE_YAW_DELTA_THRESHOLD) {
-        consecutiveFrames += 1;
-        options.onChallengeUpdate?.({
-          challenge,
-          prompt: "Holding head turn left...",
-          progress: Math.min(
-            0.35 + (consecutiveFrames / CONSECUTIVE_FRAMES_REQUIRED) * 0.55,
-            0.9
-          ),
-          passed: false,
-        });
-        if (consecutiveFrames >= CONSECUTIVE_FRAMES_REQUIRED) {
-          challengePassed = true;
-        }
-      } else {
-        consecutiveFrames = Math.max(0, consecutiveFrames - 1);
-      }
+      targetThreshold = RELATIVE_YAW_DELTA_THRESHOLD;
+      currentDelta = pose.yawRatio - baseline.yawRatio;
     } else if (challenge === "TURN_RIGHT") {
-      // Relative yaw change to right from initial baseline
-      const rightYawDelta = baseline.yawRatio - pose.yawRatio;
-      if (rightYawDelta >= RELATIVE_YAW_DELTA_THRESHOLD) {
-        consecutiveFrames += 1;
-        options.onChallengeUpdate?.({
-          challenge,
-          prompt: "Holding head turn right...",
-          progress: Math.min(
-            0.35 + (consecutiveFrames / CONSECUTIVE_FRAMES_REQUIRED) * 0.55,
-            0.9
-          ),
-          passed: false,
-        });
-        if (consecutiveFrames >= CONSECUTIVE_FRAMES_REQUIRED) {
-          challengePassed = true;
-        }
-      } else {
-        consecutiveFrames = Math.max(0, consecutiveFrames - 1);
-      }
+      targetThreshold = RELATIVE_YAW_DELTA_THRESHOLD;
+      currentDelta = baseline.yawRatio - pose.yawRatio;
     }
 
-    // Must satisfy challenge condition AND minimum liveness sampling time guard
+    // Granular delta progress calculation
+    const deltaRatio = Math.max(0, currentDelta / targetThreshold);
+    const currentProgress = Math.min(1.0, deltaRatio);
+
+    if (deltaRatio >= 1.0) {
+      consecutiveFrames += 1;
+      if (consecutiveFrames >= CONSECUTIVE_FRAMES_REQUIRED) {
+        challengePassed = true;
+      }
+    } else {
+      consecutiveFrames = Math.max(0, consecutiveFrames - 1);
+    }
+
+    // Check completion condition
     if (challengePassed && elapsed >= MIN_LIVENESS_DURATION_MS) {
       options.onChallengeUpdate?.({
         challenge,
+        direction,
         prompt: `${challengePrompt} ✓`,
         progress: 1.0,
         passed: true,
+        rawDelta: currentDelta,
+        targetThreshold,
       });
 
       return {
@@ -337,14 +316,22 @@ export async function runMovementLiveness(
       };
     }
 
-    if (consecutiveFrames === 0) {
-      options.onChallengeUpdate?.({
-        challenge,
-        prompt: challengePrompt,
-        progress: Math.min(timeProgress * 0.6, 0.6),
-        passed: false,
-      });
-    }
+    // Send real-time progress update to the visual progress ring
+    const promptText = challengePassed
+      ? "Liveness verified ✓"
+      : consecutiveFrames > 0
+      ? `Hold ${challengePrompt.toLowerCase()}...`
+      : challengePrompt;
+
+    options.onChallengeUpdate?.({
+      challenge,
+      direction,
+      prompt: promptText,
+      progress: challengePassed ? 1.0 : Math.min(0.98, currentProgress),
+      passed: challengePassed,
+      rawDelta: currentDelta,
+      targetThreshold,
+    });
 
     await wait(sampleIntervalMs);
   }

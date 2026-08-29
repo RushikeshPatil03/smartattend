@@ -1,4 +1,3 @@
-// src/store.tsx
 import React, {
   createContext,
   useContext,
@@ -9,6 +8,12 @@ import React, {
 } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import apiClient from "./services/apiClient";
+import {
+  CACHE_KEYS,
+  clearAllDataCaches,
+  getCache,
+  setCache,
+} from "./utils/dataCache";
 
 /**
  * Application Views
@@ -48,8 +53,8 @@ interface AppContextValue {
     maxRegistrations?: number
   ) => Promise<any>;
 
-  fetchSubjects: () => Promise<any[]>;
-  fetchDepartments: () => Promise<any[]>;
+  fetchSubjects: (forceRefresh?: boolean) => Promise<any[]>;
+  fetchDepartments: (forceRefresh?: boolean) => Promise<any[]>;
   fetchUsers: () => Promise<void>;
   updateFacultyDeviceLock: (facultyId: string, enabled: boolean) => Promise<any>;
 
@@ -103,6 +108,9 @@ interface AppContextValue {
 
 const AppContext = createContext<AppContextValue | null>(null);
 
+let inflightDepartmentsPromise: Promise<any[]> | null = null;
+let inflightSubjectsPromise: Promise<any[]> | null = null;
+
 export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [view, setView] = useState<ViewType>(View.LOGIN);
   const [currentUser, setCurrentUser] = useState<any>(() => {
@@ -121,8 +129,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   const [sessions, setSessions] = useState<any[]>([]);
   const [attendance, setAttendance] = useState<any[]>([]);
-  const [departments, setDepartments] = useState<any[]>([]);
-  const [subjects, setSubjects] = useState<any[]>([]);
+  const [departments, setDepartments] = useState<any[]>(() => {
+    const cached = getCache<any[]>(CACHE_KEYS.DEPARTMENTS);
+    return Array.isArray(cached.data) ? cached.data : [];
+  });
+  const [subjects, setSubjects] = useState<any[]>(() => {
+    const cached = getCache<any[]>(CACHE_KEYS.SUBJECTS);
+    return Array.isArray(cached.data) ? cached.data : [];
+  });
   const [users, setUsers] = useState<any[]>([]);
 
   const routeByView: Record<ViewType, string> = {
@@ -222,19 +236,85 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [normalizeFrontendOrigin]);
 
-  // ---------------- FETCH HELPERS ----------------
-  const fetchDepartments = useCallback(async () => {
+  // ---------------- FETCH HELPERS WITH 5-MIN CACHE & DEDUPLICATION ----------------
+  const fetchDepartments = useCallback(async (forceRefresh = false) => {
     if (!apiClient.token) return [];
-    const res = await apiClient.getDepartments();
-    if (res?.ok) setDepartments(res.departments || []);
-    return res?.departments || [];
+
+    const cached = getCache<any[]>(CACHE_KEYS.DEPARTMENTS);
+    const hasCachedData = Array.isArray(cached.data) && cached.data.length > 0;
+
+    // Return immediately from cache if fresh and not forced
+    if (!forceRefresh && hasCachedData && !cached.isStale) {
+      return cached.data!;
+    }
+
+    // Deduplicate in-flight concurrent requests
+    if (inflightDepartmentsPromise) {
+      return inflightDepartmentsPromise;
+    }
+
+    inflightDepartmentsPromise = (async () => {
+      try {
+        const res = await apiClient.getDepartments();
+        if (res?.ok && Array.isArray(res.departments)) {
+          setDepartments(res.departments);
+          setCache(CACHE_KEYS.DEPARTMENTS, res.departments);
+          return res.departments;
+        }
+        return hasCachedData ? cached.data! : [];
+      } catch {
+        return hasCachedData ? cached.data! : [];
+      } finally {
+        inflightDepartmentsPromise = null;
+      }
+    })();
+
+    // If we have stale cached data, serve immediately while background refresh completes
+    if (!forceRefresh && hasCachedData && cached.isStale) {
+      return cached.data!;
+    }
+
+    return inflightDepartmentsPromise;
   }, []);
 
-  const fetchSubjects = useCallback(async () => {
+  const fetchSubjects = useCallback(async (forceRefresh = false) => {
     if (!apiClient.token) return [];
-    const res = await apiClient.getSubjects();
-    if (res?.ok) setSubjects(res.subjects || []);
-    return res?.subjects || [];
+
+    const cached = getCache<any[]>(CACHE_KEYS.SUBJECTS);
+    const hasCachedData = Array.isArray(cached.data) && cached.data.length > 0;
+
+    // Return immediately from cache if fresh and not forced
+    if (!forceRefresh && hasCachedData && !cached.isStale) {
+      return cached.data!;
+    }
+
+    // Deduplicate in-flight concurrent requests
+    if (inflightSubjectsPromise) {
+      return inflightSubjectsPromise;
+    }
+
+    inflightSubjectsPromise = (async () => {
+      try {
+        const res = await apiClient.getSubjects();
+        if (res?.ok && Array.isArray(res.subjects)) {
+          setSubjects(res.subjects);
+          setCache(CACHE_KEYS.SUBJECTS, res.subjects);
+          return res.subjects;
+        }
+        return hasCachedData ? cached.data! : [];
+      } catch {
+        return hasCachedData ? cached.data! : [];
+      } finally {
+        inflightSubjectsPromise = null;
+      }
+    })();
+
+    // If we have stale cached data, serve immediately while background refresh completes
+    if (!forceRefresh && hasCachedData && cached.isStale) {
+      return cached.data!;
+    }
+
+    return inflightSubjectsPromise;
   }, []);
 
   const fetchUsers = useCallback(async () => {
@@ -307,6 +387,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     } catch {
       // Fallback
     }
+    clearAllDataCaches();
     setCurrentUser(null);
     setSessions([]);
     setAttendance([]);
@@ -496,26 +577,49 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   // ---------------- CRUD ----------------
   const addDepartment = async (payload: any) => {
     const res = await apiClient.createDepartment(payload);
-    if (res?.ok) setDepartments((d) => [...d, res.department]);
+    if (res?.ok && res.department) {
+      setDepartments((d) => {
+        const next = [...d, res.department];
+        setCache(CACHE_KEYS.DEPARTMENTS, next);
+        return next;
+      });
+    }
     return res;
   };
 
   const deleteDepartment = async (id: string) => {
     const res = await apiClient.deleteDepartment(id);
-    if (res?.ok)
-      setDepartments((d) => d.filter((x) => x._id !== id));
+    if (res?.ok) {
+      setDepartments((d) => {
+        const next = d.filter((x) => (x.id || x._id) !== id);
+        setCache(CACHE_KEYS.DEPARTMENTS, next);
+        return next;
+      });
+    }
     return res;
   };
 
   const addSubject = async (payload: any) => {
     const res = await apiClient.createSubject(payload);
-    if (res?.ok) setSubjects((s) => [...s, res.subject]);
+    if (res?.ok && res.subject) {
+      setSubjects((s) => {
+        const next = [...s, res.subject];
+        setCache(CACHE_KEYS.SUBJECTS, next);
+        return next;
+      });
+    }
     return res;
   };
 
   const deleteSubject = async (id: string) => {
     const res = await apiClient.deleteSubject(id);
-    if (res?.ok) setSubjects((s) => s.filter((x) => x._id !== id));
+    if (res?.ok) {
+      setSubjects((s) => {
+        const next = s.filter((x) => (x.id || x._id) !== id);
+        setCache(CACHE_KEYS.SUBJECTS, next);
+        return next;
+      });
+    }
     return res;
   };
 
@@ -532,10 +636,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       subjectId,
       assignments,
     });
-    if (res?.ok) {
-      setSubjects((prev) =>
-        prev.map((s) => (s._id === res.subject._id ? res.subject : s))
-      );
+    if (res?.ok && res.subject) {
+      setSubjects((prev) => {
+        const next = prev.map((s) =>
+          (s.id || s._id) === (res.subject.id || res.subject._id) ? res.subject : s
+        );
+        setCache(CACHE_KEYS.SUBJECTS, next);
+        return next;
+      });
     }
     return res;
   };

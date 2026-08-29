@@ -10,10 +10,12 @@ import {
 import { markAttendanceTwoStep, getFingerprint } from "../services/attendanceClient";
 import apiClient from "../services/apiClient";
 import {
+  ATTENDANCE_GPS_MAX_AGE_MS,
+  DISPLAY_GPS_MAX_AGE_MS,
+  getInstantCachedLocation,
   getLiveLocationWithOptions,
   prewarmLiveLocation,
   startRollingGpsWatcher,
-  getInstantCachedLocation,
 } from "../utils/liveLocation";
 import { createSequentialBuffer } from "../services/sequentialQrBuffer";
 import { parseQrPayload, RotatingQrPayload } from "../utils/totpQrGenerator";
@@ -836,7 +838,7 @@ const StudentDashboard: React.FC = () => {
       return locationWarmupPromiseRef.current;
     }
 
-    const promise = prewarmLiveLocation({ maxAgeMs: 30000 })
+    const promise = prewarmLiveLocation({ maxAgeMs: DISPLAY_GPS_MAX_AGE_MS })
       .then((coords) => {
         if (mountedRef.current) {
           setLocationReady(Boolean(coords));
@@ -852,8 +854,8 @@ const StudentDashboard: React.FC = () => {
   }, []);
 
   const resolveLiveLocation = useCallback(async () => {
-    // 1. Instant 0ms Fast Path from rolling 30s GPS cache
-    const instant = getInstantCachedLocation(30000);
+    // 1. Instant 0ms Fast Path from rolling 90s attendance GPS cache
+    const instant = getInstantCachedLocation(ATTENDANCE_GPS_MAX_AGE_MS);
     if (instant) {
       if (mountedRef.current) {
         setLocationReady(true);
@@ -861,19 +863,16 @@ const StudentDashboard: React.FC = () => {
       return instant;
     }
 
-    // 2. Warmed or active watcher fallback
-    const warmed = await warmLocation();
-    if (warmed) return warmed;
-
+    // 2. Fresh high-accuracy GPS fix fallback
     const fresh = await getLiveLocationWithOptions({
       preferCached: true,
-      maxAgeMs: 30000,
+      maxAgeMs: ATTENDANCE_GPS_MAX_AGE_MS,
     });
     if (mountedRef.current) {
       setLocationReady(true);
     }
     return fresh;
-  }, [warmLocation]);
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") {

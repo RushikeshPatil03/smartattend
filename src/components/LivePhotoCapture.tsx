@@ -1,5 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Camera, Compass, RefreshCw, ShieldAlert, Smartphone } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  Camera,
+  CheckCircle2,
+  Compass,
+  RefreshCw,
+  ShieldAlert,
+  Smartphone,
+} from "lucide-react";
 import { Button } from "./Common";
 import { captureVideoFrame, DEFAULT_CAPTURE_OPTIONS } from "../utils/imageCapture";
 import {
@@ -12,7 +23,11 @@ import {
   computeDescriptorFromVideoFrame,
   loadModelsIfNeeded,
 } from "../utils/faceApiLoader";
-import { runMovementLiveness } from "../utils/faceMovementLiveness";
+import {
+  runMovementLiveness,
+  type ChallengeDirection,
+  type LivenessChallenge,
+} from "../utils/faceMovementLiveness";
 import { buildFaceSignatures } from "../utils/faceSignature";
 
 const PORTRAIT_BETA_MIN = 55;
@@ -199,6 +214,10 @@ const LivePhotoCapture: React.FC<{
   const [faceQuality, setFaceQuality] = useState<FaceQualityResult | null>(null);
   const [verificationInProgress, setVerificationInProgress] = useState(false);
   const [verificationMessage, setVerificationMessage] = useState("");
+  const [livenessProgress, setLivenessProgress] = useState(0);
+  const [livenessChallenge, setLivenessChallenge] = useState<LivenessChallenge | null>(null);
+  const [livenessDirection, setLivenessDirection] = useState<ChallengeDirection | null>(null);
+  const [livenessPassed, setLivenessPassed] = useState(false);
   const [orientation, setOrientation] = useState<OrientationState>(initialOrientationState);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -236,6 +255,10 @@ const LivePhotoCapture: React.FC<{
     setFaceQuality(null);
     setVerificationInProgress(false);
     setVerificationMessage("");
+    setLivenessProgress(0);
+    setLivenessChallenge(null);
+    setLivenessDirection(null);
+    setLivenessPassed(false);
   };
 
   const startOrientationTracking = (
@@ -449,16 +472,27 @@ const LivePhotoCapture: React.FC<{
 
         setCaptureError("");
         setVerificationMessage("Preparing secure face check...");
+        setLivenessProgress(0);
+        setLivenessPassed(false);
+        setLivenessChallenge(null);
+        setLivenessDirection(null);
+
         await loadModelsIfNeeded();
         const liveness = await runMovementLiveness(videoRef.current!, {
           onChallengeUpdate: (update) => {
             setVerificationMessage(update.prompt);
+            setLivenessProgress(update.progress);
+            setLivenessChallenge(update.challenge);
+            setLivenessDirection(update.direction);
+            setLivenessPassed(update.passed);
           },
         });
         if (!liveness.ok) {
+          setLivenessPassed(false);
           throw new Error(liveness.reason || "Live face movement was not detected.");
         }
 
+        setLivenessPassed(true);
         setVerificationMessage("Matching your registered face...");
         imageDataUrl = captureVideoFrame(videoRef.current, DEFAULT_CAPTURE_OPTIONS);
 
@@ -527,6 +561,10 @@ const LivePhotoCapture: React.FC<{
       setCaptureError("");
     } catch (error: any) {
       setVerificationMessage("");
+      setLivenessProgress(0);
+      setLivenessPassed(false);
+      setLivenessChallenge(null);
+      setLivenessDirection(null);
       setCaptureError(error?.message || "Unable to capture photo.");
     } finally {
       verificationInFlightRef.current = false;
@@ -693,19 +731,140 @@ const LivePhotoCapture: React.FC<{
 
       {cameraActive || cameraLoading ? (
         <div className="space-y-3">
-          <div className="relative w-full aspect-[4/3] max-h-[380px] rounded-2xl overflow-hidden bg-slate-950 shadow-inner">
+          <div className="relative w-full aspect-[4/3] max-h-[380px] rounded-2xl overflow-hidden bg-slate-950 shadow-inner flex items-center justify-center">
             <video
               ref={videoRef}
               autoPlay
               playsInline
               muted
-              className="h-full w-full object-cover -scale-x-100"
+              className="absolute inset-0 h-full w-full object-cover -scale-x-100"
             />
+
+            {/* Circular Progress Ring & Direction Guidance Overlay */}
+            <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-10">
+              <div className="relative flex items-center justify-center w-[210px] h-[210px] sm:w-[230px] sm:h-[230px]">
+                <svg
+                  className="w-full h-full transform -rotate-90 drop-shadow-md"
+                  viewBox="0 0 240 240"
+                >
+                  <defs>
+                    <linearGradient id="livenessNormal" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stopColor="#38bdf8" />
+                      <stop offset="100%" stopColor="#0284c7" />
+                    </linearGradient>
+                    <linearGradient id="livenessMid" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stopColor="#38bdf8" />
+                      <stop offset="60%" stopColor="#f59e0b" />
+                      <stop offset="100%" stopColor="#10b981" />
+                    </linearGradient>
+                    <linearGradient id="livenessDone" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stopColor="#10b981" />
+                      <stop offset="50%" stopColor="#22c55e" />
+                      <stop offset="100%" stopColor="#059669" />
+                    </linearGradient>
+                    <filter id="emeraldGlow" x="-20%" y="-20%" width="140%" height="140%">
+                      <feGaussianBlur stdDeviation="3.5" result="blur" />
+                      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                    </filter>
+                  </defs>
+
+                  {/* Background Track Arc */}
+                  <circle
+                    cx="120"
+                    cy="120"
+                    r="98"
+                    stroke={verificationInProgress ? "rgba(255, 255, 255, 0.25)" : "rgba(255, 255, 255, 0.15)"}
+                    strokeWidth={verificationInProgress ? "6" : "3"}
+                    strokeDasharray={verificationInProgress ? undefined : "6 6"}
+                    fill="none"
+                  />
+
+                  {/* Dynamic Progress Arc */}
+                  {verificationInProgress || livenessPassed ? (
+                    <circle
+                      cx="120"
+                      cy="120"
+                      r="98"
+                      stroke={
+                        livenessPassed
+                          ? "url(#livenessDone)"
+                          : livenessProgress >= 0.5
+                          ? "url(#livenessMid)"
+                          : "url(#livenessNormal)"
+                      }
+                      strokeWidth={livenessPassed ? "8" : "7"}
+                      strokeDasharray={2 * Math.PI * 98}
+                      strokeDashoffset={2 * Math.PI * 98 * (1 - Math.min(1, Math.max(0, livenessProgress)))}
+                      strokeLinecap="round"
+                      fill="none"
+                      filter={livenessPassed || livenessProgress >= 0.8 ? "url(#emeraldGlow)" : undefined}
+                      style={{
+                        transition: "stroke-dashoffset 90ms ease-out, stroke 200ms ease",
+                      }}
+                    />
+                  ) : null}
+                </svg>
+
+                {/* Center Direction Arrow / Progress / Silhouette */}
+                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                  {livenessPassed ? (
+                    <div className="flex flex-col items-center justify-center animate-in fade-in zoom-in duration-300">
+                      <div className="rounded-full bg-emerald-500/30 p-2.5 backdrop-blur-md border border-emerald-400/50 shadow-lg shadow-emerald-500/40">
+                        <CheckCircle2 size={38} className="text-emerald-400" />
+                      </div>
+                      <span className="mt-1.5 text-[11px] font-bold text-emerald-300 tracking-wider uppercase bg-emerald-950/90 px-2.5 py-0.5 rounded-full border border-emerald-500/40 shadow-sm">
+                        Verified ✓
+                      </span>
+                    </div>
+                  ) : verificationInProgress && livenessDirection ? (
+                    <div className="flex flex-col items-center justify-center animate-in fade-in duration-200">
+                      <div className="rounded-full bg-slate-900/70 p-2.5 backdrop-blur-md border border-sky-400/50 shadow-lg">
+                        {livenessDirection === "UP" && (
+                          <ArrowUp size={30} className="text-sky-300 animate-bounce" />
+                        )}
+                        {livenessDirection === "DOWN" && (
+                          <ArrowDown size={30} className="text-sky-300 animate-bounce" />
+                        )}
+                        {livenessDirection === "LEFT" && (
+                          <ArrowLeft size={30} className="text-sky-300 animate-bounce" />
+                        )}
+                        {livenessDirection === "RIGHT" && (
+                          <ArrowRight size={30} className="text-sky-300 animate-bounce" />
+                        )}
+                      </div>
+                      <div className="mt-1.5 flex items-center gap-1.5 bg-slate-900/90 px-2.5 py-0.5 rounded-full border border-sky-400/30 shadow-sm">
+                        <span className="text-[11px] font-bold text-sky-200">
+                          {Math.round(livenessProgress * 100)}%
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="w-[125px] h-[155px] rounded-[50%] border-2 border-dashed border-white/30" />
+                  )}
+                </div>
+              </div>
+            </div>
 
             {/* Floating Challenge Prompt (Top-Center) */}
             <div className="absolute top-3 inset-x-3 z-20 flex justify-center pointer-events-none">
-              <div className="rounded-full bg-slate-900/80 backdrop-blur-md border border-white/20 px-4 py-1.5 text-xs font-semibold text-white shadow-lg flex items-center gap-2 max-w-sm truncate">
-                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-ping shrink-0" />
+              <div
+                className={`rounded-full backdrop-blur-md border px-4 py-1.5 text-xs font-semibold shadow-lg flex items-center gap-2 max-w-sm truncate transition-colors duration-200 ${
+                  livenessPassed
+                    ? "bg-emerald-950/85 border-emerald-400/40 text-emerald-200"
+                    : verificationInProgress
+                    ? "bg-sky-950/85 border-sky-400/40 text-sky-100"
+                    : "bg-slate-900/80 border-white/20 text-white"
+                }`}
+              >
+                <span
+                  className={`h-2 w-2 rounded-full shrink-0 ${
+                    livenessPassed
+                      ? "bg-emerald-400"
+                      : verificationInProgress
+                      ? "bg-sky-400 animate-ping"
+                      : "bg-emerald-400 animate-ping"
+                  }`}
+                />
                 <span className="truncate">
                   {verificationInProgress && verificationMessage
                     ? verificationMessage

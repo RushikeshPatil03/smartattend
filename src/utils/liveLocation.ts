@@ -14,7 +14,9 @@ type LiveLocationOptions = {
 };
 
 export const MAX_ACCEPTABLE_ACCURACY_METERS = 120;
-export const ROLLING_CACHE_MAX_AGE_MS = 30000; // 30 seconds rolling window
+export const ATTENDANCE_GPS_MAX_AGE_MS = 90_000; // 90 seconds rolling window for attendance mark submission
+export const DISPLAY_GPS_MAX_AGE_MS = 300_000; // 5 minutes window for pre-warming / display purposes
+export const ROLLING_CACHE_MAX_AGE_MS = ATTENDANCE_GPS_MAX_AGE_MS;
 const LOCATION_WARMUP_WINDOW_MS = 25000;
 
 // In-memory rolling GPS cache
@@ -66,7 +68,7 @@ async function getPermissionState(): Promise<PermissionState | null> {
 }
 
 /**
- * Handle incoming GPS position and update rolling 30-second cache
+ * Handle incoming GPS position and update rolling cache
  */
 function handleIncomingPosition(pos: GeolocationPosition) {
   const accuracy = Number(pos.coords.accuracy || 0);
@@ -88,7 +90,7 @@ function handleIncomingPosition(pos: GeolocationPosition) {
 
   if (
     !bestRecentLocation ||
-    now - bestRecentLocation.capturedAt > ROLLING_CACHE_MAX_AGE_MS ||
+    now - bestRecentLocation.capturedAt > DISPLAY_GPS_MAX_AGE_MS ||
     accuracy < bestRecentLocation.accuracy
   ) {
     bestRecentLocation = cached;
@@ -106,10 +108,11 @@ function handleIncomingPosition(pos: GeolocationPosition) {
 
 /**
  * Start the continuous background rolling GPS watcher with watchPosition
- * Keeps rolling 30s cache hot with 0ms latency on student submission
+ * Keeps rolling cache hot with 0ms latency on student submission
  */
 export function startRollingGpsWatcher(
-  onUpdate?: (location: LiveLocation) => void
+  onUpdate?: (location: LiveLocation) => void,
+  maxAgeMs: number = ATTENDANCE_GPS_MAX_AGE_MS
 ): () => void {
   if (typeof window === "undefined" || !navigator.geolocation) {
     return () => {};
@@ -117,10 +120,10 @@ export function startRollingGpsWatcher(
 
   if (onUpdate) {
     activeListeners.add(onUpdate);
-    // If we already have a warm cache (< 30s), trigger callback immediately
+    // If we already have a warm cache (< maxAgeMs), trigger callback immediately
     if (
       lastResolvedLocation &&
-      Date.now() - lastResolvedLocation.capturedAt <= ROLLING_CACHE_MAX_AGE_MS
+      Date.now() - lastResolvedLocation.capturedAt <= maxAgeMs
     ) {
       try {
         onUpdate({
@@ -177,9 +180,10 @@ function stopInternalWatcher() {
 
 /**
  * Synchronous 0ms getter for rolling cached location
+ * Defaults to 90-second attendance submission window
  */
 export function getInstantCachedLocation(
-  maxAgeMs: number = ROLLING_CACHE_MAX_AGE_MS
+  maxAgeMs: number = ATTENDANCE_GPS_MAX_AGE_MS
 ): LiveLocation | null {
   const now = Date.now();
 
@@ -218,7 +222,7 @@ export async function getLiveLocation(): Promise<LiveLocation> {
 
 /**
  * Primary location resolver
- * Checks 30s rolling cache first for INSTANT 0ms resolution.
+ * Checks 90s rolling cache first for INSTANT 0ms resolution.
  * If cache is cold, acquires high-accuracy GPS with active watcher.
  */
 export async function getLiveLocationWithOptions(
@@ -227,7 +231,7 @@ export async function getLiveLocationWithOptions(
   const maxAgeMs =
     typeof options.maxAgeMs === "number" && options.maxAgeMs > 0
       ? options.maxAgeMs
-      : ROLLING_CACHE_MAX_AGE_MS;
+      : ATTENDANCE_GPS_MAX_AGE_MS;
 
   // 1. Instant 0ms Path: Check rolling cache
   const cached = getInstantCachedLocation(maxAgeMs);
@@ -254,7 +258,7 @@ export async function getLiveLocationWithOptions(
   }
 
   // Ensure rolling watcher is spinning
-  startRollingGpsWatcher();
+  startRollingGpsWatcher(undefined, maxAgeMs);
 
   inFlightLocationPromise = new Promise<LiveLocation>((resolve, reject) => {
     let done = false;
@@ -314,7 +318,7 @@ export async function getLiveLocationWithOptions(
       done = true;
       cleanup();
 
-      const lastCached = getInstantCachedLocation(60000); // broader fallback
+      const lastCached = getInstantCachedLocation(maxAgeMs);
       if (lastCached) {
         resolve(lastCached);
       } else if (lastResolvedLocation) {
@@ -333,16 +337,16 @@ export async function getLiveLocationWithOptions(
 }
 
 /**
- * Prewarms the GPS engine ahead of scan
+ * Prewarms the GPS engine ahead of scan (accepts up to 5-minute display cache)
  */
 export async function prewarmLiveLocation(
   options: LiveLocationOptions = {}
 ): Promise<LiveLocation | null> {
   try {
-    startRollingGpsWatcher();
+    startRollingGpsWatcher(undefined, DISPLAY_GPS_MAX_AGE_MS);
     return await getLiveLocationWithOptions({
       preferCached: true,
-      maxAgeMs: ROLLING_CACHE_MAX_AGE_MS,
+      maxAgeMs: DISPLAY_GPS_MAX_AGE_MS,
       ...options,
     });
   } catch {
