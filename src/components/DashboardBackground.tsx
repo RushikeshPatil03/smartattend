@@ -11,23 +11,30 @@ export const DashboardBackground: React.FC<DashboardBackgroundProps> = ({
 }) => {
   return (
     <div
-      className={`relative min-h-screen w-full bg-[radial-gradient(ellipse_at_20%_10%,rgba(56,189,248,0.06),transparent_55%),radial-gradient(ellipse_at_80%_90%,rgba(99,102,241,0.06),transparent_55%),#f8fafc] ${className}`}
+      className={`relative min-h-screen w-full bg-[#f8fafc] ${className}`}
+      style={{
+        backgroundImage: `
+          radial-gradient(ellipse 70% 55% at 10% 10%, rgba(56, 189, 248, 0.18), transparent 60%),
+          radial-gradient(ellipse 70% 55% at 90% 90%, rgba(99, 102, 241, 0.16), transparent 60%),
+          radial-gradient(ellipse 50% 40% at 50% 40%, rgba(20, 184, 166, 0.10), transparent 60%)
+        `,
+      }}
     >
-      {/* Subtle Geometric Dot Matrix Grid (Matches Login / SaaS Premium aesthetic) */}
+      {/* High-Contrast Technical Dot Grid Matrix */}
       <div
-        className="pointer-events-none fixed inset-0 z-0 opacity-[0.04]"
+        className="pointer-events-none fixed inset-0 z-0 opacity-40"
         style={{
-          backgroundImage: "radial-gradient(#0f172a 1px, transparent 1px)",
+          backgroundImage: "radial-gradient(rgba(15, 23, 42, 0.28) 1.25px, transparent 1.25px)",
           backgroundSize: "24px 24px",
         }}
         aria-hidden="true"
       />
 
-      {/* Ambient Radial Mesh Lighting Orbs */}
+      {/* Floating Ambient Mesh Lighting Orbs */}
       <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden" aria-hidden="true">
-        <div className="absolute -top-32 -left-20 h-[600px] w-[600px] rounded-full bg-[radial-gradient(circle,rgba(56,189,248,0.08)_0%,transparent_70%)] blur-3xl will-change-transform" />
-        <div className="absolute top-1/2 -right-32 h-[650px] w-[650px] rounded-full bg-[radial-gradient(circle,rgba(99,102,241,0.07)_0%,transparent_70%)] blur-3xl will-change-transform" />
-        <div className="absolute -bottom-32 left-1/3 h-[550px] w-[550px] rounded-full bg-[radial-gradient(circle,rgba(6,182,212,0.05)_0%,transparent_70%)] blur-3xl will-change-transform" />
+        <div className="absolute -top-24 -left-16 h-[580px] w-[580px] rounded-full bg-[radial-gradient(circle,rgba(56,189,248,0.22)_0%,rgba(37,99,235,0.12)_45%,transparent_70%)] blur-3xl will-change-transform" />
+        <div className="absolute top-1/3 -right-24 h-[620px] w-[620px] rounded-full bg-[radial-gradient(circle,rgba(99,102,241,0.20)_0%,rgba(168,85,247,0.10)_45%,transparent_70%)] blur-3xl will-change-transform" />
+        <div className="absolute -bottom-24 left-1/4 h-[520px] w-[520px] rounded-full bg-[radial-gradient(circle,rgba(20,184,166,0.16)_0%,rgba(6,182,212,0.08)_45%,transparent_70%)] blur-3xl will-change-transform" />
       </div>
 
       {children && <div className="relative z-10">{children}</div>}

@@ -14,78 +14,8 @@ export interface CollegeHeaderProps {
   onLogout: () => void | Promise<void>;
   isLive?: boolean;
   liveSessionActive?: boolean;
-  todayAttendancePercentage?: number | null;
-  todayClassesAttended?: number;
-  todayClassesTotal?: number;
   children?: React.ReactNode;
 }
-
-const MiniAttendanceArc: React.FC<{
-  percentage: number;
-  attended?: number;
-  total?: number;
-}> = ({ percentage, attended, total }) => {
-  const radius = 13;
-  const circumference = 2 * Math.PI * radius;
-  const clampedPct = Math.max(0, Math.min(percentage, 100));
-  const strokeOffset = circumference - (clampedPct / 100) * circumference;
-
-  const strokeColor =
-    clampedPct >= 75
-      ? "#10b981" // Emerald
-      : clampedPct >= 60
-      ? "#f59e0b" // Amber
-      : "#f43f5e"; // Rose
-
-  return (
-    <div
-      className="flex items-center gap-2 rounded-2xl border border-white/60 bg-white/70 px-2.5 py-1.5 backdrop-blur-md shadow-xs transition-all hover:bg-white/90"
-      title={`Today's Attendance: ${Math.round(clampedPct)}%${
-        total ? ` (${attended}/${total} classes)` : ""
-      }`}
-    >
-      <div className="relative flex h-9 w-9 items-center justify-center shrink-0">
-        <svg className="h-9 w-9 -rotate-90 transform" viewBox="0 0 36 36">
-          {/* Background Track */}
-          <circle
-            cx="18"
-            cy="18"
-            r={radius}
-            fill="none"
-            stroke="#e2e8f0"
-            strokeWidth="3.5"
-          />
-          {/* Filled Progress Arc */}
-          <circle
-            cx="18"
-            cy="18"
-            r={radius}
-            fill="none"
-            stroke={strokeColor}
-            strokeWidth="3.5"
-            strokeLinecap="round"
-            strokeDasharray={circumference}
-            strokeDashoffset={strokeOffset}
-            style={{
-              transition: "stroke-dashoffset 0.8s cubic-bezier(0.4, 0, 0.2, 1)",
-            }}
-          />
-        </svg>
-        <span className="absolute text-[10px] font-extrabold text-slate-800 tabular-nums">
-          {Math.round(clampedPct)}%
-        </span>
-      </div>
-      <div className="hidden sm:block text-left pr-1 leading-tight">
-        <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Today</p>
-        <p className="text-xs font-bold text-slate-800">
-          {total !== undefined && attended !== undefined
-            ? `${attended}/${total} Attended`
-            : "Attendance"}
-        </p>
-      </div>
-    </div>
-  );
-};
 
 const CollegeHeader: React.FC<CollegeHeaderProps> = ({
   collegeName,
@@ -100,9 +30,6 @@ const CollegeHeader: React.FC<CollegeHeaderProps> = ({
   onLogout,
   isLive = false,
   liveSessionActive = false,
-  todayAttendancePercentage,
-  todayClassesAttended,
-  todayClassesTotal,
   children,
 }) => {
   const displayCollege =
@@ -234,15 +161,6 @@ const CollegeHeader: React.FC<CollegeHeaderProps> = ({
 
         {/* Right: Actions, Widgets & Profile */}
         <div className="flex shrink-0 items-center gap-2.5 sm:gap-3.5">
-          {/* Student Today Attendance Arc Widget */}
-          {typeof todayAttendancePercentage === "number" && (
-            <MiniAttendanceArc
-              percentage={todayAttendancePercentage}
-              attended={todayClassesAttended}
-              total={todayClassesTotal}
-            />
-          )}
-
           {children}
 
           <div className="flex items-center">

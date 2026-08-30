@@ -46,8 +46,10 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(({
   const isBusy = isLoading || loading;
   const isDisabled = Boolean(disabled || isBusy);
 
+  const hasCustomBg = className.includes("bg-");
+
   const baseStyles = 
-    "relative inline-flex max-w-full items-center justify-center gap-2 overflow-hidden font-semibold tracking-[0.01em] select-none cursor-pointer transition-[color,background-color,border-color,box-shadow,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none disabled:active:translate-y-0";
+    "relative inline-flex items-center justify-center gap-2 font-semibold tracking-[0.01em] select-none cursor-pointer transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none disabled:active:translate-y-0";
 
   const sizeStyles: Record<ButtonSize, string> = {
     sm: "px-3 py-1.5 text-xs rounded-lg min-h-[32px]",
@@ -73,6 +75,8 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(({
       "bg-emerald-600 text-white shadow-[0_4px_0_0_#047857,0_4px_12px_rgba(5,150,105,0.25)] hover:bg-emerald-500 hover:shadow-[0_4px_0_0_#065f46,0_6px_16px_rgba(5,150,105,0.35)] active:translate-y-[2px] active:shadow-[0_1px_0_0_#047857] focus-visible:ring-emerald-500",
   };
 
+  const appliedVariant = hasCustomBg && variant === 'primary' ? '' : variantStyles[variant];
+
   return (
     <motion.button
       ref={ref}
@@ -81,7 +85,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(({
       aria-busy={isBusy ? true : undefined}
       whileTap={isDisabled ? undefined : { scale: 0.97 }}
       transition={{ type: 'spring', stiffness: 450, damping: 25 }}
-      className={`${baseStyles} ${sizeStyles[size]} ${variantStyles[variant]} ${className}`}
+      className={`${baseStyles} ${sizeStyles[size]} ${appliedVariant} ${className}`}
       {...props}
     >
       {/* Shimmer sweep effect if loading or requested */}
@@ -124,7 +128,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(({
         </span>
       )}
 
-      <span className="truncate">{children}</span>
+      {children}
 
       {!isBusy && rightIcon && (
         <span className="inline-flex shrink-0 items-center justify-center text-current" aria-hidden="true">

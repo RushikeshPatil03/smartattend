@@ -1134,20 +1134,7 @@ const StudentDashboard: React.FC = () => {
 
   useEffect(() => {
     autoLaunchHandledRef.current = true;
-    void loadStudentData().catch(() => {});
-  }, [loadStudentData]);
-
-  const todayAttendanceStats = useMemo(() => {
-    if (!recentSessions || recentSessions.length === 0) return null;
-    const total = recentSessions.length;
-    const attended = recentSessions.filter(
-      (s) =>
-        String(s?.attendanceCode || s?.status || "").toUpperCase() === "P" ||
-        String(s?.status || "").toLowerCase() === "present"
-    ).length;
-    const pct = total > 0 ? (attended / total) * 100 : 0;
-    return { total, attended, pct };
-  }, [recentSessions]);
+  }, []);
 
   const resetScan = () => {
     setScanStep("IDLE");
@@ -1163,25 +1150,7 @@ const StudentDashboard: React.FC = () => {
   };
 
   return (
-    <div className="relative min-h-screen w-full overflow-x-hidden bg-[radial-gradient(ellipse_at_20%_10%,rgba(56,189,248,0.06),transparent_55%),radial-gradient(ellipse_at_80%_90%,rgba(99,102,241,0.06),transparent_55%),#f8fafc] selection:bg-blue-500 selection:text-white">
-      {/* Subtle Dot Grid Pattern */}
-      <div
-        className="pointer-events-none fixed inset-0 z-0 opacity-[0.04]"
-        style={{
-          backgroundImage: "radial-gradient(#0f172a 1px, transparent 1px)",
-          backgroundSize: "24px 24px",
-        }}
-        aria-hidden="true"
-      />
-
-      {/* Ambient Mesh Glows */}
-      <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden" aria-hidden="true">
-        <div className="absolute -top-32 left-1/4 h-[600px] w-[600px] rounded-full bg-[radial-gradient(circle,rgba(56,189,248,0.08)_0%,transparent_70%)] blur-3xl will-change-transform" />
-        <div className="absolute top-1/3 -right-32 h-[650px] w-[650px] rounded-full bg-[radial-gradient(circle,rgba(99,102,241,0.07)_0%,transparent_70%)] blur-3xl will-change-transform" />
-        <div className="absolute -bottom-32 left-1/3 h-[550px] w-[550px] rounded-full bg-[radial-gradient(circle,rgba(6,182,212,0.05)_0%,transparent_70%)] blur-3xl will-change-transform" />
-      </div>
-
-      <div className="relative z-10 mx-auto min-h-screen max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+    <div className="relative mx-auto min-h-screen max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
       {faceGateOpen && (
         <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
           <div className="relative w-full max-w-sm sm:max-w-md overflow-hidden rounded-3xl bg-slate-900 border border-slate-800 p-5 shadow-2xl">
@@ -1462,9 +1431,6 @@ const StudentDashboard: React.FC = () => {
         user={currentUser}
         roleLabel="Student"
         onLogout={logout}
-        todayAttendancePercentage={todayAttendanceStats ? todayAttendanceStats.pct : null}
-        todayClassesAttended={todayAttendanceStats?.attended}
-        todayClassesTotal={todayAttendanceStats?.total}
       />
 
       <div className="mx-auto mb-4 flex min-h-[310px] w-full max-w-lg items-center justify-center rounded-[24px] border border-slate-800 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-900 p-6 sm:p-8 text-white shadow-[0_24px_50px_-20px_rgba(15,23,42,0.85)]">
@@ -1485,7 +1451,7 @@ const StudentDashboard: React.FC = () => {
             </div>
             <Button
               onClick={() => void simulateScan()}
-              className="bg-teal-600 hover:bg-teal-500 active:bg-teal-700 w-full py-4 text-base sm:text-lg font-bold text-white shadow-lg shadow-teal-950/50 rounded-xl cursor-pointer"
+              className="bg-teal-600 hover:bg-teal-500 active:bg-teal-700 w-full py-4 text-base sm:text-lg font-bold text-white shadow-lg shadow-teal-950/50 rounded-xl cursor-pointer flex items-center justify-center gap-2"
               disabled={busy}
             >
               <Camera size={20} /> Mark Attendance
@@ -1566,8 +1532,6 @@ const StudentDashboard: React.FC = () => {
             View Attendance
           </p>
         </button>
-      </div>
-
       </div>
     </div>
   );
