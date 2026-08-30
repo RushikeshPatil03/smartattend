@@ -11,7 +11,7 @@ import {
   X,
   Sparkles,
 } from "lucide-react";
-import { Badge, Button } from "../../components/Common";
+import { Badge, Button, CountUp } from "../../components/Common";
 import { FacultySubjectAnalyticsData } from "./types";
 
 interface FacultyAnalyticsModalProps {
@@ -122,39 +122,43 @@ export const FacultyAnalyticsModal: React.FC<FacultyAnalyticsModalProps> = React
                     </div>
 
                     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                      <div className="rounded-2xl border border-sky-100 bg-sky-50/60 p-4">
+                      <div className="rounded-2xl border border-sky-100 bg-sky-50/60 p-4 shadow-2xs">
                         <p className="text-[10px] font-bold uppercase tracking-wider text-sky-700">
                           Total Classes
                         </p>
-                        <p className="mt-1 text-2xl font-black text-slate-900">
-                          {data.overview.totalClasses}
+                        <p className="mt-1 text-2xl font-black text-slate-900 font-mono">
+                          <CountUp value={data.overview.totalClasses} />
                         </p>
                       </div>
 
-                      <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-4">
+                      <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-4 shadow-2xs">
                         <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">
                           Avg Attendees %
                         </p>
-                        <p className="mt-1 text-2xl font-black text-slate-900">
-                          {formatPercent(data.overview.averageAttendancePercentage)}
+                        <p className="mt-1 text-2xl font-black text-slate-900 font-mono">
+                          <CountUp
+                            value={data.overview.averageAttendancePercentage}
+                            decimals={1}
+                            suffix="%"
+                          />
                         </p>
                       </div>
 
-                      <div className="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4">
+                      <div className="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4 shadow-2xs">
                         <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-700">
                           Students
                         </p>
-                        <p className="mt-1 text-2xl font-black text-slate-900">
-                          {data.overview.totalStudents}
+                        <p className="mt-1 text-2xl font-black text-slate-900 font-mono">
+                          <CountUp value={data.overview.totalStudents} />
                         </p>
                       </div>
 
-                      <div className="rounded-2xl border border-rose-100 bg-rose-50/60 p-4">
+                      <div className="rounded-2xl border border-rose-100 bg-rose-50/60 p-4 shadow-2xs">
                         <p className="text-[10px] font-bold uppercase tracking-wider text-rose-700">
                           Below 75% At-Risk
                         </p>
-                        <p className="mt-1 text-2xl font-black text-rose-900">
-                          {data.overview.studentsBelow75}
+                        <p className="mt-1 text-2xl font-black text-rose-900 font-mono">
+                          <CountUp value={data.overview.studentsBelow75} />
                         </p>
                       </div>
                     </div>

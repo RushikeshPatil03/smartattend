@@ -46,7 +46,7 @@ const RootRedirect = () => {
 };
 
 const Container = ({ children }: { children: React.ReactNode }) => (
-  <div className="min-h-screen page-enter flex flex-col bg-[linear-gradient(180deg,_#f8fbff_0%,_#eef6ff_42%,_#f8fafc_100%)]">
+  <div className="min-h-screen page-enter flex flex-col bg-[radial-gradient(ellipse_at_20%_10%,rgba(56,189,248,0.06),transparent_55%),radial-gradient(ellipse_at_80%_90%,rgba(99,102,241,0.06),transparent_55%),#f8fafc]">
     {children}
   </div>
 );

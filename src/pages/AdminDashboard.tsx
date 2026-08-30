@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useApp } from "../store";
-import { Button, Card, Input, Badge } from "../components/Common";
+import { Button, Card, Input, Badge, CountUp } from "../components/Common";
 import CollegeHeader from "../components/CollegeHeader";
 import ManageDepartments from "./ManageDepartments";
 import ManageSubjectsCatalog from "./ManageSubjectsCatalog";
@@ -878,7 +878,24 @@ const AdminDashboard: React.FC = () => {
   };
 
   return (
-    <div className="grid min-h-screen grid-cols-1 gap-6 px-4 py-4 sm:px-6 lg:grid-cols-4 lg:px-8">
+    <div className="relative min-h-screen w-full overflow-x-hidden bg-[radial-gradient(ellipse_at_20%_10%,rgba(56,189,248,0.06),transparent_55%),radial-gradient(ellipse_at_80%_90%,rgba(99,102,241,0.06),transparent_55%),#f8fafc] selection:bg-indigo-500 selection:text-white">
+      {/* Shared Ambient Gradient Mesh Background & Lighting */}
+      <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden" aria-hidden="true">
+        {/* Subtle Geometric Dot Matrix Grid */}
+        <div
+          className="absolute inset-0 opacity-[0.04]"
+          style={{
+            backgroundImage: `radial-gradient(#0f172a 1px, transparent 1px)`,
+            backgroundSize: "24px 24px",
+          }}
+        />
+
+        <div className="absolute -top-32 -left-20 h-[600px] w-[600px] rounded-full bg-[radial-gradient(circle,rgba(56,189,248,0.08)_0%,transparent_70%)] blur-3xl will-change-transform" />
+        <div className="absolute top-1/2 -right-32 h-[650px] w-[650px] rounded-full bg-[radial-gradient(circle,rgba(99,102,241,0.07)_0%,transparent_70%)] blur-3xl will-change-transform" />
+        <div className="absolute -bottom-32 left-1/3 h-[550px] w-[550px] rounded-full bg-[radial-gradient(circle,rgba(6,182,212,0.05)_0%,transparent_70%)] blur-3xl will-change-transform" />
+      </div>
+
+      <div className="relative z-10 grid min-h-screen grid-cols-1 gap-6 px-4 py-4 sm:px-6 lg:grid-cols-4 lg:px-8">
       <div className="lg:col-span-4">
         <CollegeHeader
           className="surface-card"
@@ -971,8 +988,12 @@ const AdminDashboard: React.FC = () => {
                             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                               {card.label}
                             </p>
-                            <p className="mt-1.5 text-3xl font-bold leading-none text-slate-950">
-                              {card.value}
+                            <p className="mt-1.5 text-3xl font-bold leading-none text-slate-950 font-mono">
+                              {typeof card.value === "number" ? (
+                                <CountUp value={card.value} />
+                              ) : (
+                                card.value
+                              )}
                             </p>
                           </div>
                           <div
@@ -993,8 +1014,8 @@ const AdminDashboard: React.FC = () => {
                             <span>{card.progressLabel}</span>
                           </span>
                           <div className="flex items-center gap-2">
-                            <span className="font-bold text-slate-700">
-                              {card.progressPct}%
+                            <span className="font-bold text-slate-700 font-mono">
+                              <CountUp value={card.progressPct} suffix="%" />
                             </span>
                             <span className="flex items-center gap-1 text-slate-400 transition-colors group-hover:text-blue-600">
                               <span className="relative flex h-1.5 w-1.5">
@@ -1998,6 +2019,7 @@ const AdminDashboard: React.FC = () => {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 };

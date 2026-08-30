@@ -17,6 +17,7 @@ import {
   BookOpen,
 } from "lucide-react";
 import { FinalizedClassSummary } from "./types";
+import { CountUp } from "../../components/Common";
 
 interface ClassSummaryReportModalProps {
   isOpen: boolean;
@@ -193,7 +194,7 @@ export const ClassSummaryReportModal: React.FC<ClassSummaryReportModalProps> = R
                 <span>Total Strength</span>
               </div>
               <p className="mt-2 font-mono text-2xl font-black text-slate-900">
-                {summary.totalStrength}
+                <CountUp value={summary.totalStrength} />
               </p>
               <p className="mt-0.5 text-[11px] text-slate-400 font-medium">Enrolled Students</p>
             </div>
@@ -205,7 +206,7 @@ export const ClassSummaryReportModal: React.FC<ClassSummaryReportModalProps> = R
                 <span>Present</span>
               </div>
               <p className="mt-2 font-mono text-2xl font-black text-emerald-700">
-                {summary.presentCount}
+                <CountUp value={summary.presentCount} />
               </p>
               <p className="mt-0.5 text-[11px] text-emerald-600/80 font-medium">Verified check-ins</p>
             </div>
@@ -217,7 +218,7 @@ export const ClassSummaryReportModal: React.FC<ClassSummaryReportModalProps> = R
                 <span>Absent</span>
               </div>
               <p className="mt-2 font-mono text-2xl font-black text-rose-700">
-                {summary.absentCount}
+                <CountUp value={summary.absentCount} />
               </p>
               <p className="mt-0.5 text-[11px] text-rose-600/80 font-medium">Unverified/absent</p>
             </div>
@@ -229,7 +230,7 @@ export const ClassSummaryReportModal: React.FC<ClassSummaryReportModalProps> = R
                 <span>Attendance</span>
               </div>
               <p className="mt-2 font-mono text-2xl font-black text-teal-700">
-                {summary.attendancePercentage}%
+                <CountUp value={summary.attendancePercentage} suffix="%" />
               </p>
               {/* Progress bar indicator */}
               <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">

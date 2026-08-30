@@ -19,7 +19,7 @@ import {
   UserX,
   UserCheck,
 } from "lucide-react";
-import { Button } from "../../components/Common";
+import { Button, CountUp } from "../../components/Common";
 import { LiveAttendanceItem } from "./types";
 import {
   startQrPolling,
@@ -631,22 +631,30 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
 
               <div className="rounded-2xl bg-emerald-50/90 p-4 border border-emerald-200/80 shadow-2xs">
                 <p className="text-[10px] font-extrabold text-emerald-800 uppercase tracking-wider">Verified Presentees</p>
-                <p className="text-2xl font-mono font-black text-emerald-700 mt-1">{presentCount}</p>
+                <p className="text-2xl font-mono font-black text-emerald-700 mt-1">
+                  <CountUp value={presentCount} />
+                </p>
               </div>
 
               <div className="rounded-2xl bg-rose-50/90 p-4 border border-rose-200/80 shadow-2xs">
                 <p className="text-[10px] font-extrabold text-rose-800 uppercase tracking-wider">Absentees</p>
-                <p className="text-2xl font-mono font-black text-rose-700 mt-1">{absentCount}</p>
+                <p className="text-2xl font-mono font-black text-rose-700 mt-1">
+                  <CountUp value={absentCount} />
+                </p>
               </div>
 
               <div className="rounded-2xl bg-slate-50/90 p-4 border border-slate-200/80 shadow-2xs">
                 <p className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">Class Quorum</p>
-                <p className="text-2xl font-mono font-black text-slate-800 mt-1">{totalCount}</p>
+                <p className="text-2xl font-mono font-black text-slate-800 mt-1">
+                  <CountUp value={totalCount} />
+                </p>
               </div>
 
               <div className="rounded-2xl bg-teal-50/90 p-4 border border-teal-200/80 shadow-2xs">
                 <p className="text-[10px] font-extrabold text-teal-800 uppercase tracking-wider">Present %</p>
-                <p className="text-2xl font-mono font-black text-teal-700 mt-1">{attendancePercentage}%</p>
+                <p className="text-2xl font-mono font-black text-teal-700 mt-1">
+                  <CountUp value={attendancePercentage} suffix="%" />
+                </p>
               </div>
             </div>
           </div>
@@ -970,7 +978,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                     <div className="font-mono text-xl font-black text-emerald-600 flex items-center gap-1.5 justify-end">
                       <Users size={17} />
                       <span>
-                        {presentCount}
+                        <CountUp value={presentCount} />
                         {effectiveTotalStudents > 0 ? ` / ${effectiveTotalStudents}` : ""}
                       </span>
                     </div>
