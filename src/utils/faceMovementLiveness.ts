@@ -23,7 +23,7 @@ export const DEFAULT_MOVEMENT_MAX_TIME_MS = Math.max(
 );
 export const DEFAULT_MOVEMENT_SAMPLE_FPS = Math.max(
   8,
-  Math.min(20, Number(import.meta.env.VITE_FACEAPI_MOVEMENT_SAMPLE_FPS || 15))
+  Math.min(14, Number(import.meta.env.VITE_FACEAPI_MOVEMENT_SAMPLE_FPS || 10))
 );
 export const DEFAULT_MOVEMENT_TRANSLATE_THRESHOLD = Number(
   import.meta.env.VITE_FACEAPI_MOVEMENT_TRANSLATE_THRESHOLD || 0.045
@@ -221,6 +221,15 @@ export async function runMovementLiveness(
   let challengePassed = false;
 
   while (performance.now() - startedAt < maxTimeMs) {
+    // Yield to the browser compositor to ensure smooth camera rendering
+    await new Promise<void>((resolve) => {
+      if (typeof requestAnimationFrame !== "undefined") {
+        requestAnimationFrame(() => resolve());
+      } else {
+        setTimeout(resolve, 0);
+      }
+    });
+
     const landmarks = await computeLandmarksFromVideoFrame(video);
     const pose = landmarks ? getPoseSample(landmarks) : null;
 

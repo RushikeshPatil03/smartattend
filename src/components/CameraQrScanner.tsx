@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "./Common";
-import { RefreshCw, Search, ZoomIn } from "lucide-react";
+import { Clock, RefreshCw, Search, ShieldAlert, ZoomIn } from "lucide-react";
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 
 type DetectorResult = { rawValue?: string };
@@ -25,6 +25,8 @@ type CameraQrScannerProps = {
   onCancel: () => void;
   onDetected: (value: string) => boolean | void;
   isScannerActive?: boolean;
+  faceVerifiedExpiresAt?: number;
+  onSessionExpired?: () => void;
 };
 
 const SCAN_INTERVAL_MS = 60;
@@ -86,6 +88,8 @@ export default function CameraQrScanner({
   onCancel,
   onDetected,
   isScannerActive = false,
+  faceVerifiedExpiresAt,
+  onSessionExpired,
 }: CameraQrScannerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -94,6 +98,7 @@ export default function CameraQrScanner({
   const detectorRef = useRef<{ detect: (source: CanvasImageSource) => Promise<DetectorResult[]> } | null>(null);
   const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
   const onDetectedRef = useRef(onDetected);
+  const onSessionExpiredRef = useRef(onSessionExpired);
   const rafRef = useRef<number | null>(null);
   const decodeLockRef = useRef(false);
   const lastScanAtRef = useRef(0);
@@ -108,8 +113,34 @@ export default function CameraQrScanner({
   const [usingFallback, setUsingFallback] = useState(false);
   const [restartNonce, setRestartNonce] = useState(0);
   const [scanSuccessPulse, setScanSuccessPulse] = useState(false);
+  const [secondsRemaining, setSecondsRemaining] = useState<number | null>(null);
 
   const isScanSuccess = scanSuccessPulse || statusTone === "success";
+
+  useEffect(() => {
+    onSessionExpiredRef.current = onSessionExpired;
+  }, [onSessionExpired]);
+
+  useEffect(() => {
+    if (!faceVerifiedExpiresAt || faceVerifiedExpiresAt <= 0) {
+      setSecondsRemaining(null);
+      return;
+    }
+
+    const checkTimer = () => {
+      const remainingMs = faceVerifiedExpiresAt - Date.now();
+      const remainingSec = Math.max(0, Math.ceil(remainingMs / 1000));
+      setSecondsRemaining(remainingSec);
+
+      if (remainingMs <= 0) {
+        onSessionExpiredRef.current?.();
+      }
+    };
+
+    checkTimer();
+    const interval = window.setInterval(checkTimer, 400);
+    return () => window.clearInterval(interval);
+  }, [faceVerifiedExpiresAt]);
 
   const detectorSupported = useMemo(
     () => typeof window !== "undefined" && typeof window.BarcodeDetector !== "undefined",
@@ -482,7 +513,22 @@ export default function CameraQrScanner({
 
       <div className="w-full max-w-md bg-slate-950 border border-slate-700/80 rounded-2xl p-4 shadow-2xl">
         <div className="flex items-center justify-between mb-3">
-          <p className="text-sm font-semibold text-white">{title}</p>
+          <div className="flex items-center gap-2">
+            <p className="text-sm font-semibold text-white">{title}</p>
+            {secondsRemaining !== null ? (
+              <span
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold border transition-colors ${
+                  secondsRemaining <= 5
+                    ? "bg-rose-500/20 text-rose-300 border-rose-500/40 animate-pulse"
+                    : "bg-amber-500/20 text-amber-300 border-amber-500/40"
+                }`}
+                title="Face verification session time remaining"
+              >
+                <Clock size={11} />
+                {secondsRemaining}s
+              </span>
+            ) : null}
+          </div>
           <Button variant="secondary" className="px-3 py-1.5 text-xs" onClick={onCancel}>
             Cancel
           </Button>

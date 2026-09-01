@@ -250,6 +250,52 @@ function loadImage(url: string) {
   });
 }
 
+const LIVENESS_TRACKING_SIZE = 160;
+
+let reusableTrackingCanvas: HTMLCanvasElement | null = null;
+let reusableTrackingContext: CanvasRenderingContext2D | null = null;
+
+function getReusableTrackingCanvas(): HTMLCanvasElement {
+  if (!reusableTrackingCanvas) {
+    reusableTrackingCanvas = document.createElement("canvas");
+    reusableTrackingCanvas.width = LIVENESS_TRACKING_SIZE;
+    reusableTrackingCanvas.height = LIVENESS_TRACKING_SIZE;
+    reusableTrackingContext = reusableTrackingCanvas.getContext("2d", { willReadFrequently: true });
+  }
+  return reusableTrackingCanvas;
+}
+
+function drawTrackingSquare(source: CanvasImageSource, width: number, height: number) {
+  const canvas = getReusableTrackingCanvas();
+  const context = reusableTrackingContext;
+  if (!context || !width || !height) {
+    throw new Error("Unable to prepare tracking frame.");
+  }
+
+  const side = Math.min(width, height);
+  const sourceX = (width - side) / 2;
+  const sourceY = Math.max(0, (height - side) / 2 - height * 0.05);
+  context.drawImage(
+    source,
+    sourceX,
+    sourceY,
+    side,
+    side,
+    0,
+    0,
+    LIVENESS_TRACKING_SIZE,
+    LIVENESS_TRACKING_SIZE
+  );
+  return canvas;
+}
+
+function trackingDetectorOptions(faceapi: FaceApi) {
+  return new faceapi.TinyFaceDetectorOptions({
+    inputSize: LIVENESS_TRACKING_SIZE,
+    scoreThreshold: 0.45,
+  });
+}
+
 function detectorOptions(faceapi: FaceApi) {
   return new faceapi.TinyFaceDetectorOptions({
     inputSize: FACE_API_INPUT_SIZE,
@@ -323,9 +369,9 @@ export async function computeDescriptorFromVideoFrame(video: HTMLVideoElement) {
 
 export async function computeLandmarksFromVideoFrame(video: HTMLVideoElement) {
   const faceapi = await loadModelsIfNeeded();
-  const canvas = drawSmallSquare(video, video.videoWidth, video.videoHeight, true);
+  const canvas = drawTrackingSquare(video, video.videoWidth, video.videoHeight);
   const result = await faceapi
-    .detectSingleFace(canvas, detectorOptions(faceapi))
+    .detectSingleFace(canvas, trackingDetectorOptions(faceapi))
     .withFaceLandmarks(true);
   return result?.landmarks || null;
 }

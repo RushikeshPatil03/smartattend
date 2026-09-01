@@ -47,7 +47,7 @@ const MAX_DYNAMIC_SEQUENCE_GAP_SECONDS = Math.max(
   Number(import.meta.env.VITE_QR_SEQUENCE_GAP_SECONDS || 6)
 );
 const FIRST_DYNAMIC_ARM_WINDOW_MS = 2500;
-const FACE_VERIFICATION_WINDOW_MS = 30000;
+const FACE_VERIFICATION_WINDOW_MS = 15000;
 type ScannerResult = string | { first: string; second: string } | { sequence: RotatingQrPayload[] } | null;
 type DynamicPairScanResult =
   | { kind: "legacy"; first: string; second: string }
@@ -706,6 +706,34 @@ const StudentDashboard: React.FC = () => {
     }
   }, []);
 
+  const handleFaceSessionExpired = useCallback(() => {
+    faceVerifiedUntilRef.current = 0;
+    setFaceVerifiedUntil(0);
+    if (scannerOpen) {
+      closeScanner(null);
+      setScanStep("ERROR");
+      setStatusMsg("Face verification session expired for security. Please verify your live face again.");
+    }
+  }, [scannerOpen, closeScanner]);
+
+  useEffect(() => {
+    const handleSecurityState = () => {
+      if (document.visibilityState === "hidden") {
+        faceVerifiedUntilRef.current = 0;
+        setFaceVerifiedUntil(0);
+        if (scannerOpen) {
+          closeScanner(null);
+          setScanStep("ERROR");
+          setStatusMsg("App focus lost. Live face re-verification required for security.");
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", handleSecurityState);
+    return () => {
+      document.removeEventListener("visibilitychange", handleSecurityState);
+    };
+  }, [scannerOpen, closeScanner]);
+
   const openDynamicPairScanner = useCallback(async (autoArm = false): Promise<DynamicPairScanResult | null> => {
     const hasMedia = !!navigator?.mediaDevices?.getUserMedia;
     if (!hasMedia) {
@@ -906,6 +934,15 @@ const StudentDashboard: React.FC = () => {
   }, [loadStudentData]);
 
   const submitQrAttendance = useCallback(async () => {
+    if (!faceVerifiedUntilRef.current || Date.now() > faceVerifiedUntilRef.current) {
+      faceVerifiedUntilRef.current = 0;
+      setFaceVerifiedUntil(0);
+      setScanStep("ERROR");
+      setStatusMsg("Face verification session expired. Please verify your live face again.");
+      setBusy(false);
+      return;
+    }
+
     const pair = await openDynamicPairScanner(false);
     if (!pair) {
       pendingQrPairRef.current = null;
@@ -914,6 +951,21 @@ const StudentDashboard: React.FC = () => {
       setBusy(false);
       return;
     }
+
+    // Double-check biometric window before finalizing network submission
+    if (!faceVerifiedUntilRef.current || Date.now() > faceVerifiedUntilRef.current) {
+      faceVerifiedUntilRef.current = 0;
+      setFaceVerifiedUntil(0);
+      pendingQrPairRef.current = null;
+      setScanStep("ERROR");
+      setStatusMsg("Biometric verification session expired while scanning. Please re-verify your face.");
+      setBusy(false);
+      return;
+    }
+
+    // Invalidate biometric session immediately upon single attendance mark attempt (anti-proxy protection)
+    faceVerifiedUntilRef.current = 0;
+    setFaceVerifiedUntil(0);
 
     pendingQrPairRef.current = pair;
     setScanStep("SUBMITTING");
@@ -1235,6 +1287,8 @@ const StudentDashboard: React.FC = () => {
             hint={scannerError || scannerHint}
             statusTone={scannerError ? "error" : scannerStatusTone}
             isScannerActive={isScannerActive}
+            faceVerifiedExpiresAt={faceVerifiedUntil}
+            onSessionExpired={handleFaceSessionExpired}
             onCancel={() => closeScanner(null)}
             onDetected={(decodedText) => {
               if (dynamicPairLockedRef.current) return true;
