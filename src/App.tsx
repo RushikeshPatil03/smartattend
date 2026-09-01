@@ -1,5 +1,5 @@
 // src/App.tsx
-import React, { Suspense } from "react";
+import React, { Suspense, useEffect } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import HeaderBar from "./components/HeaderBar";
 import ProtectedRoute from "./routes/ProtectedRoute";
@@ -28,13 +28,34 @@ function lazyWithRetry<T extends React.ComponentType<any>>(
   });
 }
 
-const Login = lazyWithRetry(() => import("./pages/Login"));
-const Register = lazyWithRetry(() => import("./pages/Register"));
-const AdminRegister = lazyWithRetry(() => import("./pages/AdminRegister"));
-const AdminDashboard = lazyWithRetry(() => import("./pages/AdminDashboard"));
-const FacultyDashboard = lazyWithRetry(() => import("./pages/FacultyDashboard"));
-const StudentDashboard = lazyWithRetry(() => import("./pages/StudentDashboard"));
-const MobileLocationCapture = lazyWithRetry(() => import("./pages/MobileLocationCapture"));
+// Route-level code-split chunks
+const importLogin = () => import("./pages/Login");
+const importRegister = () => import("./pages/Register");
+const importAdminRegister = () => import("./pages/AdminRegister");
+const importAdminDashboard = () => import("./pages/AdminDashboard");
+const importFacultyDashboard = () => import("./pages/FacultyDashboard");
+const importStudentDashboard = () => import("./pages/StudentDashboard");
+const importMobileLocationCapture = () => import("./pages/MobileLocationCapture");
+
+const Login = lazyWithRetry(importLogin);
+const Register = lazyWithRetry(importRegister);
+const AdminRegister = lazyWithRetry(importAdminRegister);
+const AdminDashboard = lazyWithRetry(importAdminDashboard);
+const FacultyDashboard = lazyWithRetry(importFacultyDashboard);
+const StudentDashboard = lazyWithRetry(importStudentDashboard);
+const MobileLocationCapture = lazyWithRetry(importMobileLocationCapture);
+
+// Role-specific idle prefetch triggers
+export const preloadRoute = (role?: string) => {
+  const normalized = String(role || "").toUpperCase();
+  if (normalized === "STUDENT") {
+    void importStudentDashboard();
+  } else if (normalized === "FACULTY") {
+    void importFacultyDashboard();
+  } else if (normalized === "ADMIN") {
+    void importAdminDashboard();
+  }
+};
 
 const RootRedirect = () => {
   const { currentUser } = useApp();
@@ -78,13 +99,45 @@ const Container = ({ children }: { children: React.ReactNode }) => (
 );
 
 const PageLoader = () => (
-  <div className="mx-auto mt-20 max-w-sm rounded-2xl border border-slate-200 bg-white/85 p-5 text-center text-sm font-medium text-slate-600 shadow-sm">
-    Loading page...
+  <div className="mx-auto mt-16 w-full max-w-2xl px-4 animate-pulse">
+    <div className="rounded-3xl border border-slate-200/80 bg-white/80 p-6 shadow-sm backdrop-blur-md">
+      <div className="flex items-center gap-4">
+        <div className="h-12 w-12 rounded-2xl bg-slate-200/80" />
+        <div className="flex-1 space-y-2">
+          <div className="h-4 w-44 rounded-md bg-slate-200/80" />
+          <div className="h-3 w-28 rounded-md bg-slate-100" />
+        </div>
+      </div>
+      <div className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-3">
+        <div className="h-20 rounded-2xl bg-slate-100/90" />
+        <div className="h-20 rounded-2xl bg-slate-100/90" />
+        <div className="h-20 rounded-2xl bg-slate-100/90 col-span-2 sm:col-span-1" />
+      </div>
+      <div className="mt-6 h-36 rounded-2xl bg-slate-100/70" />
+    </div>
   </div>
 );
 
 const App = () => {
   const location = useLocation();
+  const { currentUser } = useApp();
+
+  // Smart idle prefetch for current user role
+  useEffect(() => {
+    if (!currentUser?.role) return;
+    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+      const handle = (window as any).requestIdleCallback(() => {
+        preloadRoute(currentUser.role);
+      });
+      return () => (window as any).cancelIdleCallback(handle);
+    } else {
+      const timer = setTimeout(() => {
+        preloadRoute(currentUser.role);
+      }, 200);
+      return () => clearTimeout(timer);
+    }
+  }, [currentUser?.role]);
+
   const isAuthOrMobile =
     location.pathname === "/login" ||
     location.pathname === "/" ||
@@ -123,3 +176,4 @@ const App = () => {
 };
 
 export default App;
+

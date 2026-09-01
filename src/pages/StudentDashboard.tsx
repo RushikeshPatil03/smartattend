@@ -1152,8 +1152,16 @@ const StudentDashboard: React.FC = () => {
   return (
     <div className="relative mx-auto min-h-screen max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
       {faceGateOpen && (
-        <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
-          <div className="relative w-full max-w-sm sm:max-w-md overflow-hidden rounded-3xl bg-slate-900 border border-slate-800 p-5 shadow-2xl">
+        <div className="fixed inset-0 z-[75] flex items-end sm:items-center justify-center bg-black/85 backdrop-blur-sm">
+          <div className="
+            relative w-full h-[92dvh] sm:h-auto sm:max-w-lg
+            overflow-hidden
+            rounded-t-[32px] sm:rounded-[28px]
+            bg-slate-900 border border-slate-800
+            shadow-[0_-24px_80px_-12px_rgba(0,0,0,0.7)]
+            flex flex-col
+          ">
+            {/* Close button */}
             <button
               type="button"
               onClick={() => {
@@ -1165,34 +1173,52 @@ const StudentDashboard: React.FC = () => {
             >
               <X size={18} />
             </button>
-            <React.Suspense fallback={<div className="py-12 text-center text-sm text-slate-400">Opening camera...</div>}>
-              <LivePhotoCapture
-                value={liveFacePhoto}
-                onChange={setLiveFacePhoto}
-                onCaptured={(capture) => {
-                  handleLiveFaceCaptured(capture);
-                  if (capture.faceVerification?.matched && capture.faceVerification.liveness === "movement") {
-                    const freshExpiry = Date.now() + FACE_VERIFICATION_WINDOW_MS;
-                    window.setTimeout(() => {
-                      void simulateScan(freshExpiry);
-                    }, 150);
-                  }
-                }}
-                disabled={faceGateStatus === "MATCHING" || !registeredFacePhoto}
-                autoStart
-                autoCapture
-                hideLauncher
-                compactMode
-                showCapturedPreview={false}
-                faceVerificationReferenceUrl={registeredFacePhoto}
-                title="Face Verification"
-                description={
-                  !registeredFacePhoto
-                    ? "No registered student profile photo found."
-                    : "Verify your live face to mark attendance."
+
+            {/* Drag handle pill on mobile */}
+            <div className="flex justify-center pt-3 pb-1 sm:hidden">
+              <div className="h-1 w-10 rounded-full bg-slate-700" />
+            </div>
+
+            {/* LivePhotoCapture fills remaining space */}
+            <div className="flex-1 overflow-y-auto px-4 pb-4 pt-2">
+              <React.Suspense
+                fallback={
+                  <div className="flex h-full items-center justify-center py-12 text-sm text-slate-400">
+                    Opening camera...
+                  </div>
                 }
-              />
-            </React.Suspense>
+              >
+                <LivePhotoCapture
+                  value={liveFacePhoto}
+                  onChange={setLiveFacePhoto}
+                  onCaptured={(capture) => {
+                    handleLiveFaceCaptured(capture);
+                    if (
+                      capture.faceVerification?.matched &&
+                      capture.faceVerification.liveness === "movement"
+                    ) {
+                      const freshExpiry = Date.now() + FACE_VERIFICATION_WINDOW_MS;
+                      window.setTimeout(() => {
+                        void simulateScan(freshExpiry);
+                      }, 150);
+                    }
+                  }}
+                  disabled={faceGateStatus === "MATCHING" || !registeredFacePhoto}
+                  autoStart
+                  autoCapture
+                  hideLauncher
+                  compactMode
+                  showCapturedPreview={false}
+                  faceVerificationReferenceUrl={registeredFacePhoto}
+                  title="Face Verification"
+                  description={
+                    !registeredFacePhoto
+                      ? "No registered student profile photo found."
+                      : "Verify your live face to mark attendance."
+                  }
+                />
+              </React.Suspense>
+            </div>
           </div>
         </div>
       )}

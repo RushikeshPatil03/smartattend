@@ -67,6 +67,16 @@ function getCameraErrorMessage(err: any) {
   return err?.message || "Unable to open the camera. Allow camera permission and try again.";
 }
 
+function triggerScanHaptic() {
+  if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+    try {
+      navigator.vibrate(80);
+    } catch {
+      // Ignore vibration error on unsupported platforms
+    }
+  }
+}
+
 export default function CameraQrScanner({
   title,
   hint,
@@ -97,6 +107,9 @@ export default function CameraQrScanner({
   const [zoomValue, setZoomValue] = useState<number | null>(null);
   const [usingFallback, setUsingFallback] = useState(false);
   const [restartNonce, setRestartNonce] = useState(0);
+  const [scanSuccessPulse, setScanSuccessPulse] = useState(false);
+
+  const isScanSuccess = scanSuccessPulse || statusTone === "success";
 
   const detectorSupported = useMemo(
     () => typeof window !== "undefined" && typeof window.BarcodeDetector !== "undefined",
@@ -140,6 +153,7 @@ export default function CameraQrScanner({
       })();
       stopCamera();
       setLoading(false);
+      setScanSuccessPulse(false);
       return;
     }
 
@@ -224,6 +238,13 @@ export default function CameraQrScanner({
           lastDetectedValueRef.current = rawValue;
           lastDetectedAtRef.current = now;
           decodeLockRef.current = true;
+
+          // Haptic vibration feedback on mobile
+          triggerScanHaptic();
+          if (mountedRef.current) {
+            setScanSuccessPulse(true);
+          }
+
           try {
             const shouldClose = onDetectedRef.current(rawValue);
             if (shouldClose) {
@@ -276,30 +297,37 @@ export default function CameraQrScanner({
           aspectRatio: 1,
         },
         (decodedText) => {
-        const rawValue = String(decodedText || "").trim();
-        if (!rawValue) return;
-        if (decodeLockRef.current) return;
+          const rawValue = String(decodedText || "").trim();
+          if (!rawValue) return;
+          if (decodeLockRef.current) return;
 
-        const now = Date.now();
+          const now = Date.now();
           const isDuplicate =
             rawValue === lastDetectedValueRef.current &&
             now - lastDetectedAtRef.current < DUPLICATE_DETECTION_COOLDOWN_MS;
           if (isDuplicate) return;
 
-        lastDetectedValueRef.current = rawValue;
-        lastDetectedAtRef.current = now;
-        decodeLockRef.current = true;
-        try {
-          const shouldClose = onDetectedRef.current(rawValue);
-          if (shouldClose) {
-            void stopFallbackScanner();
-            return;
+          lastDetectedValueRef.current = rawValue;
+          lastDetectedAtRef.current = now;
+          decodeLockRef.current = true;
+
+          // Haptic vibration feedback on mobile
+          triggerScanHaptic();
+          if (mountedRef.current) {
+            setScanSuccessPulse(true);
           }
-        } catch {
-          // Keep scanning if the parent rejects this decoded value.
-        }
-        decodeLockRef.current = false;
-      },
+
+          try {
+            const shouldClose = onDetectedRef.current(rawValue);
+            if (shouldClose) {
+              void stopFallbackScanner();
+              return;
+            }
+          } catch {
+            // Keep scanning if the parent rejects this decoded value.
+          }
+          decodeLockRef.current = false;
+        },
         () => {
           // Ignore frame-level decode misses while scanning.
         }
@@ -311,6 +339,8 @@ export default function CameraQrScanner({
         setError("");
         setLoading(true);
         setUsingFallback(false);
+        setScanSuccessPulse(false);
+
         if (!detectorSupported) {
           await startFallbackScanner();
           setLoading(false);
@@ -436,8 +466,21 @@ export default function CameraQrScanner({
   };
 
   return (
-    <div className="fixed inset-0 z-[70] bg-black/85 backdrop-blur-[1px] flex items-center justify-center p-4">
-      <div className="w-full max-w-md bg-slate-950 border border-slate-700 rounded-2xl p-4">
+    <div className="fixed inset-0 z-[70] bg-black/85 backdrop-blur-[2px] flex items-center justify-center p-4">
+      {/* Scoped CSS for laser scan line animation */}
+      <style>{`
+        @keyframes scanline {
+          0% { top: 8%; opacity: 0.85; }
+          50% { top: 88%; opacity: 1; }
+          100% { top: 8%; opacity: 0.85; }
+        }
+        .qr-laser-line {
+          animation: scanline 2.4s ease-in-out infinite;
+          will-change: top, opacity;
+        }
+      `}</style>
+
+      <div className="w-full max-w-md bg-slate-950 border border-slate-700/80 rounded-2xl p-4 shadow-2xl">
         <div className="flex items-center justify-between mb-3">
           <p className="text-sm font-semibold text-white">{title}</p>
           <Button variant="secondary" className="px-3 py-1.5 text-xs" onClick={onCancel}>
@@ -445,24 +488,80 @@ export default function CameraQrScanner({
           </Button>
         </div>
 
-        <div className="relative rounded-xl overflow-hidden border border-slate-700 bg-black min-h-[320px]">
-        {usingFallback ? (
-          <div className="relative h-[320px]">
-            <div id={fallbackRegionIdRef.current} className="h-[320px] w-full" />
-          </div>
+        <div className="relative rounded-xl overflow-hidden border border-slate-700/80 bg-black min-h-[320px] flex items-center justify-center">
+          {usingFallback ? (
+            <div className="relative h-[320px] w-full">
+              <div id={fallbackRegionIdRef.current} className="h-[320px] w-full" />
+            </div>
           ) : (
-            <>
-              <video
-                ref={videoRef}
-                className="w-full h-[320px] object-cover"
-                autoPlay
-                muted
-                playsInline
-                onLoadedMetadata={() => setLoading(false)}
-                style={{ transform: "none" }}
-              />
-            </>
+            <video
+              ref={videoRef}
+              className="w-full h-[320px] object-cover"
+              autoPlay
+              muted
+              playsInline
+              onLoadedMetadata={() => setLoading(false)}
+              style={{ transform: "none" }}
+            />
           )}
+
+          {/* Viewfinder Overlay with Animated Laser Scanline and Corner Brackets */}
+          {isScannerActive && !loading && !error ? (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+              <div
+                className={`relative w-56 h-56 transition-all duration-300 ${
+                  isScanSuccess ? "scale-105" : "scale-100"
+                }`}
+              >
+                {/* Corner Bracket: Top-Left */}
+                <div
+                  className={`absolute top-0 left-0 w-8 h-8 border-t-[3.5px] border-l-[3.5px] rounded-tl-lg transition-colors duration-300 ${
+                    isScanSuccess
+                      ? "border-emerald-400 drop-shadow-[0_0_12px_rgba(52,211,153,0.9)]"
+                      : "border-cyan-400 drop-shadow-[0_0_8px_rgba(6,182,212,0.6)]"
+                  }`}
+                />
+                {/* Corner Bracket: Top-Right */}
+                <div
+                  className={`absolute top-0 right-0 w-8 h-8 border-t-[3.5px] border-r-[3.5px] rounded-tr-lg transition-colors duration-300 ${
+                    isScanSuccess
+                      ? "border-emerald-400 drop-shadow-[0_0_12px_rgba(52,211,153,0.9)]"
+                      : "border-cyan-400 drop-shadow-[0_0_8px_rgba(6,182,212,0.6)]"
+                  }`}
+                />
+                {/* Corner Bracket: Bottom-Left */}
+                <div
+                  className={`absolute bottom-0 left-0 w-8 h-8 border-b-[3.5px] border-l-[3.5px] rounded-bl-lg transition-colors duration-300 ${
+                    isScanSuccess
+                      ? "border-emerald-400 drop-shadow-[0_0_12px_rgba(52,211,153,0.9)]"
+                      : "border-cyan-400 drop-shadow-[0_0_8px_rgba(6,182,212,0.6)]"
+                  }`}
+                />
+                {/* Corner Bracket: Bottom-Right */}
+                <div
+                  className={`absolute bottom-0 right-0 w-8 h-8 border-b-[3.5px] border-r-[3.5px] rounded-br-lg transition-colors duration-300 ${
+                    isScanSuccess
+                      ? "border-emerald-400 drop-shadow-[0_0_12px_rgba(52,211,153,0.9)]"
+                      : "border-cyan-400 drop-shadow-[0_0_8px_rgba(6,182,212,0.6)]"
+                  }`}
+                />
+
+                {/* Animated Laser Scanning Line */}
+                {!isScanSuccess && (
+                  <div className="absolute inset-x-2 qr-laser-line pointer-events-none">
+                    <div className="h-[2px] w-full bg-gradient-to-r from-transparent via-cyan-400 to-transparent shadow-[0_0_12px_#22d3ee,0_0_24px_#06b6d4]" />
+                    <div className="h-5 w-full bg-gradient-to-b from-cyan-400/20 to-transparent -mt-[1px]" />
+                  </div>
+                )}
+
+                {/* Success Indicator Flash */}
+                {isScanSuccess && (
+                  <div className="absolute inset-0 rounded-xl bg-emerald-500/15 animate-ping duration-500" />
+                )}
+              </div>
+            </div>
+          ) : null}
+
           {!isScannerActive ? (
             <div className="absolute inset-0 flex items-center justify-center bg-slate-950/70 px-6 text-center text-sm text-slate-200">
               Tap the capture button to activate the camera and start scanning.
@@ -477,7 +576,7 @@ export default function CameraQrScanner({
         <canvas ref={canvasRef} className="hidden" />
 
         {zoomRange ? (
-          <div className="mt-4 rounded-xl border border-slate-700 bg-slate-900/80 p-3">
+          <div className="mt-4 rounded-xl border border-slate-700/80 bg-slate-900/80 p-3">
             <div className="flex items-center gap-2 text-slate-200 text-xs font-medium mb-2">
               <ZoomIn size={14} />
               Camera Zoom
@@ -496,7 +595,7 @@ export default function CameraQrScanner({
             </p>
           </div>
         ) : (
-          <div className="mt-4 rounded-xl border border-slate-700 bg-slate-900/80 p-3">
+          <div className="mt-4 rounded-xl border border-slate-700/80 bg-slate-900/80 p-3">
             <div className="flex items-center gap-2 text-slate-200 text-xs font-medium">
               <Search size={14} />
               {usingFallback
@@ -507,19 +606,19 @@ export default function CameraQrScanner({
         )}
 
         <div
-          className={`mt-3 rounded-xl border px-3 py-2 ${
+          className={`mt-3 rounded-xl border px-3 py-2 transition-colors duration-300 ${
             error || statusTone === "error"
               ? "border-red-500/30 bg-red-500/10"
-              : statusTone === "success"
-                ? "border-emerald-500/30 bg-emerald-500/10"
+              : isScanSuccess
+                ? "border-emerald-500/40 bg-emerald-500/15"
                 : "border-slate-700 bg-slate-900/70"
           }`}
         >
           {error ? (
             <p className="text-xs text-red-300">{error}</p>
           ) : (
-            <p className="text-xs text-slate-300">
-              {hint || "Point the rear camera at the QR and hold the phone steady."}
+            <p className={`text-xs ${isScanSuccess ? "text-emerald-300 font-medium" : "text-slate-300"}`}>
+              {isScanSuccess ? "QR Code captured successfully!" : hint || "Point the rear camera at the QR and hold the phone steady."}
             </p>
           )}
         </div>
@@ -551,3 +650,4 @@ export default function CameraQrScanner({
     </div>
   );
 }
+

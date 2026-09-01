@@ -700,7 +700,13 @@ const LivePhotoCapture: React.FC<{
   ]);
 
   return (
-    <div className="surface-card space-y-4 rounded-[24px] border border-slate-200/80 p-4">
+    <div
+      className={
+        compactMode
+          ? "space-y-3 bg-transparent border-0 p-0 shadow-none text-white"
+          : "surface-card space-y-4 rounded-[24px] border border-slate-200/80 p-4"
+      }
+    >
       {!compactMode ? (
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
@@ -709,17 +715,17 @@ const LivePhotoCapture: React.FC<{
           </div>
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-2">
           <div>
-            <p className="text-sm font-semibold text-slate-900">{title}</p>
-            <p className="mt-1 text-xs leading-5 text-slate-500">{description}</p>
+            <p className="text-sm font-semibold text-white">{title}</p>
+            <p className="mt-0.5 text-xs leading-5 text-slate-400">{description}</p>
           </div>
           {canUseFaceQualityGate ? (
             <div
               className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${
                 faceQualityReady
-                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                  : "border-rose-200 bg-rose-50 text-rose-700"
+                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                  : "border-rose-500/40 bg-rose-500/10 text-rose-300"
               }`}
             >
               <Compass size={14} />
@@ -731,7 +737,10 @@ const LivePhotoCapture: React.FC<{
 
       {cameraActive || cameraLoading ? (
         <div className="space-y-3">
-          <div className="relative w-full aspect-[4/3] max-h-[380px] rounded-2xl overflow-hidden bg-slate-950 shadow-inner flex items-center justify-center">
+          <div
+            className="relative w-full rounded-2xl overflow-hidden bg-slate-950 shadow-inner flex items-center justify-center border border-slate-800"
+            style={{ aspectRatio: "3/4", maxHeight: "min(65dvh, 520px)" }}
+          >
             <video
               ref={videoRef}
               autoPlay
@@ -742,7 +751,10 @@ const LivePhotoCapture: React.FC<{
 
             {/* Circular Progress Ring & Direction Guidance Overlay */}
             <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-10">
-              <div className="relative flex items-center justify-center w-[210px] h-[210px] sm:w-[230px] sm:h-[230px]">
+              <div
+                className="relative flex items-center justify-center"
+                style={{ width: "min(62vw, 260px)", height: "min(62vw, 260px)" }}
+              >
                 <svg
                   className="w-full h-full transform -rotate-90 drop-shadow-md"
                   viewBox="0 0 240 240"
@@ -839,7 +851,10 @@ const LivePhotoCapture: React.FC<{
                       </div>
                     </div>
                   ) : (
-                    <div className="w-[125px] h-[155px] rounded-[50%] border-2 border-dashed border-white/30" />
+                    <div
+                      style={{ width: "min(34vw, 140px)", height: "min(42vw, 175px)" }}
+                      className="rounded-[50%] border-2 border-dashed border-white/30"
+                    />
                   )}
                 </div>
               </div>
