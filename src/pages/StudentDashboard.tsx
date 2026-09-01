@@ -5,7 +5,7 @@ import CollegeHeader from "../components/CollegeHeader";
 import {
   Scan, MapPin, CheckCircle, XCircle, History, Camera, LoaderCircle, X,
   BookOpen, TrendingUp, AlertTriangle, RefreshCw, ChevronDown,
-  Award, Clock
+  Award, Clock, ShieldAlert
 } from "lucide-react";
 import { markAttendanceTwoStep, getFingerprint } from "../services/attendanceClient";
 import apiClient from "../services/apiClient";
@@ -21,12 +21,18 @@ import { createSequentialBuffer } from "../services/sequentialQrBuffer";
 import { parseQrPayload, RotatingQrPayload } from "../utils/totpQrGenerator";
 
 import { loadModelsIfNeeded, computeDescriptorFromImageURL } from "../utils/faceApiLoader";
-import { prewarmFrontCamera } from "../components/LivePhotoCapture";
 
 const preloadCameraQrScanner = () => import("../components/CameraQrScanner");
 const CameraQrScanner = React.lazy(preloadCameraQrScanner);
 const preloadLivePhotoCapture = () => import("../components/LivePhotoCapture");
 const LivePhotoCapture = React.lazy(preloadLivePhotoCapture);
+
+const prewarmFrontCamera = () => {
+  preloadLivePhotoCapture().then((m) => m.prewarmFrontCamera?.()).catch(() => {});
+};
+const prewarmQrCamera = () => {
+  preloadCameraQrScanner().then((m) => m.prewarmQrCamera?.()).catch(() => {});
+};
 
 type IdleCapableWindow = Window &
   typeof globalThis & {
@@ -568,10 +574,12 @@ const StudentDashboard: React.FC = () => {
   const [faceGateMessage, setFaceGateMessage] = useState("");
   const [liveFacePhoto, setLiveFacePhoto] = useState("");
   const [faceVerifiedUntil, setFaceVerifiedUntil] = useState(0);
+  const [sessionExpiredToast, setSessionExpiredToast] = useState(false);
 
   const mountedRef = useRef(true);
   const submitLockRef = useRef(false);
   const resetTimerRef = useRef<number | null>(null);
+  const sessionExpiredToastTimerRef = useRef<number | null>(null);
   const loadingRecentRef = useRef(false);
   const cameraWarmupPromiseRef = useRef<Promise<void> | null>(null);
   const scannerResolveRef = useRef<((value: ScannerResult) => void) | null>(null);
@@ -621,6 +629,7 @@ const StudentDashboard: React.FC = () => {
     void preloadLivePhotoCapture();
     void loadModelsIfNeeded();
     void prewarmFrontCamera();
+    void prewarmQrCamera();
     if (registeredFacePhoto) {
       void computeDescriptorFromImageURL(registeredFacePhoto);
     }
@@ -650,6 +659,10 @@ const StudentDashboard: React.FC = () => {
         firstDynamicArmTimeoutRef.current = null;
       }
       if (faceGateTimerRef.current) window.clearTimeout(faceGateTimerRef.current);
+      if (sessionExpiredToastTimerRef.current) {
+        window.clearTimeout(sessionExpiredToastTimerRef.current);
+        sessionExpiredToastTimerRef.current = null;
+      }
     };
   }, [registeredFacePhoto]);
 
@@ -672,6 +685,8 @@ const StudentDashboard: React.FC = () => {
     setLiveFacePhoto("");
     setFaceGateStatus("VERIFYING");
     setFaceGateMessage("");
+    // Prewarm environment camera immediately while modal transitions
+    void prewarmQrCamera();
     faceGateTimerRef.current = window.setTimeout(() => {
       if (!mountedRef.current) return;
       faceVerifiedUntilRef.current = 0;
@@ -707,13 +722,29 @@ const StudentDashboard: React.FC = () => {
   }, []);
 
   const handleFaceSessionExpired = useCallback(() => {
+    // 1. Immediately clear the verification token — no grace period
     faceVerifiedUntilRef.current = 0;
     setFaceVerifiedUntil(0);
+    // 2. Close QR scanner if it is open (returns student to main dashboard view)
     if (scannerOpen) {
       closeScanner(null);
-      setScanStep("ERROR");
-      setStatusMsg("Face verification session expired for security. Please verify your live face again.");
     }
+    // 3. Reset scan step fully back to IDLE — not ERROR — so Mark Attendance is
+    //    immediately re-tappable without the student needing to do anything extra
+    setScanStep("IDLE");
+    setStatusMsg("");
+    setBusy(false);
+    submitLockRef.current = false;
+    // 4. Show a brief, non-blocking expiry notice as a floating toast
+    //    that auto-clears after 3.5 seconds (non-intrusive)
+    if (sessionExpiredToastTimerRef.current) {
+      window.clearTimeout(sessionExpiredToastTimerRef.current);
+    }
+    setSessionExpiredToast(true);
+    sessionExpiredToastTimerRef.current = window.setTimeout(() => {
+      if (mountedRef.current) setSessionExpiredToast(false);
+      sessionExpiredToastTimerRef.current = null;
+    }, 3500);
   }, [scannerOpen, closeScanner]);
 
   useEffect(() => {
@@ -723,9 +754,12 @@ const StudentDashboard: React.FC = () => {
         setFaceVerifiedUntil(0);
         if (scannerOpen) {
           closeScanner(null);
-          setScanStep("ERROR");
-          setStatusMsg("App focus lost. Live face re-verification required for security.");
         }
+        // Reset to IDLE — not ERROR — student can immediately re-tap
+        setScanStep("IDLE");
+        setStatusMsg("");
+        setBusy(false);
+        submitLockRef.current = false;
       }
     };
     document.addEventListener("visibilitychange", handleSecurityState);
@@ -1148,9 +1182,10 @@ const StudentDashboard: React.FC = () => {
     if (currentVerifiedUntil <= Date.now()) {
       faceVerifiedUntilRef.current = 0;
       setFaceVerifiedUntil(0);
-      setFaceGateOpen(true);
       setFaceGateStatus("VERIFYING");
-      setFaceGateMessage("Verify your face before marking attendance.");
+      setFaceGateMessage("");
+      setLiveFacePhoto("");
+      setFaceGateOpen(true);
       return;
     }
 
@@ -1203,6 +1238,35 @@ const StudentDashboard: React.FC = () => {
 
   return (
     <div className="relative mx-auto min-h-screen max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+      {/* Face Session Expired Toast — auto-dismisses after 3.5s */}
+      {sessionExpiredToast && (
+        <div
+          className="fixed top-5 inset-x-4 z-[100] flex justify-center pointer-events-none"
+          aria-live="assertive"
+        >
+          <div className="
+            inline-flex items-center gap-3
+            rounded-2xl border border-amber-500/40
+            bg-amber-950/95 backdrop-blur-md
+            px-5 py-3.5 shadow-2xl
+            text-sm font-semibold text-amber-200
+            animate-in slide-in-from-top-4 duration-300
+          ">
+            {/* Shield icon */}
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center 
+                              rounded-xl bg-amber-500/20 text-amber-400">
+              <ShieldAlert size={18} />
+            </span>
+            <div>
+              <p className="font-bold text-amber-100">Verification session expired</p>
+              <p className="text-xs text-amber-300/80 mt-0.5 font-normal">
+                Tap Mark Attendance to verify your face again.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {faceGateOpen && (
         <div className="fixed inset-0 z-[75] flex items-end sm:items-center justify-center bg-black/85 backdrop-blur-sm">
           <div className="
@@ -1219,6 +1283,11 @@ const StudentDashboard: React.FC = () => {
               onClick={() => {
                 setFaceGateOpen(false);
                 setFaceGateStatus("VERIFYING");
+                setLiveFacePhoto("");
+                setBusy(false);
+                submitLockRef.current = false;
+                setScanStep("IDLE");
+                setStatusMsg("");
               }}
               className="absolute top-4 right-4 z-30 p-2 text-slate-400 hover:text-white rounded-full bg-slate-800/80 hover:bg-slate-700 transition-colors cursor-pointer"
               title="Close face verification"
@@ -1252,7 +1321,7 @@ const StudentDashboard: React.FC = () => {
                       const freshExpiry = Date.now() + FACE_VERIFICATION_WINDOW_MS;
                       window.setTimeout(() => {
                         void simulateScan(freshExpiry);
-                      }, 150);
+                      }, 200);
                     }
                   }}
                   disabled={faceGateStatus === "MATCHING" || !registeredFacePhoto}

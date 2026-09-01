@@ -26,7 +26,7 @@ import { useApp, View } from "../store";
 import { getFingerprint } from "../services/attendanceClient";
 import apiClient from "../services/apiClient";
 import { Department } from "../types";
-import LivePhotoCapture from "../components/LivePhotoCapture";
+import LivePhotoCapture, { prewarmFrontCamera } from "../components/LivePhotoCapture";
 import { buildFaceSignatures } from "../utils/faceSignature";
 
 type RoleType = "admin" | "student" | "faculty" | null;
@@ -157,6 +157,9 @@ const Register: React.FC = () => {
   const [registrationMeta, setRegistrationMeta] = useState<RegistrationMeta | null>(null);
 
   useEffect(() => {
+    // Prewarm front camera in background so student gets instant open
+    void prewarmFrontCamera();
+
     if (urlRole === "admin") {
       setRoleType("admin");
       setLoading(false);

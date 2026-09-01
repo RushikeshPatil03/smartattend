@@ -136,25 +136,82 @@ async function compareLegacyFaceSignatures(referenceUrl: string, liveDataUrl: st
   return { score, matched: score >= LEGACY_FACE_SCORE_THRESHOLD };
 }
 
-let prewarmedFrontStream: MediaStream | null = null;
+// Persistent front camera stream pool — auto-refills after each use
+let frontStreamPool: MediaStream | null = null;
+let frontStreamPoolPromise: Promise<MediaStream | null> | null = null;
+
+const FRONT_CAMERA_CONSTRAINTS: MediaStreamConstraints = {
+  audio: false,
+  video: {
+    facingMode: "user" as const,
+    width: { ideal: 480, max: 640 },
+    height: { ideal: 640, max: 800 },
+    frameRate: { ideal: 24, max: 30 },
+  },
+};
+
+const FRONT_CAMERA_FALLBACK_CONSTRAINTS: MediaStreamConstraints = {
+  audio: false,
+  video: { facingMode: "user" as const },
+};
+
+function isStreamUsable(stream: MediaStream | null): stream is MediaStream {
+  if (!stream || !stream.active) return false;
+  const tracks = stream.getVideoTracks();
+  return tracks.length > 0 && tracks.some((t) => t.readyState === "live" && !t.muted);
+}
 
 export async function prewarmFrontCamera(): Promise<void> {
   if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) return;
-  try {
-    if (prewarmedFrontStream && prewarmedFrontStream.active) return;
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        facingMode: "user",
-        width: { ideal: 480, max: 640 },
-        height: { ideal: 640, max: 800 },
-        frameRate: { ideal: 30, max: 30 },
-      },
-    });
-    prewarmedFrontStream = stream;
-  } catch {
-    // Ignore background prewarm errors
+  // Already warm or warming — skip
+  if (isStreamUsable(frontStreamPool) || frontStreamPoolPromise) return;
+
+  frontStreamPoolPromise = (async () => {
+    try {
+      const stream = await navigator.mediaDevices
+        .getUserMedia(FRONT_CAMERA_CONSTRAINTS)
+        .catch(() => navigator.mediaDevices.getUserMedia(FRONT_CAMERA_FALLBACK_CONSTRAINTS));
+      if (isStreamUsable(stream)) {
+        frontStreamPool = stream;
+        return stream;
+      } else {
+        stream.getTracks().forEach((t) => t.stop());
+        return null;
+      }
+    } catch {
+      // Ignore background prewarm errors silently
+      return null;
+    } finally {
+      frontStreamPoolPromise = null;
+    }
+  })();
+
+  await frontStreamPoolPromise;
+}
+
+// Called inside startCamera — takes the warm stream and immediately coordinates refill
+async function consumeAndRefillPool(): Promise<MediaStream | null> {
+  if (!isStreamUsable(frontStreamPool) && frontStreamPoolPromise) {
+    try {
+      await Promise.race([
+        frontStreamPoolPromise,
+        new Promise((resolve) => setTimeout(resolve, 300)),
+      ]);
+    } catch {
+      // Ignore race timeout
+    }
   }
+
+  let stream: MediaStream | null = null;
+  if (isStreamUsable(frontStreamPool)) {
+    stream = frontStreamPool;
+    frontStreamPool = null;
+  } else if (frontStreamPool) {
+    frontStreamPool.getTracks().forEach((t) => t.stop());
+    frontStreamPool = null;
+  }
+
+  return stream;
 }
 
 const LivePhotoCapture: React.FC<{
@@ -247,6 +304,11 @@ const LivePhotoCapture: React.FC<{
     }
 
     if (videoRef.current) {
+      try {
+        videoRef.current.pause();
+      } catch {
+        // ignore
+      }
       videoRef.current.srcObject = null;
     }
 
@@ -259,6 +321,9 @@ const LivePhotoCapture: React.FC<{
     setLivenessChallenge(null);
     setLivenessDirection(null);
     setLivenessPassed(false);
+
+    // Asynchronously prewarm stream pool for subsequent attempts
+    void prewarmFrontCamera();
   };
 
   const startOrientationTracking = (
@@ -405,6 +470,20 @@ const LivePhotoCapture: React.FC<{
         throw new Error("Camera is not supported in this browser.");
       }
 
+      // Stop any existing stream tracks first to prevent hardware locks on multi-attempt
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+      }
+      if (videoRef.current) {
+        try {
+          videoRef.current.pause();
+        } catch {
+          // ignore
+        }
+        videoRef.current.srcObject = null;
+      }
+
       if (
         orientation.supported &&
         orientation.permissionRequired &&
@@ -415,34 +494,31 @@ const LivePhotoCapture: React.FC<{
 
       await waitForNextFrame();
 
+      const poolStream = await consumeAndRefillPool();
       let stream: MediaStream;
-      if (prewarmedFrontStream && prewarmedFrontStream.active) {
-        stream = prewarmedFrontStream;
-        prewarmedFrontStream = null;
+      if (isStreamUsable(poolStream)) {
+        stream = poolStream;
       } else {
         try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: false,
-            video: {
-              facingMode: "user",
-              width: { ideal: 480, max: 640 },
-              height: { ideal: 640, max: 800 },
-              frameRate: { ideal: 30, max: 30 },
-            },
-          });
-        } catch (primaryError: any) {
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: false,
-            video: { facingMode: "user" },
-          });
+          stream = await navigator.mediaDevices.getUserMedia(FRONT_CAMERA_CONSTRAINTS);
+        } catch {
+          stream = await navigator.mediaDevices.getUserMedia(FRONT_CAMERA_FALLBACK_CONSTRAINTS);
         }
       }
 
       streamRef.current = stream;
       if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.style.transform = "none";
-        await videoRef.current.play().catch(() => undefined);
+        const video = videoRef.current;
+        video.srcObject = stream;
+        video.style.transform = "none";
+        video.setAttribute("playsinline", "true");
+        video.setAttribute("autoplay", "true");
+        video.muted = true;
+        try {
+          await video.play();
+        } catch {
+          // Ignore autoplay restriction / interruption
+        }
       }
     } catch (error: any) {
       stopCamera();
@@ -590,11 +666,16 @@ const LivePhotoCapture: React.FC<{
   ]);
 
   useEffect(() => {
-    if (!autoStart || disabled || cameraActive || cameraLoading || value) {
-      return;
-    }
+    if (!autoStart || cameraActive || cameraLoading || value) return;
 
-    void startCamera();
+    // Use a 1-frame defer so disabled state settles from parent re-render
+    const id = window.requestAnimationFrame(() => {
+      if (!disabled) {
+        void startCamera();
+      }
+    });
+
+    return () => window.cancelAnimationFrame(id);
   }, [autoStart, cameraActive, cameraLoading, disabled, value]);
 
   useEffect(() => {
@@ -738,15 +819,15 @@ const LivePhotoCapture: React.FC<{
       {cameraActive || cameraLoading ? (
         <div className="space-y-3">
           <div
-            className="relative w-full rounded-2xl overflow-hidden bg-slate-950 shadow-inner flex items-center justify-center border border-slate-800"
-            style={{ aspectRatio: "3/4", maxHeight: "min(65dvh, 520px)" }}
+            className="relative w-full aspect-[3/4] max-h-[480px] rounded-2xl overflow-hidden bg-black shadow-inner flex items-center justify-center border border-slate-800"
           >
             <video
               ref={videoRef}
               autoPlay
               playsInline
               muted
-              className="absolute inset-0 h-full w-full object-cover -scale-x-100"
+              className="absolute inset-0 h-full w-full object-contain -scale-x-100"
+              style={{ background: "black" }}
             />
 
             {/* Circular Progress Ring & Direction Guidance Overlay */}

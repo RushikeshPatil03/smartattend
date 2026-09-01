@@ -29,6 +29,80 @@ type CameraQrScannerProps = {
   onSessionExpired?: () => void;
 };
 
+let envStreamPool: MediaStream | null = null;
+let envStreamPoolPromise: Promise<MediaStream | null> | null = null;
+
+const ENV_CAMERA_CONSTRAINTS: MediaStreamConstraints = {
+  audio: false,
+  video: {
+    facingMode: { ideal: "environment" },
+    width: { ideal: 640 },
+    height: { ideal: 480 },
+    frameRate: { ideal: 24, max: 30 },
+  },
+};
+
+const ENV_CAMERA_FALLBACK_CONSTRAINTS: MediaStreamConstraints = {
+  audio: false,
+  video: { facingMode: "environment" },
+};
+
+function isEnvStreamUsable(stream: MediaStream | null): stream is MediaStream {
+  if (!stream || !stream.active) return false;
+  const tracks = stream.getVideoTracks();
+  return tracks.length > 0 && tracks.some((t) => t.readyState === "live" && !t.muted);
+}
+
+export async function prewarmQrCamera(): Promise<void> {
+  if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) return;
+  if (isEnvStreamUsable(envStreamPool) || envStreamPoolPromise) return;
+
+  envStreamPoolPromise = (async () => {
+    try {
+      const stream = await navigator.mediaDevices
+        .getUserMedia(ENV_CAMERA_CONSTRAINTS)
+        .catch(() => navigator.mediaDevices.getUserMedia(ENV_CAMERA_FALLBACK_CONSTRAINTS));
+      if (isEnvStreamUsable(stream)) {
+        envStreamPool = stream;
+        return stream;
+      } else {
+        stream.getTracks().forEach((t) => t.stop());
+        return null;
+      }
+    } catch {
+      return null;
+    } finally {
+      envStreamPoolPromise = null;
+    }
+  })();
+
+  await envStreamPoolPromise;
+}
+
+export async function consumeEnvStreamPool(): Promise<MediaStream | null> {
+  if (!isEnvStreamUsable(envStreamPool) && envStreamPoolPromise) {
+    try {
+      await Promise.race([
+        envStreamPoolPromise,
+        new Promise((resolve) => setTimeout(resolve, 300)),
+      ]);
+    } catch {
+      // Ignore race timeout
+    }
+  }
+
+  let stream: MediaStream | null = null;
+  if (isEnvStreamUsable(envStreamPool)) {
+    stream = envStreamPool;
+    envStreamPool = null;
+  } else if (envStreamPool) {
+    envStreamPool.getTracks().forEach((t) => t.stop());
+    envStreamPool = null;
+  }
+
+  return stream;
+}
+
 const SCAN_INTERVAL_MS = 60;
 const DUPLICATE_DETECTION_COOLDOWN_MS = 400;
 
@@ -168,6 +242,14 @@ export default function CameraQrScanner({
       if (stream) {
         stream.getTracks().forEach((track) => track.stop());
         streamRef.current = null;
+      }
+      if (videoRef.current) {
+        try {
+          videoRef.current.pause();
+        } catch {
+          // ignore
+        }
+        videoRef.current.srcObject = null;
       }
     };
 
@@ -372,9 +454,14 @@ export default function CameraQrScanner({
         setUsingFallback(false);
         setScanSuccessPulse(false);
 
+        // Ensure any previous stream is completely stopped
+        stopCamera();
+
         if (!detectorSupported) {
           await startFallbackScanner();
-          setLoading(false);
+          if (mountedRef.current) {
+            setLoading(false);
+          }
           return;
         }
 
@@ -385,28 +472,44 @@ export default function CameraQrScanner({
 
         detectorRef.current = new Detector({ formats: ["qr_code"] });
 
-        let stream: MediaStream;
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: false,
-            video: {
-              facingMode: { ideal: "environment" },
-              width: { ideal: 640 },
-              height: { ideal: 480 },
-              frameRate: { ideal: 30, max: 30 },
-            },
-          });
-        } catch (primaryError: any) {
-          if (
-            primaryError?.name !== "OverconstrainedError" &&
-            primaryError?.name !== "ConstraintNotSatisfiedError"
-          ) {
-            throw primaryError;
+        let stream: MediaStream | null = await consumeEnvStreamPool();
+        let lastError: any = null;
+
+        if (!stream) {
+          for (let attempt = 0; attempt < 3; attempt++) {
+            if (!mountedRef.current) return;
+            try {
+              stream = await navigator.mediaDevices.getUserMedia(ENV_CAMERA_CONSTRAINTS);
+              break;
+            } catch (primaryError: any) {
+              lastError = primaryError;
+              if (
+                primaryError?.name === "OverconstrainedError" ||
+                primaryError?.name === "ConstraintNotSatisfiedError"
+              ) {
+                try {
+                  stream = await navigator.mediaDevices.getUserMedia(ENV_CAMERA_FALLBACK_CONSTRAINTS);
+                  break;
+                } catch (fallbackErr: any) {
+                  lastError = fallbackErr;
+                  break;
+                }
+              } else if (
+                primaryError?.name === "NotReadableError" ||
+                primaryError?.name === "AbortError"
+              ) {
+                // Wait briefly if hardware camera is releasing from previous step
+                await new Promise((res) => setTimeout(res, 220));
+                continue;
+              } else {
+                break;
+              }
+            }
           }
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: false,
-            video: { facingMode: "environment" },
-          });
+        }
+
+        if (!stream) {
+          throw lastError || new Error("Unable to open camera stream");
         }
 
         if (!mountedRef.current) {
@@ -418,9 +521,16 @@ export default function CameraQrScanner({
         const video = videoRef.current;
         if (!video) return;
         video.srcObject = stream;
+        video.setAttribute("playsinline", "true");
+        video.setAttribute("autoplay", "true");
+        video.muted = true;
+
         video.onloadedmetadata = () => {
-          setLoading(false);
+          if (mountedRef.current) {
+            setLoading(false);
+          }
         };
+
         try {
           await video.play();
         } catch (err: any) {
@@ -433,7 +543,10 @@ export default function CameraQrScanner({
             throw err;
           }
         }
-        setLoading(false);
+
+        if (mountedRef.current) {
+          setLoading(false);
+        }
 
         const [track] = stream.getVideoTracks();
         const capabilities =
@@ -456,7 +569,6 @@ export default function CameraQrScanner({
           await applyZoom(track, initialZoom);
         }
 
-        setLoading(false);
         rafRef.current = window.requestAnimationFrame(() => {
           void detectFrame();
         });
@@ -464,14 +576,18 @@ export default function CameraQrScanner({
         try {
           if (detectorSupported) {
             await startFallbackScanner();
-            setLoading(false);
+            if (mountedRef.current) {
+              setLoading(false);
+            }
             return;
           }
         } catch {
           // Fall through to show error.
         }
-        setLoading(false);
-        setError(getCameraErrorMessage(err));
+        if (mountedRef.current) {
+          setLoading(false);
+          setError(getCameraErrorMessage(err));
+        }
       }
     };
 
