@@ -168,10 +168,34 @@ app.use(
 app.use(compression());
 
 // ----------------------------------------------------
-// Core Middleware
+// Core Middleware (Performance-optimized body parsers)
 // ----------------------------------------------------
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true }));
+const defaultJsonParser = express.json({ limit: "50kb" });
+const heavyJsonParser = express.json({ limit: "8mb" });
+
+// Heavy payload endpoints that process base64 images, face signatures, or photo uploads
+function isHeavyPayloadRoute(req) {
+  const target = String(req.originalUrl || req.path || req.url || "");
+  return (
+    target.startsWith("/api/student/register") ||
+    target.startsWith("/api/auth/device-change-request") ||
+    target.startsWith("/api/faculty/profile/photo") ||
+    target.startsWith("/api/admin/profile") ||
+    target.startsWith("/api/attendance/mark") ||
+    target.startsWith("/api/attendance/scan-grant/mark") ||
+    target.startsWith("/api/attendance/totp") ||
+    target.startsWith("/api/attendance/submit")
+  );
+}
+
+app.use((req, res, next) => {
+  if (isHeavyPayloadRoute(req)) {
+    return heavyJsonParser(req, res, next);
+  }
+  return defaultJsonParser(req, res, next);
+});
+
+app.use(express.urlencoded({ extended: true, limit: "50kb" }));
 
 // ----------------------------------------------------
 // API Routes

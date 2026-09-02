@@ -26,50 +26,80 @@ const QR_PRECHECK_SKEW_SECONDS = env.QR_PRECHECK_SKEW_SECONDS;
 
 const scanGrantsMemoryStore = new Map();
 const activeSessionsMemoryCache = new Map();
+const sessionInflightPromises = new Map();
 const ACTIVE_SESSION_CACHE_TTL_MS = 5000;
+const ACTIVE_SESSION_CACHE_MAX_SIZE = 200;
+
+function setCachedSession(sid, session) {
+  if (activeSessionsMemoryCache.size >= ACTIVE_SESSION_CACHE_MAX_SIZE) {
+    const oldestKey = activeSessionsMemoryCache.keys().next().value;
+    if (oldestKey) {
+      activeSessionsMemoryCache.delete(oldestKey);
+    }
+  }
+  activeSessionsMemoryCache.delete(sid);
+  activeSessionsMemoryCache.set(sid, { session, cachedAt: Date.now() });
+}
 
 async function getCachedActiveSession(sessionId) {
   const sid = String(sessionId);
   const cached = activeSessionsMemoryCache.get(sid);
   const now = Date.now();
   if (cached && now - cached.cachedAt < ACTIVE_SESSION_CACHE_TTL_MS) {
+    // Refresh LRU order on hit
+    activeSessionsMemoryCache.delete(sid);
+    activeSessionsMemoryCache.set(sid, cached);
     return cached.session;
   }
 
-  const supabase = getSupabaseClient();
-  if (!supabase) return null;
-
-  const { data: rawSession } = await supabase
-    .from("sessions")
-    .select(`
-      id,
-      faculty,
-      subject,
-      department,
-      year,
-      semester,
-      section,
-      location,
-      is_active,
-      start_time,
-      last_activity_at,
-      subj:subjects(id, name, code, created_by_admin, departments)
-    `)
-    .eq("id", sid)
-    .single();
-
-  if (!rawSession) {
-    activeSessionsMemoryCache.delete(sid);
-    return null;
+  // Deduplicate concurrent inflight requests for the same session ID
+  if (sessionInflightPromises.has(sid)) {
+    return sessionInflightPromises.get(sid);
   }
 
-  const session = await expireIfInactive(rawSession);
-  if (session && (session.is_active || session.isActive)) {
-    activeSessionsMemoryCache.set(sid, { session, cachedAt: now });
-  } else {
-    activeSessionsMemoryCache.delete(sid);
-  }
-  return session;
+  const fetchPromise = (async () => {
+    try {
+      const supabase = getSupabaseClient();
+      if (!supabase) return null;
+
+      const { data: rawSession } = await supabase
+        .from("sessions")
+        .select(`
+          id,
+          faculty,
+          subject,
+          department,
+          year,
+          semester,
+          section,
+          location,
+          is_active,
+          start_time,
+          last_activity_at,
+          subj:subjects(id, name, code, created_by_admin, departments)
+        `)
+        .eq("id", sid)
+        .single();
+
+      if (!rawSession) {
+        activeSessionsMemoryCache.delete(sid);
+        return null;
+      }
+
+      const session = await expireIfInactive(rawSession);
+      if (session && (session.is_active || session.isActive)) {
+        setCachedSession(sid, session);
+      } else {
+        activeSessionsMemoryCache.delete(sid);
+      }
+      return session;
+    } finally {
+      sessionInflightPromises.delete(sid);
+    }
+  })();
+
+  sessionInflightPromises.set(sid, fetchPromise);
+  return fetchPromise;
 }
 
 function cleanupExpiredScanGrants() {
@@ -79,6 +109,29 @@ function cleanupExpiredScanGrants() {
       scanGrantsMemoryStore.delete(key);
     }
   }
+}
+
+function cleanupExpiredActiveSessions() {
+  const now = Date.now();
+  for (const [key, cached] of activeSessionsMemoryCache.entries()) {
+    if (!cached || now - Number(cached.cachedAt || 0) >= ACTIVE_SESSION_CACHE_TTL_MS) {
+      activeSessionsMemoryCache.delete(key);
+    }
+  }
+}
+
+// Background cleanup interval (sweeps orphaned grants and expired sessions every 60s)
+const memoryStoresCleanupInterval = setInterval(() => {
+  try {
+    cleanupExpiredScanGrants();
+    cleanupExpiredActiveSessions();
+  } catch (err) {
+    console.warn("Memory store cleanup warning:", err?.message || err);
+  }
+}, 60000);
+
+if (memoryStoresCleanupInterval.unref) {
+  memoryStoresCleanupInterval.unref();
 }
 
 function getRequestMeta(req) {
@@ -139,7 +192,6 @@ async function recordAttendanceAudit(entry) {
 }
 
 async function saveScanGrant({ token, studentId, sessionId, fingerprint }) {
-  cleanupExpiredScanGrants();
   const expiresAt = Date.now() + SCAN_GRANT_TTL_MS;
   const grant = {
     studentId: String(studentId),
@@ -170,7 +222,6 @@ async function saveScanGrant({ token, studentId, sessionId, fingerprint }) {
 }
 
 async function consumeScanGrant({ token, studentId, sessionId, fingerprint }) {
-  cleanupExpiredScanGrants();
   const key = String(token);
   let grant = scanGrantsMemoryStore.get(key);
 
@@ -200,6 +251,9 @@ async function consumeScanGrant({ token, studentId, sessionId, fingerprint }) {
   }
 
   if (!grant || grant.consumed || grant.expiresAt < Date.now()) {
+    if (grant && grant.expiresAt < Date.now()) {
+      scanGrantsMemoryStore.delete(key);
+    }
     return { ok: false, error: "Scan grant invalid or expired" };
   }
 
@@ -269,35 +323,13 @@ router.post(
       }
 
       const sessionId = verified.decoded.sessionId;
-      const supabase = getSupabaseClient();
-      if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
-
-      const { data: rawSession } = await supabase
-        .from("sessions")
-        .select(`
-          id,
-          faculty,
-          subject,
-          department,
-          year,
-          semester,
-          section,
-          location,
-          is_active,
-          start_time,
-          last_activity_at,
-          subj:subjects(id, name, code, created_by_admin, departments)
-        `)
-        .eq("id", sessionId)
-        .single();
-
-      if (!rawSession) {
+      const session = await getCachedActiveSession(sessionId);
+      if (!session) {
         return res.status(404).json({ ok: false, error: "Session not found" });
       }
 
-      const session = await expireIfInactive(rawSession);
       const isRunning = Boolean(session?.is_active ?? session?.isActive);
-      if (!session || !isRunning) {
+      if (!isRunning) {
         return res.status(400).json({ ok: false, error: "Session is no longer active" });
       }
 
@@ -336,6 +368,9 @@ router.post(
       }
 
       // Check if attendance already marked
+      const supabase = getSupabaseClient();
+      if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
+
       const { data: existingAttendance } = await supabase
         .from("attendances")
         .select("id")
@@ -556,10 +591,43 @@ router.post(
         throw insertError || new Error("Failed to record attendance");
       }
 
-      await touchSession(sessionId);
-
+      // Synchronously capture request metadata before connection ends
       const requestMeta = getRequestMeta(req);
-      await recordAttendanceAudit({
+
+      // Realtime Broadcast Payload
+      const attendanceBroadcastPayload = {
+        id: attendance.id,
+        _id: attendance.id,
+        sessionId,
+        studentId: student.id,
+        studentName: student.name,
+        enrollmentNo: student.enrollment_no,
+        timestamp: attendance.timestamp,
+        status: "present",
+        method: "QR_TWO_STEP",
+      };
+
+      // 1. Immediately return success response to student
+      res.json({
+        ok: true,
+        attendanceId: attendance.id,
+        _id: attendance.id,
+        status: "present",
+        markedAt: attendance.timestamp,
+        session: {
+          id: session.id,
+          _id: session.id,
+          subjectName: session.subj?.name || "Subject",
+          subjectCode: session.subj?.code || "",
+        },
+      });
+
+      // 2. Fire side effects asynchronously (non-blocking) with error handlers
+      touchSession(sessionId).catch((err) => {
+        console.warn("Background touchSession warning:", err?.message || err);
+      });
+
+      recordAttendanceAudit({
         attendanceId: attendance.id,
         sessionId,
         studentId: student.id,
@@ -581,36 +649,15 @@ router.post(
         qr: { firstIat, secondIat, gapSeconds },
         faceVerification: faceVerificationResult,
         requestMeta,
+      }).catch((err) => {
+        console.error("Background attendance audit log error:", err?.message || err);
       });
 
-      // Realtime Broadcast
-      const attendanceBroadcastPayload = {
-        id: attendance.id,
-        _id: attendance.id,
-        sessionId,
-        studentId: student.id,
-        studentName: student.name,
-        enrollmentNo: student.enrollment_no,
-        timestamp: attendance.timestamp,
-        status: "present",
-        method: "QR_TWO_STEP",
-      };
-
-      await broadcastAttendance(sessionId, attendanceBroadcastPayload);
-
-      return res.json({
-        ok: true,
-        attendanceId: attendance.id,
-        _id: attendance.id,
-        status: "present",
-        markedAt: attendance.timestamp,
-        session: {
-          id: session.id,
-          _id: session.id,
-          subjectName: session.subj?.name || "Subject",
-          subjectCode: session.subj?.code || "",
-        },
+      broadcastAttendance(sessionId, attendanceBroadcastPayload).catch((err) => {
+        console.error("Background realtime broadcast error:", err?.message || err);
       });
+
+      return;
     } catch (err) {
       console.error("Mark attendance error:", err);
       return res.status(500).json({ ok: false, error: err?.message || "Server error" });
@@ -949,7 +996,7 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
         section: s.section,
       }));
 
-      // 3) Fetch Recorded Attendances for matching sessions
+      // 3) Fetch Recorded Attendances for matching sessions (direct select without N+1 relational joins)
       const sessionIds = subjectSessions.map((s) => String(s.id));
       let records = [];
 
@@ -973,11 +1020,7 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
             status,
             device_fingerprint,
             location,
-            face_verification,
-            stu:students(id, name, enrollment_no, email, profile_photo_url),
-            subj:subjects(id, name, code),
-            fac:faculties(id, name),
-            sess:sessions(id, year, semester, section, department, start_time, end_time)
+            face_verification
           `)
           .in("session", sessionIds)
           .order("timestamp", { ascending: false });
@@ -999,11 +1042,7 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
               status,
               device_fingerprint,
               location,
-              face_verification,
-              stu:students(id, name, enrollment_no, email, profile_photo_url),
-              subj:subjects(id, name, code),
-              fac:faculties(id, name),
-              sess:sessions(id, year, semester, section, department, start_time, end_time)
+              face_verification
             `)
             .in("session", sessionIds)
             .order("timestamp", { ascending: false });
@@ -1015,11 +1054,40 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
         }
         if (attErr) throw attErr;
 
+        // In-memory O(1) lookups from already-fetched data
+        const studentMap = new Map();
+        for (const s of enrolledStudents) {
+          studentMap.set(String(s.id), s);
+          if (s.enrollmentNo) {
+            studentMap.set(String(s.enrollmentNo).trim().toUpperCase(), s);
+          }
+        }
+
+        const sessionMap = new Map();
+        for (const s of subjectSessions) {
+          sessionMap.set(String(s.id), s);
+        }
+
+        const subjectMeta = {
+          id: subjectCheck.id,
+          _id: subjectCheck.id,
+          name: subjectCheck.name || "Subject",
+          code: subjectCheck.code || "",
+        };
+
         records = (rawAttendances || []).map((item) => {
-          const effectiveEnrollmentNo = item.stu?.enrollment_no || item.enrollment_no || "";
-          const effectiveName = item.stu?.name || item.student_name || "Student (Archived)";
-          const effectiveEmail = item.stu?.email || item.student_email || "";
-          const effectiveStudentId = item.stu?.id || item.student || (effectiveEnrollmentNo ? `archived_${effectiveEnrollmentNo}` : `archived_${item.id}`);
+          const stu =
+            studentMap.get(String(item.student)) ||
+            (item.enrollment_no ? studentMap.get(String(item.enrollment_no).trim().toUpperCase()) : null);
+          const sess = sessionMap.get(String(item.session));
+
+          const effectiveEnrollmentNo = stu?.enrollmentNo || stu?.enrollment_no || item.enrollment_no || "";
+          const effectiveName = stu?.name || item.student_name || "Student (Archived)";
+          const effectiveEmail = stu?.email || item.student_email || "";
+          const effectiveStudentId = stu?.id || item.student || (effectiveEnrollmentNo ? `archived_${effectiveEnrollmentNo}` : `archived_${item.id}`);
+
+          const facultyId = sess?.faculty || item.faculty || "";
+          const facultyName = sess?.fac?.name || "Faculty";
 
           return {
             id: item.id,
@@ -1034,19 +1102,14 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
               enrollmentNo: effectiveEnrollmentNo,
               enrollment_no: effectiveEnrollmentNo,
               email: effectiveEmail,
-              profilePhotoUrl: item.stu?.profile_photo_url || "",
-              isArchived: !item.stu,
+              profilePhotoUrl: stu?.profilePhotoUrl || stu?.profile_photo_url || "",
+              isArchived: !stu,
             },
-            subject: {
-              id: item.subj?.id || item.subject,
-              _id: item.subj?.id || item.subject,
-              name: item.subj?.name || "Subject",
-              code: item.subj?.code || "",
-            },
+            subject: subjectMeta,
             faculty: {
-              id: item.fac?.id || item.faculty,
-              _id: item.fac?.id || item.faculty,
-              name: item.fac?.name || "Faculty",
+              id: facultyId,
+              _id: facultyId,
+              name: facultyName,
             },
             status: item.status || "present",
             timestamp: item.timestamp,
@@ -1644,7 +1707,29 @@ async function handleManualAttendance(req, res) {
     }
 
     const requestMeta = getRequestMeta(req);
-    await recordAttendanceAudit({
+    const attendanceBroadcastPayload = {
+      id: attendance?.id || sessionId,
+      _id: attendance?.id || sessionId,
+      sessionId: String(sessionId),
+      studentId: String(student.id),
+      studentName: student.name,
+      enrollmentNo: student.enrollment_no,
+      timestamp: new Date().toISOString(),
+      status,
+      method: "MANUAL",
+    };
+
+    // 1. Immediately return success response
+    res.json({
+      ok: true,
+      sessionId: String(sessionId),
+      studentId: String(student.id),
+      enrollmentNo: student.enrollment_no,
+      status,
+    });
+
+    // 2. Fire audit log and realtime broadcast in the background (non-blocking)
+    recordAttendanceAudit({
       attendanceId: attendance?.id || null,
       sessionId: String(sessionId),
       studentId: String(student.id),
@@ -1658,29 +1743,15 @@ async function handleManualAttendance(req, res) {
       actorRole: req.userRole,
       actorId: req.userId,
       requestMeta,
+    }).catch((err) => {
+      console.error("Background manual attendance audit error:", err?.message || err);
     });
 
-    const attendanceBroadcastPayload = {
-      id: attendance?.id || sessionId,
-      _id: attendance?.id || sessionId,
-      sessionId: String(sessionId),
-      studentId: String(student.id),
-      studentName: student.name,
-      enrollmentNo: student.enrollment_no,
-      timestamp: new Date().toISOString(),
-      status,
-      method: "MANUAL",
-    };
-
-    await broadcastAttendance(sessionId, attendanceBroadcastPayload);
-
-    return res.json({
-      ok: true,
-      sessionId: String(sessionId),
-      studentId: String(student.id),
-      enrollmentNo: student.enrollment_no,
-      status,
+    broadcastAttendance(sessionId, attendanceBroadcastPayload).catch((err) => {
+      console.error("Background manual realtime broadcast error:", err?.message || err);
     });
+
+    return;
   } catch (err) {
     console.error("Manual attendance error:", err);
     return res.status(500).json({

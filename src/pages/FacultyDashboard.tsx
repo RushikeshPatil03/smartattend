@@ -1369,53 +1369,72 @@ const FacultyDashboard: React.FC = () => {
         return alert(res?.error || "Failed to load sheet");
       }
 
-      // Map all conducted sessions into columns (Guarantees 100% Class Counts):
-      const sessionList = Array.isArray(res.sessions) ? res.sessions : [];
-      const columns = sessionList.map((sess: any) => {
-        const dateObj = new Date(sess.start_time || sess.startTime || sess.created_at || Date.now());
-        const dateLabel = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, "0")}-${String(dateObj.getDate()).padStart(2, "0")} ${String(dateObj.getHours()).padStart(2, "0")}:${String(dateObj.getMinutes()).padStart(2, "0")}`;
-        const facName = sess.fac?.name || sess.faculty?.name || "";
-        const label = facName ? `${dateLabel} (${facName})` : dateLabel;
-        return `${sess.id || sess._id}::${label}`;
-      });
+      // Compute matrix asynchronously in an idle frame to avoid blocking the main UI thread
+      const { columns, rows } = await new Promise<{ columns: string[]; rows: any[] }>((resolve) => {
+        const compute = () => {
+          // Map all conducted sessions into columns:
+          const sessionList = Array.isArray(res.sessions) ? res.sessions : [];
+          const cols = sessionList.map((sess: any) => {
+            const dateObj = new Date(sess.start_time || sess.startTime || sess.created_at || Date.now());
+            const dateLabel = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, "0")}-${String(dateObj.getDate()).padStart(2, "0")} ${String(dateObj.getHours()).padStart(2, "0")}:${String(dateObj.getMinutes()).padStart(2, "0")}`;
+            const facName = sess.fac?.name || sess.faculty?.name || "";
+            const label = facName ? `${dateLabel} (${facName})` : dateLabel;
+            return `${sess.id || sess._id}::${label}`;
+          });
 
-      // Map all enrolled students into rows:
-      let studentList = Array.isArray(res.students) ? res.students : [];
-      if (studentList.length === 0 && Array.isArray(res.attendance)) {
-        const stuMap = new Map<string, { name: string; enrollmentNo: string }>();
-        res.attendance.forEach((att: any) => {
-          const eno = String(att.student?.enrollmentNo || att.student?.enrollment_no || "").trim().toUpperCase();
-          if (eno && !stuMap.has(eno)) {
-            stuMap.set(eno, { name: att.student?.name || "Student", enrollmentNo: eno });
+          // Map all enrolled students into rows:
+          let studentList = Array.isArray(res.students) ? res.students : [];
+          if (studentList.length === 0 && Array.isArray(res.attendance)) {
+            const stuMap = new Map<string, { name: string; enrollmentNo: string }>();
+            res.attendance.forEach((att: any) => {
+              const eno = String(att.student?.enrollmentNo || att.student?.enrollment_no || "").trim().toUpperCase();
+              if (eno && !stuMap.has(eno)) {
+                stuMap.set(eno, { name: att.student?.name || "Student", enrollmentNo: eno });
+              }
+            });
+            studentList = Array.from(stuMap.values());
           }
-        });
-        studentList = Array.from(stuMap.values());
-      }
 
-      const presentSet = new Set<string>(); // Stores "enrollmentNo|sessionId"
-      (res.attendance || []).forEach((att: any) => {
-        const eno = String(att.student?.enrollmentNo || att.student?.enrollment_no || "").trim().toUpperCase();
-        const sid = String(att.session?._id || att.session || att.sessionId || "").trim();
-        if (eno && sid && String(att.status).toLowerCase() === "present") {
-          presentSet.add(`${eno}|${sid}`);
+          const presentSet = new Set<string>(); // Stores "enrollmentNo|sessionId"
+          (res.attendance || []).forEach((att: any) => {
+            const eno = String(att.student?.enrollmentNo || att.student?.enrollment_no || "").trim().toUpperCase();
+            const sid = String(att.session?._id || att.session || att.sessionId || "").trim();
+            if (eno && sid && String(att.status).toLowerCase() === "present") {
+              presentSet.add(`${eno}|${sid}`);
+            }
+          });
+
+          // Pre-cache split keys to avoid repeated string splitting inside inner cell loop
+          const parsedCols = cols.map((c) => ({
+            colStr: c,
+            colKey: c.split("::")[0],
+          }));
+
+          const matrixRows = studentList
+            .map((stu: any) => {
+              const eno = String(stu.enrollmentNo || stu.enrollment_no || "").trim().toUpperCase();
+              const attRec: Record<string, "P" | "A"> = {};
+              for (let i = 0; i < parsedCols.length; i++) {
+                const { colStr, colKey } = parsedCols[i];
+                attRec[colStr] = presentSet.has(`${eno}|${colKey}`) ? "P" : "A";
+              }
+              return {
+                name: stu.name,
+                enrollmentNo: eno,
+                attendance: attRec,
+              };
+            })
+            .sort((a, b) => a.enrollmentNo.localeCompare(b.enrollmentNo));
+
+          resolve({ columns: cols, rows: matrixRows });
+        };
+
+        if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+          (window as any).requestIdleCallback(compute, { timeout: 200 });
+        } else {
+          setTimeout(compute, 0);
         }
       });
-
-      const rows = studentList
-        .map((stu: any) => {
-          const eno = String(stu.enrollmentNo || stu.enrollment_no || "").trim().toUpperCase();
-          const attRec: Record<string, "P" | "A"> = {};
-          columns.forEach((colStr) => {
-            const [colKey] = colStr.split("::");
-            attRec[colStr] = presentSet.has(`${eno}|${colKey}`) ? "P" : "A";
-          });
-          return {
-            name: stu.name,
-            enrollmentNo: eno,
-            attendance: attRec,
-          };
-        })
-        .sort((a, b) => a.enrollmentNo.localeCompare(b.enrollmentNo));
 
       setSheetColumns(columns);
       setSheetRows(rows);
