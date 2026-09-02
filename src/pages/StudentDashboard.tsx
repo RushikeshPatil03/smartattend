@@ -367,12 +367,12 @@ const MyAttendanceCard: React.FC = () => {
     }
   }, []);
 
-  // Auto-load when first expanded
+  // Auto-load on mount
   useEffect(() => {
-    if (expanded && loadState === "idle") {
-      void fetchOverview(false);
+    if (loadState === "idle") {
+      void fetchOverview(true);
     }
-  }, [expanded, loadState, fetchOverview]);
+  }, [loadState, fetchOverview]);
 
   const sorted = useMemo(() => {
     if (!overviewData) return [];
@@ -895,11 +895,10 @@ const StudentDashboard: React.FC = () => {
     }
   }, []);
 
-  // Fetch today's classes and overview data on initial dashboard visit
+  // Fetch today's classes on initial dashboard visit
   useEffect(() => {
     void loadStudentData();
-    void fetchOverview(true);
-  }, [loadStudentData, fetchOverview]);
+  }, [loadStudentData]);
 
   const warmLocation = useCallback(() => {
     if (locationWarmupPromiseRef.current) {
