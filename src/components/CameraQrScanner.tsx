@@ -54,53 +54,11 @@ function isEnvStreamUsable(stream: MediaStream | null): stream is MediaStream {
 }
 
 export async function prewarmQrCamera(): Promise<void> {
-  if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) return;
-  if (isEnvStreamUsable(envStreamPool) || envStreamPoolPromise) return;
-
-  envStreamPoolPromise = (async () => {
-    try {
-      const stream = await navigator.mediaDevices
-        .getUserMedia(ENV_CAMERA_CONSTRAINTS)
-        .catch(() => navigator.mediaDevices.getUserMedia(ENV_CAMERA_FALLBACK_CONSTRAINTS));
-      if (isEnvStreamUsable(stream)) {
-        envStreamPool = stream;
-        return stream;
-      } else {
-        stream.getTracks().forEach((t) => t.stop());
-        return null;
-      }
-    } catch {
-      return null;
-    } finally {
-      envStreamPoolPromise = null;
-    }
-  })();
-
-  await envStreamPoolPromise;
+  // Keep camera hardware unlocked until scanner is explicitly opened
 }
 
 export async function consumeEnvStreamPool(): Promise<MediaStream | null> {
-  if (!isEnvStreamUsable(envStreamPool) && envStreamPoolPromise) {
-    try {
-      await Promise.race([
-        envStreamPoolPromise,
-        new Promise((resolve) => setTimeout(resolve, 300)),
-      ]);
-    } catch {
-      // Ignore race timeout
-    }
-  }
-
-  let stream: MediaStream | null = null;
-  if (isEnvStreamUsable(envStreamPool)) {
-    stream = envStreamPool;
-    envStreamPool = null;
-  } else if (envStreamPool) {
-    envStreamPool.getTracks().forEach((t) => t.stop());
-    envStreamPool = null;
-  }
-
-  return stream;
+  return null;
 }
 
 const SCAN_INTERVAL_MS = 60;

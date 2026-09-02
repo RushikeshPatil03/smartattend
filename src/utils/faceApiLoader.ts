@@ -172,17 +172,11 @@ export function loadModelsIfNeeded(): Promise<FaceApi> {
       }
     }
 
-    // Schedule background WebGL shader and tensor warmup
-    if (typeof window !== "undefined") {
-      if ("requestIdleCallback" in window) {
-        (window as any).requestIdleCallback(() => {
-          void warmUpEngine(faceapi);
-        });
-      } else {
-        setTimeout(() => {
-          void warmUpEngine(faceapi);
-        }, 100);
-      }
+    // Immediately compile WebGL shaders and allocate tensor buffers
+    try {
+      await warmUpEngine(faceapi);
+    } catch {
+      // Warmup failures are non-blocking
     }
 
     return faceapi;
@@ -362,12 +356,18 @@ export async function computeDescriptorFromImageURL(url: string): Promise<Float3
 }
 
 export async function computeDescriptorFromVideoFrame(video: HTMLVideoElement) {
+  if (!video || !video.videoWidth || !video.videoHeight || video.readyState < 2) {
+    throw new Error("Camera feed is not ready yet.");
+  }
   const faceapi = await loadModelsIfNeeded();
   const canvas = drawSmallSquare(video, video.videoWidth, video.videoHeight, true);
   return detectDescriptor(faceapi, canvas);
 }
 
 export async function computeLandmarksFromVideoFrame(video: HTMLVideoElement) {
+  if (!video || !video.videoWidth || !video.videoHeight || video.readyState < 2) {
+    return null;
+  }
   const faceapi = await loadModelsIfNeeded();
   const canvas = drawTrackingSquare(video, video.videoWidth, video.videoHeight);
   const result = await faceapi

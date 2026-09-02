@@ -1,16 +1,22 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useApp } from "../store";
 
 export default function ProtectedRoute({ roles }: { roles: string[] }) {
   const location = useLocation();
-  const { currentUser, restoreSession } = useApp();
+  const { currentUser, restoreSession, syncUserProfile } = useApp();
   const [checking, setChecking] = useState(!currentUser);
+  const syncedOnVisitRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
     if (currentUser) {
       setChecking(false);
+      // Fetch any changes made by admin (college name, college photo) on visit
+      if (!syncedOnVisitRef.current) {
+        syncedOnVisitRef.current = true;
+        void syncUserProfile();
+      }
       return;
     }
 
@@ -22,7 +28,7 @@ export default function ProtectedRoute({ roles }: { roles: string[] }) {
     return () => {
       cancelled = true;
     };
-  }, [currentUser, restoreSession]);
+  }, [currentUser, restoreSession, syncUserProfile]);
 
   if (checking) {
     return (

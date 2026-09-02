@@ -153,6 +153,14 @@ router.put("/profile", adminAuth, async (req, res) => {
       throw error || new Error("Failed to update profile");
     }
 
+    if (updates.college_name) {
+      await supabase
+        .from("students")
+        .update({ college_name: updates.college_name })
+        .eq("created_by_admin", adminId)
+        .catch(() => undefined);
+    }
+
     return res.json({
       ok: true,
       admin: {

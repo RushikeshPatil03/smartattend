@@ -136,10 +136,6 @@ async function compareLegacyFaceSignatures(referenceUrl: string, liveDataUrl: st
   return { score, matched: score >= LEGACY_FACE_SCORE_THRESHOLD };
 }
 
-// Persistent front camera stream pool — auto-refills after each use
-let frontStreamPool: MediaStream | null = null;
-let frontStreamPoolPromise: Promise<MediaStream | null> | null = null;
-
 const FRONT_CAMERA_CONSTRAINTS: MediaStreamConstraints = {
   audio: false,
   video: {
@@ -155,63 +151,17 @@ const FRONT_CAMERA_FALLBACK_CONSTRAINTS: MediaStreamConstraints = {
   video: { facingMode: "user" as const },
 };
 
-function isStreamUsable(stream: MediaStream | null): stream is MediaStream {
-  if (!stream || !stream.active) return false;
-  const tracks = stream.getVideoTracks();
-  return tracks.length > 0 && tracks.some((t) => t.readyState === "live" && !t.muted);
-}
-
+/**
+ * Preloads face verification neural network models and compiles WebGL shaders.
+ * Does NOT acquire an exclusive hardware camera stream in the background to prevent
+ * hardware lockouts, LED indicator surprises, and multi-camera conflicts.
+ */
 export async function prewarmFrontCamera(): Promise<void> {
-  if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) return;
-  // Already warm or warming — skip
-  if (isStreamUsable(frontStreamPool) || frontStreamPoolPromise) return;
-
-  frontStreamPoolPromise = (async () => {
-    try {
-      const stream = await navigator.mediaDevices
-        .getUserMedia(FRONT_CAMERA_CONSTRAINTS)
-        .catch(() => navigator.mediaDevices.getUserMedia(FRONT_CAMERA_FALLBACK_CONSTRAINTS));
-      if (isStreamUsable(stream)) {
-        frontStreamPool = stream;
-        return stream;
-      } else {
-        stream.getTracks().forEach((t) => t.stop());
-        return null;
-      }
-    } catch {
-      // Ignore background prewarm errors silently
-      return null;
-    } finally {
-      frontStreamPoolPromise = null;
-    }
-  })();
-
-  await frontStreamPoolPromise;
-}
-
-// Called inside startCamera — takes the warm stream and immediately coordinates refill
-async function consumeAndRefillPool(): Promise<MediaStream | null> {
-  if (!isStreamUsable(frontStreamPool) && frontStreamPoolPromise) {
-    try {
-      await Promise.race([
-        frontStreamPoolPromise,
-        new Promise((resolve) => setTimeout(resolve, 300)),
-      ]);
-    } catch {
-      // Ignore race timeout
-    }
+  try {
+    await loadModelsIfNeeded();
+  } catch {
+    // Background model prewarm errors are non-blocking
   }
-
-  let stream: MediaStream | null = null;
-  if (isStreamUsable(frontStreamPool)) {
-    stream = frontStreamPool;
-    frontStreamPool = null;
-  } else if (frontStreamPool) {
-    frontStreamPool.getTracks().forEach((t) => t.stop());
-    frontStreamPool = null;
-  }
-
-  return stream;
 }
 
 const LivePhotoCapture: React.FC<{
@@ -282,6 +232,7 @@ const LivePhotoCapture: React.FC<{
   const orientationFrameRef = useRef<number | null>(null);
   const pendingOrientationRef = useRef<{ beta: number | null; gamma: number | null } | null>(null);
   const autoCaptureTimerRef = useRef<number | null>(null);
+  const retryCooldownTimerRef = useRef<number | null>(null);
   const verificationInFlightRef = useRef(false);
 
   const alignmentReady = true;
@@ -297,6 +248,10 @@ const LivePhotoCapture: React.FC<{
 
   const stopCamera = () => {
     verificationInFlightRef.current = false;
+    if (retryCooldownTimerRef.current != null) {
+      window.clearTimeout(retryCooldownTimerRef.current);
+      retryCooldownTimerRef.current = null;
+    }
     const stream = streamRef.current;
     if (stream) {
       stream.getTracks().forEach((track) => track.stop());
@@ -321,9 +276,6 @@ const LivePhotoCapture: React.FC<{
     setLivenessChallenge(null);
     setLivenessDirection(null);
     setLivenessPassed(false);
-
-    // Asynchronously prewarm stream pool for subsequent attempts
-    void prewarmFrontCamera();
   };
 
   const startOrientationTracking = (
@@ -399,6 +351,9 @@ const LivePhotoCapture: React.FC<{
       if (autoCaptureTimerRef.current != null) {
         window.clearTimeout(autoCaptureTimerRef.current);
       }
+      if (retryCooldownTimerRef.current != null) {
+        window.clearTimeout(retryCooldownTimerRef.current);
+      }
     };
   }, []);
 
@@ -463,14 +418,13 @@ const LivePhotoCapture: React.FC<{
   const startCamera = async () => {
     setCaptureError("");
     setCameraLoading(true);
-    setCameraActive(true);
 
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error("Camera is not supported in this browser.");
       }
 
-      // Stop any existing stream tracks first to prevent hardware locks on multi-attempt
+      // 1. Cleanly stop any existing stream tracks first to prevent hardware locks
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
         streamRef.current = null;
@@ -492,23 +446,21 @@ const LivePhotoCapture: React.FC<{
         void requestOrientationPermission();
       }
 
-      await waitForNextFrame();
-
-      const poolStream = await consumeAndRefillPool();
+      // 2. Request front camera directly with graceful constraints fallback
       let stream: MediaStream;
-      if (isStreamUsable(poolStream)) {
-        stream = poolStream;
-      } else {
-        try {
-          stream = await navigator.mediaDevices.getUserMedia(FRONT_CAMERA_CONSTRAINTS);
-        } catch {
-          stream = await navigator.mediaDevices.getUserMedia(FRONT_CAMERA_FALLBACK_CONSTRAINTS);
-        }
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(FRONT_CAMERA_CONSTRAINTS);
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia(FRONT_CAMERA_FALLBACK_CONSTRAINTS);
       }
 
       streamRef.current = stream;
-      if (videoRef.current) {
-        const video = videoRef.current;
+      setCameraActive(true);
+
+      // 3. Attach to video element and verify frames are flowing
+      await waitForNextFrame();
+      const video = videoRef.current;
+      if (video) {
         video.srcObject = stream;
         video.style.transform = "none";
         video.setAttribute("playsinline", "true");
@@ -517,8 +469,35 @@ const LivePhotoCapture: React.FC<{
         try {
           await video.play();
         } catch {
-          // Ignore autoplay restriction / interruption
+          // Ignore autoplay restriction
         }
+
+        // Wait until video has valid dimensions and is actively streaming frames
+        await new Promise<void>((resolve) => {
+          if (video.videoWidth > 0 && video.videoHeight > 0) {
+            resolve();
+            return;
+          }
+          let resolved = false;
+          const onReady = () => {
+            if (!resolved) {
+              resolved = true;
+              video.removeEventListener("loadeddata", onReady);
+              video.removeEventListener("playing", onReady);
+              resolve();
+            }
+          };
+          video.addEventListener("loadeddata", onReady, { once: true });
+          video.addEventListener("playing", onReady, { once: true });
+          setTimeout(() => {
+            if (!resolved) {
+              resolved = true;
+              video.removeEventListener("loadeddata", onReady);
+              video.removeEventListener("playing", onReady);
+              resolve();
+            }
+          }, 1200);
+        });
       }
     } catch (error: any) {
       stopCamera();
@@ -641,7 +620,19 @@ const LivePhotoCapture: React.FC<{
       setLivenessPassed(false);
       setLivenessChallenge(null);
       setLivenessDirection(null);
-      setCaptureError(error?.message || "Unable to capture photo.");
+      const errMsg = error?.message || "Unable to capture photo.";
+      setCaptureError(errMsg);
+
+      // In autoCapture mode, schedule a calm 3-second auto-retry so warnings do not flash rapidly
+      if (autoCapture) {
+        if (retryCooldownTimerRef.current != null) {
+          window.clearTimeout(retryCooldownTimerRef.current);
+        }
+        retryCooldownTimerRef.current = window.setTimeout(() => {
+          retryCooldownTimerRef.current = null;
+          setCaptureError("");
+        }, 3000);
+      }
     } finally {
       verificationInFlightRef.current = false;
       setVerificationInProgress(false);
@@ -731,7 +722,8 @@ const LivePhotoCapture: React.FC<{
       cameraLoading ||
       disabled ||
       value ||
-      verificationInProgress
+      verificationInProgress ||
+      captureError
     ) {
       return;
     }
@@ -740,7 +732,7 @@ const LivePhotoCapture: React.FC<{
       return;
     }
 
-    const delay = 120;
+    const delay = 450;
     autoCaptureTimerRef.current = window.setTimeout(() => {
       capturePhoto();
       autoCaptureTimerRef.current = null;
@@ -756,6 +748,7 @@ const LivePhotoCapture: React.FC<{
     autoCapture,
     cameraActive,
     cameraLoading,
+    captureError,
     disabled,
     faceQualityReady,
     verificationInProgress,
@@ -982,7 +975,25 @@ const LivePhotoCapture: React.FC<{
             ) : null}
           </div>
 
-          {!autoCapture ? (
+          {autoCapture && captureError ? (
+            <div className="flex items-center justify-center pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  if (retryCooldownTimerRef.current != null) {
+                    window.clearTimeout(retryCooldownTimerRef.current);
+                    retryCooldownTimerRef.current = null;
+                  }
+                  setCaptureError("");
+                  void capturePhoto();
+                }}
+                className="w-full sm:w-auto px-6 py-2.5 bg-gradient-to-r from-sky-600 to-cyan-500 hover:from-sky-500 hover:to-cyan-400 text-white font-semibold text-xs rounded-xl shadow-lg flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-95"
+              >
+                <RefreshCw size={14} />
+                Try Verification Again
+              </button>
+            </div>
+          ) : !autoCapture ? (
             <div className="flex flex-col gap-3 sm:flex-row">
               <Button
                 type="button"

@@ -18,8 +18,8 @@ export const CHALLENGES: readonly LivenessChallenge[] = [
 ] as const;
 
 export const DEFAULT_MOVEMENT_MAX_TIME_MS = Math.max(
-  2400,
-  Number(import.meta.env.VITE_FACEAPI_MOVEMENT_MAX_TIME_MS || 3200)
+  3000,
+  Number(import.meta.env.VITE_FACEAPI_MOVEMENT_MAX_TIME_MS || 4500)
 );
 export const DEFAULT_MOVEMENT_SAMPLE_FPS = Math.max(
   8,
@@ -235,7 +235,8 @@ export async function runMovementLiveness(
 
     if (!pose) {
       missingFaceSamples += 1;
-      if (missingFaceSamples >= 5) {
+      const maxMissingAllowed = !baseline ? 5 : 14;
+      if (missingFaceSamples >= maxMissingAllowed) {
         break;
       }
       await wait(sampleIntervalMs);

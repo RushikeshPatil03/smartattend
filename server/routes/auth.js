@@ -6,6 +6,7 @@ const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const { getSupabaseClient } = require("../config/supabase");
 const rateLimit = require("../middleware/rateLimit");
+const authMiddleware = require("../middleware/authMiddleware");
 const env = require("../config/env");
 const {
   issueTokenPair,
@@ -396,6 +397,60 @@ router.post("/refresh", async (req, res) => {
   } catch {
     clearRefreshCookie(res);
     return res.status(401).json({ ok: false, error: "Invalid refresh token" });
+  }
+});
+
+// GET /api/auth/me - Fetch authenticated user profile with latest admin college branding
+router.get("/me", authMiddleware, async (req, res) => {
+  try {
+    const user = req.user;
+    const roleUpper = String(req.userRole || "").toUpperCase();
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      return res.status(503).json({ ok: false, error: "Database unavailable" });
+    }
+
+    let collegeName = user.college_name || user.collegeName || null;
+    let profilePhotoUrl = user.profile_photo_url || user.profilePhotoUrl || null;
+    const facultyProfilePhotoUrl =
+      roleUpper === "FACULTY" ? String(profilePhotoUrl || "") || null : null;
+    const studentProfilePhotoUrl =
+      roleUpper === "STUDENT" ? String(profilePhotoUrl || "") || null : null;
+
+    // Faculty/Student should always receive their admin's latest college profile details
+    const adminId = user.created_by_admin || user.createdByAdmin;
+    if (roleUpper !== "ADMIN" && adminId) {
+      const { data: adminProfile } = await supabase
+        .from("admins")
+        .select("college_name, profile_photo_url")
+        .eq("id", String(adminId))
+        .single();
+
+      if (adminProfile) {
+        collegeName = adminProfile.college_name || collegeName || null;
+        profilePhotoUrl = adminProfile.profile_photo_url || null;
+      }
+    }
+
+    return res.json({
+      ok: true,
+      user: {
+        id: user.id,
+        _id: user.id,
+        name: user.name,
+        email: user.email,
+        role: roleUpper,
+        enrollmentNo: roleUpper === "STUDENT" ? user.enrollment_no || user.enrollmentNo || null : null,
+        collegeName,
+        profilePhotoUrl,
+        facultyProfilePhotoUrl,
+        studentProfilePhotoUrl,
+        createdByAdmin: adminId || null,
+      },
+    });
+  } catch (err) {
+    console.error("Auth /me error:", err);
+    return res.status(500).json({ ok: false, error: "Server error" });
   }
 });
 

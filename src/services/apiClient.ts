@@ -218,6 +218,8 @@ class ApiClient {
     selfieDataUrl: string;
   }) => this.post("/api/auth/device-change/request", data);
 
+  getMe = (signal?: AbortSignal) => this.get("/api/auth/me", signal);
+
   logout = async () => {
     await this.post("/api/auth/logout").catch(() => undefined);
     this.setToken(null);

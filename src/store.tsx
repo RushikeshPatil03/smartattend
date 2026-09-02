@@ -46,6 +46,7 @@ interface AppContextValue {
   ) => Promise<any>;
   logout: () => Promise<void>;
   restoreSession: () => Promise<any>;
+  syncUserProfile: (signal?: AbortSignal) => Promise<any>;
 
   generateRegistrationLink: (
     type: string,
@@ -245,9 +246,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     const cached = getCache<any[]>(CACHE_KEYS.DEPARTMENTS);
     const hasCachedData = Array.isArray(cached.data) && cached.data.length > 0;
 
-    // Return immediately from cache if fresh and not forced
-    if (!forceRefresh && hasCachedData && !cached.isStale) {
-      return cached.data!;
+    // Return immediately from memory/cache if fresh and not forced
+    if (!forceRefresh && (departments.length > 0 || (hasCachedData && !cached.isStale))) {
+      return departments.length > 0 ? departments : cached.data!;
     }
 
     // Deduplicate in-flight concurrent requests
@@ -278,7 +279,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
 
     return inflightDepartmentsPromise;
-  }, []);
+  }, [departments.length]);
 
   const fetchSubjects = useCallback(async (forceRefresh = false, signal?: AbortSignal) => {
     if (!apiClient.token || signal?.aborted) return [];
@@ -290,9 +291,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       lastSubjectsFetchTimestamp > 0 &&
       now - lastSubjectsFetchTimestamp < 3 * 60 * 1000;
 
-    // Return immediately from memory/cache if fresh within 3 minutes and not forced
-    if (!forceRefresh && (isWithinStaleWindow || (hasCachedData && !cached.isStale))) {
-      return subjects.length > 0 ? subjects : (cached.data || []);
+    // Return immediately from memory/cache only if not forced AND we have valid data
+    if (!forceRefresh && (subjects.length > 0 || (hasCachedData && !cached.isStale && isWithinStaleWindow))) {
+      return subjects.length > 0 ? subjects : cached.data!;
     }
 
     // Deduplicate in-flight concurrent requests
@@ -334,16 +335,41 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     return res?.users || [];
   }, []);
 
+  const syncUserProfile = useCallback(async (signal?: AbortSignal) => {
+    if (!apiClient.token || signal?.aborted) return null;
+    try {
+      const res: any = await apiClient.getMe(signal);
+      if (res?.ok && res.user) {
+        updateCurrentUser({
+          collegeName: res.user.collegeName,
+          profilePhotoUrl: res.user.profilePhotoUrl,
+          facultyProfilePhotoUrl: res.user.facultyProfilePhotoUrl,
+          studentProfilePhotoUrl: res.user.studentProfilePhotoUrl,
+          name: res.user.name,
+          email: res.user.email,
+          createdByAdmin: res.user.createdByAdmin,
+        });
+        return res.user;
+      }
+    } catch {
+      // Non-blocking sync error
+    }
+    return null;
+  }, [updateCurrentUser]);
+
   // Sync initial role data on boot if user was restored from localStorage
   useEffect(() => {
     if (currentUser) {
       const role = String(currentUser?.role || "").toUpperCase();
+      // On visiting the webpage when already logged in, fetch any changes made by admin
+      void syncUserProfile();
+
       if (role === "ADMIN") {
-        void Promise.all([fetchDepartments(), fetchSubjects(), fetchUsers()]);
+        void Promise.allSettled([fetchDepartments(true), fetchSubjects(true), fetchUsers()]);
       } else if (role === "FACULTY") {
-        void Promise.all([fetchDepartments(), fetchSubjects()]);
+        void Promise.allSettled([fetchDepartments(true), fetchSubjects(true)]);
       } else if (role === "STUDENT") {
-        void fetchDepartments();
+        void fetchDepartments(true);
       }
     }
   }, []);
@@ -355,6 +381,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     password: string,
     fingerprint?: string
   ) => {
+    lastSubjectsFetchTimestamp = 0;
+    inflightDepartmentsPromise = null;
+    inflightSubjectsPromise = null;
+
     const res = await apiClient.login(
       role,
       email,
@@ -370,18 +400,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         // Fallback if storage is disabled
       }
       setCurrentUser(res.user);
-      if (res.user.role === "ADMIN") {
-        navigateTo(View.ADMIN_DASHBOARD);
-        void Promise.all([fetchDepartments(), fetchSubjects(), fetchUsers()]);
-      } else if (res.user.role === "FACULTY") {
-        setUsers([]);
-        navigateTo(View.FACULTY_DASHBOARD);
-        void Promise.all([fetchDepartments(), fetchSubjects()]);
-      } else if (res.user.role === "STUDENT") {
-        setSubjects([]);
-        setUsers([]);
-        navigateTo(View.STUDENT_DASHBOARD);
-        void fetchDepartments();
+      const roleUpper = String(res.user.role || "").toUpperCase();
+      const targetPath =
+        roleUpper === "ADMIN" ? "/admin" : roleUpper === "FACULTY" ? "/faculty" : "/student";
+
+      // Automatic page refresh on successful login as requested
+      if (typeof window !== "undefined") {
+        window.location.replace(targetPath);
+      } else {
+        navigate(targetPath);
       }
     }
     return res;
@@ -389,6 +416,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   const logout = async () => {
     await apiClient.logout();
+    lastSubjectsFetchTimestamp = 0;
+    inflightDepartmentsPromise = null;
+    inflightSubjectsPromise = null;
     try {
       if (typeof localStorage !== "undefined") {
         localStorage.removeItem("smartattend_user");
@@ -418,13 +448,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         // Fallback
       }
       setCurrentUser(res.user);
+      void syncUserProfile();
       const role = String(res.user.role || "").toUpperCase();
       if (role === "ADMIN") {
-        void Promise.all([fetchDepartments(), fetchSubjects(), fetchUsers()]);
+        void Promise.allSettled([fetchDepartments(true), fetchSubjects(true), fetchUsers()]);
       } else if (role === "FACULTY") {
-        void Promise.all([fetchDepartments(), fetchSubjects()]);
+        void Promise.allSettled([fetchDepartments(true), fetchSubjects(true)]);
       } else if (role === "STUDENT") {
-        void fetchDepartments();
+        void fetchDepartments(true);
       }
     } else if (res?.status === 401) {
       try {
@@ -438,7 +469,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       setCurrentUser(null);
     }
     return res;
-  }, [fetchDepartments, fetchSubjects, fetchUsers]);
+  }, [fetchDepartments, fetchSubjects, fetchUsers, syncUserProfile]);
 
   // ---------------- ADMIN ----------------
   const generateRegistrationLink = async (
@@ -771,6 +802,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     login,
     logout,
     restoreSession,
+    syncUserProfile,
 
     generateRegistrationLink,
 

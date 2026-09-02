@@ -262,6 +262,13 @@ const Login: React.FC = () => {
           // Ignore session storage issues and continue login flow.
         }
       }
+
+      const roleUpper = String(res?.user?.role || "").toUpperCase();
+      const targetPath =
+        roleUpper === "ADMIN" ? "/admin" : roleUpper === "FACULTY" ? "/faculty" : "/student";
+      if (typeof window !== "undefined") {
+        window.location.replace(targetPath);
+      }
     } catch (err: any) {
       setLoading(false);
       setError(err?.message || "An unexpected error occurred during login.");

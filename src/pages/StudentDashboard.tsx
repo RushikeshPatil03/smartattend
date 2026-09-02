@@ -895,6 +895,12 @@ const StudentDashboard: React.FC = () => {
     }
   }, []);
 
+  // Fetch today's classes and overview data on initial dashboard visit
+  useEffect(() => {
+    void loadStudentData();
+    void fetchOverview(true);
+  }, [loadStudentData, fetchOverview]);
+
   const warmLocation = useCallback(() => {
     if (locationWarmupPromiseRef.current) {
       return locationWarmupPromiseRef.current;
