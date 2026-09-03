@@ -485,8 +485,8 @@ const Register: React.FC = () => {
           {/* Logo Pill */}
           <div className="flex items-center gap-3">
             <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 via-blue-500 to-cyan-400 p-[1.5px] shadow-[0_12px_30px_-8px_rgba(59,130,246,0.8)]">
-              <div className="flex h-full w-full items-center justify-center rounded-[14px] bg-slate-950/95 backdrop-blur">
-                <QrCode className="h-6 w-6 text-cyan-400 animate-pulse" />
+              <div className="flex h-full w-full items-center justify-center rounded-[14px] bg-slate-950/95 backdrop-blur overflow-hidden">
+                <img src="/icon-192.png" alt="SmartAttend Logo" className="h-full w-full object-cover" />
               </div>
             </div>
             <div className="text-left">

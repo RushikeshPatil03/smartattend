@@ -85,23 +85,16 @@ const CollegeHeader: React.FC<CollegeHeaderProps> = ({
                     src={profilePhotoUrl}
                     alt={`${displayCollege} logo`}
                     className="h-full w-full object-cover"
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).src = "/icon-192.png";
+                    }}
                   />
                 ) : (
-                  <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-sky-600 via-cyan-500 to-teal-400 text-white">
-                    <svg
-                      viewBox="0 0 24 24"
-                      className="h-6 w-6"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <path d="M12 17.5h.01" />
-                      <path d="M9.2 14.7a4 4 0 0 1 5.6 0" />
-                      <path d="M6.3 11.8a8 8 0 0 1 11.4 0" />
-                    </svg>
-                  </div>
+                  <img
+                    src="/icon-192.png"
+                    alt={`${displayCollege} logo`}
+                    className="h-full w-full object-cover"
+                  />
                 )}
               </div>
             ) : null}

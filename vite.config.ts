@@ -22,6 +22,7 @@ export default defineConfig(({ mode }) => {
         registerType: "autoUpdate",
         manifest: false,
         workbox: {
+          globPatterns: ["**/*.{js,css,html,ico,png,svg,json}"],
           maximumFileSizeToCacheInBytes: 20 * 1024 * 1024, // 20 MB for face models & wasm
         },
       }),
