@@ -23,7 +23,11 @@ import {
   Fingerprint,
 } from "lucide-react";
 import { useApp, View } from "../store";
-import { getFingerprint } from "../services/attendanceClient";
+import {
+  getFingerprint,
+  initDeviceFingerprint,
+  requestPersistentStorage,
+} from "../services/attendanceClient";
 import apiClient from "../services/apiClient";
 import { Department } from "../types";
 import LivePhotoCapture, { prewarmFrontCamera } from "../components/LivePhotoCapture";
@@ -281,6 +285,7 @@ const Register: React.FC = () => {
           return;
         }
 
+        await initDeviceFingerprint();
         const fingerprint = getFingerprint();
 
         if (roleType === "student") {
@@ -350,6 +355,7 @@ const Register: React.FC = () => {
         }
       }
 
+      void requestPersistentStorage();
       setSuccess(true);
       setTimeout(() => navigateTo(View.LOGIN), 1600);
     } catch (err: any) {

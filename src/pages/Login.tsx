@@ -22,7 +22,11 @@ import {
 } from "lucide-react";
 import { UserRole } from "../types";
 import { useApp } from "../store";
-import { getFingerprint } from "../services/attendanceClient";
+import {
+  getFingerprint,
+  initDeviceFingerprint,
+  requestPersistentStorage,
+} from "../services/attendanceClient";
 import apiClient from "../services/apiClient";
 
 // --- Role Options Configuration ---
@@ -240,6 +244,7 @@ const Login: React.FC = () => {
     setLoading(true);
 
     try {
+      await initDeviceFingerprint();
       const fingerprint = getFingerprint();
 
       const res = await login(
@@ -254,6 +259,9 @@ const Login: React.FC = () => {
         setError(res?.error || "Login failed. Please verify your credentials.");
         return;
       }
+
+      // Request persistent storage protection on successful login
+      void requestPersistentStorage();
 
       if (String(res?.user?.role || "").toUpperCase() === "STUDENT") {
         try {
@@ -378,6 +386,7 @@ const Login: React.FC = () => {
     }
     setDeviceLoading(true);
     try {
+      await initDeviceFingerprint();
       const res: any = await apiClient.submitDeviceChangeRequest({
         verifyToken: deviceVerifyToken,
         fingerprint: getFingerprint(),

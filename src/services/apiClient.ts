@@ -314,6 +314,8 @@ class ApiClient {
     this.put("/api/faculty/profile", data);
   getDeviceChangeRequests = (status = "pending") =>
     this.get(`/api/faculty/device-change-requests?status=${encodeURIComponent(status)}`);
+  getDeviceChangeRequestPhotos = (requestId: string) =>
+    this.get(`/api/faculty/device-change-requests/${encodeURIComponent(requestId)}/photos`);
   reviewDeviceChangeRequest = (
     requestId: string,
     data: { decision: "approved" | "rejected"; reviewNote?: string }

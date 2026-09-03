@@ -4,6 +4,7 @@ import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import HeaderBar from "./components/HeaderBar";
 import ProtectedRoute from "./routes/ProtectedRoute";
 import { useApp } from "./store";
+import { initDeviceFingerprint, requestPersistentStorage } from "./services/attendanceClient";
 
 // Helper to handle stale client cache / dynamic chunk loading retries
 function lazyWithRetry<T extends React.ComponentType<any>>(
@@ -121,6 +122,18 @@ const PageLoader = () => (
 const App = () => {
   const location = useLocation();
   const { currentUser } = useApp();
+
+  // Initialize privacy-safe IndexedDB device fingerprint on app startup
+  useEffect(() => {
+    void initDeviceFingerprint();
+  }, []);
+
+  // Request durable persistent storage whenever a session is active
+  useEffect(() => {
+    if (currentUser) {
+      void requestPersistentStorage();
+    }
+  }, [currentUser]);
 
   // Smart idle prefetch for current user role
   useEffect(() => {

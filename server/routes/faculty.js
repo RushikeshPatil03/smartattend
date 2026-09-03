@@ -524,7 +524,6 @@ router.get("/device-change-requests", authMiddleware, async (req, res) => {
     const deptId = req.user.department;
     const adminId = req.user.created_by_admin || req.user.createdByAdmin;
     await expireOldDeviceChangeRequests({ department: deptId });
-    await scrubReviewedDeviceRequestPhotos({ department: deptId });
 
     const status = String(req.query.status || "pending").toLowerCase();
     const allowedStatuses = ["pending", "approved", "rejected", "expired", "all"];
@@ -551,7 +550,7 @@ router.get("/device-change-requests", authMiddleware, async (req, res) => {
         reviewed_at,
         review_note,
         created_at,
-        stu:students(id, name, email, enrollment_no, year, semester, section),
+        stu:students(id, name, email, enrollment_no, year, semester, section, profile_photo_url),
         dept:departments(id, name, code),
         rev:faculties(id, name, email)
       `)
@@ -568,25 +567,121 @@ router.get("/device-change-requests", authMiddleware, async (req, res) => {
 
     if (error) throw error;
 
-    const formatted = (requests || []).map((r) => ({
-      id: r.id,
-      _id: r.id,
-      student: r.stu ? { ...r.stu, _id: r.stu.id, enrollmentNo: r.stu.enrollment_no } : r.student,
-      department: r.dept ? { ...r.dept, _id: r.dept.id } : r.department,
-      reviewedBy: r.rev ? { ...r.rev, _id: r.rev.id } : r.reviewed_by,
-      oldDeviceFingerprint: r.old_device_fingerprint,
-      requestedDeviceFingerprint: r.requested_device_fingerprint,
-      selfieDataUrl: r.status === "pending" ? r.selfie_data_url || "" : "",
-      status: r.status,
-      expiresAt: r.expires_at,
-      reviewedAt: r.reviewed_at,
-      reviewNote: r.review_note || "",
-      createdAt: r.created_at,
-    }));
+    // Direct student lookup fallback if relation join was null
+    const missingStudentIds = [
+      ...new Set(
+        (requests || [])
+          .filter((r) => (!r.stu || !r.stu.profile_photo_url) && r.student)
+          .map((r) => String(r.student))
+      ),
+    ];
+
+    const studentMap = new Map();
+    if (missingStudentIds.length > 0) {
+      const { data: fallbackStudents } = await supabase
+        .from("students")
+        .select("id, name, email, enrollment_no, year, semester, section, profile_photo_url")
+        .in("id", missingStudentIds);
+
+      (fallbackStudents || []).forEach((s) => {
+        studentMap.set(String(s.id), s);
+      });
+    }
+
+    const formatted = (requests || []).map((r) => {
+      const stuData = r.stu || studentMap.get(String(r.student)) || null;
+      return {
+        id: r.id,
+        _id: r.id,
+        student: stuData
+          ? {
+              id: stuData.id,
+              _id: stuData.id,
+              name: stuData.name,
+              email: stuData.email,
+              enrollmentNo: stuData.enrollment_no,
+              year: stuData.year,
+              semester: stuData.semester,
+              section: stuData.section,
+              profilePhotoUrl: stuData.profile_photo_url || "",
+              profile_photo_url: stuData.profile_photo_url || "",
+            }
+          : (typeof r.student === "object" ? r.student : { id: r.student, _id: r.student }),
+        department: r.dept ? { ...r.dept, _id: r.dept.id } : r.department,
+        reviewedBy: r.rev ? { ...r.rev, _id: r.rev.id } : r.reviewed_by,
+        oldDeviceFingerprint: r.old_device_fingerprint,
+        requestedDeviceFingerprint: r.requested_device_fingerprint,
+        selfieDataUrl: r.selfie_data_url || "",
+        selfie_data_url: r.selfie_data_url || "",
+        status: r.status,
+        expiresAt: r.expires_at,
+        reviewedAt: r.reviewed_at,
+        reviewNote: r.review_note || "",
+        createdAt: r.created_at,
+      };
+    });
 
     return res.json({ ok: true, requests: formatted });
   } catch (err) {
     console.error("Fetch device change requests error:", err);
+    return res.status(500).json({ ok: false, error: "Server error" });
+  }
+});
+
+// ----------------------------------------------------
+// GET DEVICE CHANGE REQUEST PHOTOS (DIRECT COMPARISON)
+// GET /api/faculty/device-change-requests/:id/photos
+// ----------------------------------------------------
+router.get("/device-change-requests/:id/photos", authMiddleware, async (req, res) => {
+  try {
+    if (req.userRole !== "FACULTY") {
+      return res.status(403).json({ ok: false, error: "Forbidden" });
+    }
+
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ ok: false, error: "Request ID required" });
+
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
+
+    const { data: request, error: reqErr } = await supabase
+      .from("device_change_requests")
+      .select("id, student, selfie_data_url, status, stu:students(id, name, enrollment_no, profile_photo_url)")
+      .eq("id", String(id))
+      .single();
+
+    if (reqErr || !request) {
+      return res.status(404).json({ ok: false, error: "Device change request not found" });
+    }
+
+    let officialPhotoUrl = request.stu?.profile_photo_url || "";
+    let studentName = request.stu?.name || "";
+    let enrollmentNo = request.stu?.enrollment_no || "";
+
+    if (!officialPhotoUrl && request.student) {
+      const { data: stu } = await supabase
+        .from("students")
+        .select("name, enrollment_no, profile_photo_url")
+        .eq("id", String(request.student))
+        .single();
+      if (stu) {
+        officialPhotoUrl = stu.profile_photo_url || "";
+        studentName = stu.name || studentName;
+        enrollmentNo = stu.enrollment_no || enrollmentNo;
+      }
+    }
+
+    return res.json({
+      ok: true,
+      requestId: request.id,
+      selfieDataUrl: request.selfie_data_url || "",
+      officialPhotoUrl: officialPhotoUrl || "",
+      studentName,
+      enrollmentNo,
+      status: request.status,
+    });
+  } catch (err) {
+    console.error("Fetch device request photos error:", err);
     return res.status(500).json({ ok: false, error: "Server error" });
   }
 });
@@ -730,7 +825,6 @@ router.post("/device-change-requests/:id/review", authMiddleware, async (req, re
       .from("device_change_requests")
       .update({
         status: decision,
-        selfie_data_url: "",
         reviewed_by: req.userId,
         reviewed_at: new Date().toISOString(),
         review_note: reviewNote,
@@ -743,13 +837,14 @@ router.post("/device-change-requests/:id/review", authMiddleware, async (req, re
         department,
         old_device_fingerprint,
         requested_device_fingerprint,
+        selfie_data_url,
         status,
         expires_at,
         reviewed_by,
         reviewed_at,
         review_note,
         created_at,
-        stu:students(id, name, email, enrollment_no, year, semester, section),
+        stu:students(id, name, email, enrollment_no, year, semester, section, profile_photo_url),
         dept:departments(id, name, code),
         rev:faculties(id, name, email)
       `)
@@ -760,12 +855,21 @@ router.post("/device-change-requests/:id/review", authMiddleware, async (req, re
     const formatted = {
       id: updatedRequest.id,
       _id: updatedRequest.id,
-      student: updatedRequest.stu ? { ...updatedRequest.stu, _id: updatedRequest.stu.id, enrollmentNo: updatedRequest.stu.enrollment_no } : updatedRequest.student,
+      student: updatedRequest.stu
+        ? {
+            ...updatedRequest.stu,
+            _id: updatedRequest.stu.id,
+            enrollmentNo: updatedRequest.stu.enrollment_no,
+            profilePhotoUrl: updatedRequest.stu.profile_photo_url || "",
+            profile_photo_url: updatedRequest.stu.profile_photo_url || "",
+          }
+        : updatedRequest.student,
       department: updatedRequest.dept ? { ...updatedRequest.dept, _id: updatedRequest.dept.id } : updatedRequest.department,
       reviewedBy: updatedRequest.rev ? { ...updatedRequest.rev, _id: updatedRequest.rev.id } : updatedRequest.reviewed_by,
       oldDeviceFingerprint: updatedRequest.old_device_fingerprint,
       requestedDeviceFingerprint: updatedRequest.requested_device_fingerprint,
-      selfieDataUrl: "",
+      selfieDataUrl: updatedRequest.selfie_data_url || "",
+      selfie_data_url: updatedRequest.selfie_data_url || "",
       status: updatedRequest.status,
       expiresAt: updatedRequest.expires_at,
       reviewedAt: updatedRequest.reviewed_at,

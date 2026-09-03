@@ -575,6 +575,13 @@ const StudentDashboard: React.FC = () => {
   const [liveFacePhoto, setLiveFacePhoto] = useState("");
   const [faceVerifiedUntil, setFaceVerifiedUntil] = useState(0);
   const [sessionExpiredToast, setSessionExpiredToast] = useState(false);
+  const [showInstallBanner, setShowInstallBanner] = useState(false);
+
+  useEffect(() => {
+    navigator.storage?.persisted?.().then((persisted) => {
+      if (!persisted) setShowInstallBanner(true);
+    });
+  }, []);
 
   const mountedRef = useRef(true);
   const submitLockRef = useRef(false);
@@ -1243,6 +1250,19 @@ const StudentDashboard: React.FC = () => {
 
   return (
     <div className="relative mx-auto min-h-screen max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+      {showInstallBanner && (
+        <div className="mx-4 mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center gap-3 text-sm text-amber-200">
+          <span>📲</span>
+          <div>
+            <p className="font-semibold">Install SmartAttend for secure login</p>
+            <p className="text-xs text-amber-300/70 mt-0.5">
+              Tap the browser menu → "Add to Home Screen" to protect your session.
+            </p>
+          </div>
+          <button onClick={() => setShowInstallBanner(false)} className="ml-auto text-slate-400 hover:text-amber-200">✕</button>
+        </div>
+      )}
+
       {/* Face Session Expired Toast — auto-dismisses after 3.5s */}
       {sessionExpiredToast && (
         <div

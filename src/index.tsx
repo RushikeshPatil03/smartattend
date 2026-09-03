@@ -6,6 +6,10 @@ import App from './App';
 import { AppProvider } from './store';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import './index.css';
+import { initDeviceFingerprint } from './services/attendanceClient';
+
+// Initialize device identity early so IndexedDB is ready before any login/attendance flow
+void initDeviceFingerprint();
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
