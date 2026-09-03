@@ -367,12 +367,15 @@ const MyAttendanceCard: React.FC = () => {
     }
   }, []);
 
-  // Auto-load on mount
-  useEffect(() => {
-    if (loadState === "idle") {
-      void fetchOverview(true);
-    }
-  }, [loadState, fetchOverview]);
+  const handleToggleExpand = () => {
+    setExpanded((prev) => {
+      const next = !prev;
+      if (next && loadState === "idle") {
+        void fetchOverview(false);
+      }
+      return next;
+    });
+  };
 
   const sorted = useMemo(() => {
     if (!overviewData) return [];
@@ -393,7 +396,7 @@ const MyAttendanceCard: React.FC = () => {
       {/* Card header — always visible, acts as toggle */}
       <button
         type="button"
-        onClick={() => setExpanded((v) => !v)}
+        onClick={handleToggleExpand}
         className="w-full rounded-[20px] border border-slate-200 bg-white px-5 py-4 shadow-[0_8px_28px_-12px_rgba(15,23,42,0.18)] transition hover:-translate-y-0.5 hover:shadow-[0_12px_32px_-12px_rgba(15,23,42,0.22)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2"
         aria-expanded={expanded}
         aria-label="Toggle My Attendance overview"
@@ -419,6 +422,11 @@ const MyAttendanceCard: React.FC = () => {
                 <Award size={11} />
                 {overallPct.toFixed(overallPct % 1 === 0 ? 0 : 1)}%
               </div>
+            )}
+            {loadState === "idle" && (
+              <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-medium text-slate-500">
+                Tap to view
+              </span>
             )}
             {loadState === "loading" && (
               <LoaderCircle size={16} className="animate-spin text-slate-400" />
@@ -902,11 +910,6 @@ const StudentDashboard: React.FC = () => {
     }
   }, []);
 
-  // Fetch today's classes on initial dashboard visit
-  useEffect(() => {
-    void loadStudentData();
-  }, [loadStudentData]);
-
   const warmLocation = useCallback(() => {
     if (locationWarmupPromiseRef.current) {
       return locationWarmupPromiseRef.current;
@@ -928,8 +931,10 @@ const StudentDashboard: React.FC = () => {
   }, []);
 
   const resolveLiveLocation = useCallback(async () => {
-    // 1. Instant 0ms Fast Path from rolling 90s attendance GPS cache
-    const instant = getInstantCachedLocation(ATTENDANCE_GPS_MAX_AGE_MS);
+    // 1. Instant 0ms Fast Path from rolling attendance GPS cache (accurate fix <= 120m)
+    const instant =
+      getInstantCachedLocation(ATTENDANCE_GPS_MAX_AGE_MS) ||
+      getInstantCachedLocation(DISPLAY_GPS_MAX_AGE_MS);
     if (instant) {
       if (mountedRef.current) {
         setLocationReady(true);
@@ -1017,7 +1022,18 @@ const StudentDashboard: React.FC = () => {
     setScanStep("SUBMITTING");
     setStatusMsg("Confirming attendance with QR and GPS...");
 
-    const coords = await resolveLiveLocation();
+    let coords: any = null;
+    try {
+      coords = await resolveLiveLocation();
+    } catch (locErr: any) {
+      pendingQrPairRef.current = null;
+      setScanStep("ERROR");
+      setStatusMsg(
+        locErr?.message || "GPS location is required to verify your presence in class."
+      );
+      setBusy(false);
+      return;
+    }
     const fingerprint = getFingerprint();
 
     const isTimeoutOrNetworkError = (res: any) => {

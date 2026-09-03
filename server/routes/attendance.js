@@ -549,6 +549,8 @@ router.post(
         location: {
           lat: Number(location.lat),
           lng: Number(location.lng),
+          accuracy: location.accuracy != null ? Number(location.accuracy) : null,
+          distanceMeters: locationCheck.distanceMeters != null ? Math.round(locationCheck.distanceMeters) : null,
         },
         device_fingerprint: normalizedFp,
         face_verification: faceVerificationResult,
@@ -571,6 +573,8 @@ router.post(
           location: {
             lat: Number(location.lat),
             lng: Number(location.lng),
+            accuracy: location.accuracy != null ? Number(location.accuracy) : null,
+            distanceMeters: locationCheck.distanceMeters != null ? Math.round(locationCheck.distanceMeters) : null,
           },
           device_fingerprint: normalizedFp,
           face_verification: faceVerificationResult,
@@ -729,6 +733,7 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
         .from("attendances")
         .select(`
           id,
+          student,
           timestamp,
           status,
           device_fingerprint,
@@ -740,16 +745,22 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
           department_code,
           semester,
           section,
-          year,
-          student:students(id, name, enrollment_no, email, profile_photo_url, department, year, semester, section)
+          year
         `)
         .eq("session", String(sessionId))
         .order("timestamp", { ascending: false });
 
+      const rawList = rawAttendances || [];
+      const distinctStudentIds = Array.from(new Set(rawList.map((a) => a.student).filter(Boolean)));
+      const { data: studentProfiles } = distinctStudentIds.length > 0
+        ? await supabase.from("students").select("id, name, enrollment_no, email, profile_photo_url").in("id", distinctStudentIds)
+        : { data: [] };
+      const studentProfileMap = new Map((studentProfiles || []).map((s) => [String(s.id), s]));
+
       const presentStudentIds = new Set();
       const presentEnrollmentNos = new Set();
-      const presentRecords = (rawAttendances || []).map((att) => {
-        const studentObj = att.student || {};
+      const presentRecords = rawList.map((att) => {
+        const studentObj = studentProfileMap.get(String(att.student)) || {};
         const effectiveEnrollmentNo = studentObj.enrollment_no || att.enrollment_no || "";
         const effectiveName = studentObj.name || att.student_name || "Student (Archived)";
         const effectiveEmail = studentObj.email || att.student_email || "";
@@ -1128,7 +1139,7 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
       });
     }
 
-    // Scenario B (without subjectId): Query attendance across filters
+    // Scenario B (without subjectId): Query attendance across filters with lightweight columns (eliminates deep 4-table join)
     let query = supabase
       .from("attendances")
       .select(`
@@ -1148,11 +1159,7 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
         status,
         device_fingerprint,
         location,
-        face_verification,
-        stu:students(id, name, enrollment_no, email, profile_photo_url),
-        subj:subjects(id, name, code),
-        fac:faculties(id, name),
-        sess:sessions(id, year, semester, section, department, start_time, end_time)
+        face_verification
       `)
       .order("timestamp", { ascending: false })
       .limit(500);
@@ -1184,11 +1191,7 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
           status,
           device_fingerprint,
           location,
-          face_verification,
-          stu:students(id, name, enrollment_no, email, profile_photo_url),
-          subj:subjects(id, name, code),
-          fac:faculties(id, name),
-          sess:sessions(id, year, semester, section, department, start_time, end_time)
+          face_verification
         `)
         .order("timestamp", { ascending: false })
         .limit(500);
@@ -1209,19 +1212,57 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
     }
     if (error) throw error;
 
-    const filtered = (rawData || []).filter((item) => {
-      if (year && Number(item.sess?.year) !== Number(year)) return false;
-      if (semester && Number(item.sess?.semester) !== Number(semester)) return false;
-      if (section && String(item.sess?.section || "").toUpperCase() !== String(section).toUpperCase()) return false;
-      if (departmentId && String(item.sess?.department || "") !== String(departmentId)) return false;
+    const attendancesList = rawData || [];
+
+    // Lightweight batch lookups for unique foreign keys only if rows exist
+    const sessionIds = Array.from(new Set(attendancesList.map((a) => a.session).filter(Boolean)));
+    const subjectIds = Array.from(new Set(attendancesList.map((a) => a.subject).filter(Boolean)));
+    const facultyIds = Array.from(new Set(attendancesList.map((a) => a.faculty).filter(Boolean)));
+    const studentIds = Array.from(new Set(attendancesList.map((a) => a.student).filter(Boolean)));
+
+    const [sessionRes, subjectRes, facultyRes, studentRes] = await Promise.all([
+      sessionIds.length > 0
+        ? supabase.from("sessions").select("id, year, semester, section, department, start_time, end_time").in("id", sessionIds)
+        : Promise.resolve({ data: [] }),
+      subjectIds.length > 0
+        ? supabase.from("subjects").select("id, name, code").in("id", subjectIds)
+        : Promise.resolve({ data: [] }),
+      facultyIds.length > 0
+        ? supabase.from("faculties").select("id, name").in("id", facultyIds)
+        : Promise.resolve({ data: [] }),
+      studentIds.length > 0
+        ? supabase.from("students").select("id, name, enrollment_no, email, profile_photo_url").in("id", studentIds)
+        : Promise.resolve({ data: [] }),
+    ]);
+
+    const sessionMap = new Map((sessionRes.data || []).map((s) => [String(s.id), s]));
+    const subjectMap = new Map((subjectRes.data || []).map((s) => [String(s.id), s]));
+    const facultyMap = new Map((facultyRes.data || []).map((f) => [String(f.id), f]));
+    const studentMap = new Map((studentRes.data || []).map((s) => [String(s.id), s]));
+
+    const filtered = attendancesList.filter((item) => {
+      const sess = sessionMap.get(String(item.session));
+      const effectiveYear = sess?.year ?? item.year;
+      const effectiveSem = sess?.semester ?? item.semester;
+      const effectiveSec = sess?.section ?? item.section;
+      const effectiveDept = sess?.department ?? item.department_code;
+
+      if (year && Number(effectiveYear) !== Number(year)) return false;
+      if (semester && Number(effectiveSem) !== Number(semester)) return false;
+      if (section && String(effectiveSec || "").toUpperCase() !== String(section).toUpperCase()) return false;
+      if (departmentId && String(effectiveDept || "") !== String(departmentId)) return false;
       return true;
     });
 
     const records = filtered.map((item) => {
-      const effectiveEnrollmentNo = item.stu?.enrollment_no || item.enrollment_no || "";
-      const effectiveName = item.stu?.name || item.student_name || "Student (Archived)";
-      const effectiveEmail = item.stu?.email || item.student_email || "";
-      const effectiveStudentId = item.stu?.id || item.student || (effectiveEnrollmentNo ? `archived_${effectiveEnrollmentNo}` : `archived_${item.id}`);
+      const stu = studentMap.get(String(item.student));
+      const subj = subjectMap.get(String(item.subject));
+      const fac = facultyMap.get(String(item.faculty));
+
+      const effectiveEnrollmentNo = stu?.enrollment_no || item.enrollment_no || "";
+      const effectiveName = stu?.name || item.student_name || "Student (Archived)";
+      const effectiveEmail = stu?.email || item.student_email || "";
+      const effectiveStudentId = stu?.id || item.student || (effectiveEnrollmentNo ? `archived_${effectiveEnrollmentNo}` : `archived_${item.id}`);
 
       return {
         id: item.id,
@@ -1234,19 +1275,19 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
           name: effectiveName,
           enrollmentNo: effectiveEnrollmentNo,
           email: effectiveEmail,
-          profilePhotoUrl: item.stu?.profile_photo_url || "",
-          isArchived: !item.stu,
+          profilePhotoUrl: stu?.profile_photo_url || "",
+          isArchived: !stu,
         },
         subject: {
-          id: item.subj?.id || item.subject,
-          _id: item.subj?.id || item.subject,
-          name: item.subj?.name || "Subject",
-          code: item.subj?.code || "",
+          id: subj?.id || item.subject,
+          _id: subj?.id || item.subject,
+          name: subj?.name || "Subject",
+          code: subj?.code || "",
         },
         faculty: {
-          id: item.fac?.id || item.faculty,
-          _id: item.fac?.id || item.faculty,
-          name: item.fac?.name || "Faculty",
+          id: fac?.id || item.faculty,
+          _id: fac?.id || item.faculty,
+          name: fac?.name || "Faculty",
         },
         status: item.status || "present",
         timestamp: item.timestamp,
@@ -1343,8 +1384,9 @@ async function handleTotpAttendanceSubmission(req, res) {
       return res.status(400).json({ ok: false, error: "Session is no longer active" });
     }
 
-    if (location && session.location) {
-      const locationCheck = validateStudentLocation(location, session.location);
+    let locationCheck = { ok: true, distanceMeters: null };
+    if (session.location) {
+      locationCheck = validateStudentLocation(location, session.location);
       if (!locationCheck.ok) {
         return res.status(403).json({ ok: false, error: locationCheck.error });
       }
@@ -1391,6 +1433,8 @@ async function handleTotpAttendanceSubmission(req, res) {
           ? {
               lat: Number(location.lat),
               lng: Number(location.lng),
+              accuracy: location.accuracy != null ? Number(location.accuracy) : null,
+              distanceMeters: locationCheck.distanceMeters != null ? Math.round(locationCheck.distanceMeters) : null,
             }
           : null,
         device_fingerprint: normalizedFp,

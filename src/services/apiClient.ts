@@ -44,6 +44,7 @@ class ApiClient {
       ? localStorage.getItem("smartattend_access_token")
       : null;
   private refreshPromise: Promise<any> | null = null;
+  private inFlightStopSessions = new Map<string, Promise<any>>();
 
   // ------------------------------------
   // Token handling: access token in memory + localStorage, refresh token in HttpOnly cookie
@@ -286,8 +287,17 @@ class ApiClient {
   startSession = (payload: any) =>
     this.post("/api/faculty/session/start", payload);
 
-  stopSession = (id: string) =>
-    this.post(`/api/faculty/session/${id}/stop`);
+  stopSession = (id: string) => {
+    const sid = String(id || "").trim();
+    if (!sid) return Promise.resolve({ ok: false, error: "Missing session ID" });
+    const existing = this.inFlightStopSessions.get(sid);
+    if (existing) return existing;
+    const promise = this.post(`/api/faculty/session/${sid}/stop`).finally(() => {
+      this.inFlightStopSessions.delete(sid);
+    });
+    this.inFlightStopSessions.set(sid, promise);
+    return promise;
+  };
 
   cancelSession = (id: string) =>
     this.post(`/api/faculty/session/${id}/cancel`);

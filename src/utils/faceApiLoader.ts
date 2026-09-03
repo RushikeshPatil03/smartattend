@@ -1,5 +1,12 @@
-const LOCAL_FACE_API_SCRIPT_URL = "/models/face-api.min.js";
-const LOCAL_FACE_API_MODEL_URL = "/models";
+function getOriginBase(): string {
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return window.location.origin;
+  }
+  return "";
+}
+
+const LOCAL_FACE_API_SCRIPT_URL = `${getOriginBase()}/models/face-api.min.js`;
+const LOCAL_FACE_API_MODEL_URL = `${getOriginBase()}/models`;
 const CDN_FALLBACK_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js";
 const CDN_FALLBACK_MODEL_URL = "https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights";
 

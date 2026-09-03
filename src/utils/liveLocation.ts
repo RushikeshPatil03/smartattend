@@ -17,7 +17,7 @@ export const MAX_ACCEPTABLE_ACCURACY_METERS = 120;
 export const ATTENDANCE_GPS_MAX_AGE_MS = 90_000; // 90 seconds rolling window for attendance mark submission
 export const DISPLAY_GPS_MAX_AGE_MS = 300_000; // 5 minutes window for pre-warming / display purposes
 export const ROLLING_CACHE_MAX_AGE_MS = ATTENDANCE_GPS_MAX_AGE_MS;
-const LOCATION_WARMUP_WINDOW_MS = 25000;
+const LOCATION_WARMUP_WINDOW_MS = 6000;
 
 // In-memory rolling GPS cache
 let lastResolvedLocation: CachedLiveLocation | null = null;
@@ -309,7 +309,7 @@ export async function getLiveLocationWithOptions(
             reject(new Error(locationErrorMessage(err)));
           }
         },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 10000 }
+        { enableHighAccuracy: true, timeout: 6000, maximumAge: 10000 }
       );
     } catch {}
 
@@ -318,9 +318,15 @@ export async function getLiveLocationWithOptions(
       done = true;
       cleanup();
 
-      const lastCached = getInstantCachedLocation(maxAgeMs);
+      const lastCached = getInstantCachedLocation(maxAgeMs) || getInstantCachedLocation(DISPLAY_GPS_MAX_AGE_MS);
       if (lastCached) {
         resolve(lastCached);
+      } else if (lastResolvedLocation && lastResolvedLocation.accuracy <= MAX_ACCEPTABLE_ACCURACY_METERS) {
+        resolve({
+          lat: lastResolvedLocation.lat,
+          lng: lastResolvedLocation.lng,
+          accuracy: lastResolvedLocation.accuracy,
+        });
       } else if (lastResolvedLocation) {
         reject(new Error(precisionError(lastResolvedLocation.accuracy)));
       } else {

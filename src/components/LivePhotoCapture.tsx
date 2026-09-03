@@ -424,34 +424,42 @@ const LivePhotoCapture: React.FC<{
         throw new Error("Camera is not supported in this browser.");
       }
 
-      // 1. Cleanly stop any existing stream tracks first to prevent hardware locks
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((track) => track.stop());
-        streamRef.current = null;
-      }
-      if (videoRef.current) {
-        try {
-          videoRef.current.pause();
-        } catch {
-          // ignore
-        }
-        videoRef.current.srcObject = null;
-      }
-
-      if (
-        orientation.supported &&
-        orientation.permissionRequired &&
-        !orientation.permissionGranted
-      ) {
-        void requestOrientationPermission();
-      }
-
-      // 2. Request front camera directly with graceful constraints fallback
+      // 1. Check if an active usable stream is already open to prevent camera tearing
       let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia(FRONT_CAMERA_CONSTRAINTS);
-      } catch {
-        stream = await navigator.mediaDevices.getUserMedia(FRONT_CAMERA_FALLBACK_CONSTRAINTS);
+      if (
+        streamRef.current &&
+        streamRef.current.active &&
+        streamRef.current.getTracks().some((t) => t.readyState === "live")
+      ) {
+        stream = streamRef.current;
+      } else {
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((track) => track.stop());
+          streamRef.current = null;
+        }
+        if (videoRef.current) {
+          try {
+            videoRef.current.pause();
+          } catch {
+            // ignore
+          }
+          videoRef.current.srcObject = null;
+        }
+
+        if (
+          orientation.supported &&
+          orientation.permissionRequired &&
+          !orientation.permissionGranted
+        ) {
+          void requestOrientationPermission();
+        }
+
+        // 2. Request front camera directly with graceful constraints fallback
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(FRONT_CAMERA_CONSTRAINTS);
+        } catch {
+          stream = await navigator.mediaDevices.getUserMedia(FRONT_CAMERA_FALLBACK_CONSTRAINTS);
+        }
       }
 
       streamRef.current = stream;

@@ -54,10 +54,39 @@ function isEnvStreamUsable(stream: MediaStream | null): stream is MediaStream {
 }
 
 export async function prewarmQrCamera(): Promise<void> {
-  // Keep camera hardware unlocked until scanner is explicitly opened
+  if (typeof window === "undefined" || !navigator.mediaDevices?.getUserMedia) return;
+  if (isEnvStreamUsable(envStreamPool)) return;
+  if (envStreamPoolPromise) return;
+
+  envStreamPoolPromise = (async () => {
+    try {
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(ENV_CAMERA_CONSTRAINTS);
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia(ENV_CAMERA_FALLBACK_CONSTRAINTS);
+      }
+      envStreamPool = stream;
+      return stream;
+    } catch {
+      return null;
+    } finally {
+      envStreamPoolPromise = null;
+    }
+  })();
 }
 
 export async function consumeEnvStreamPool(): Promise<MediaStream | null> {
+  if (isEnvStreamUsable(envStreamPool)) {
+    const stream = envStreamPool;
+    envStreamPool = null;
+    return stream;
+  }
+  if (envStreamPoolPromise) {
+    const stream = await envStreamPoolPromise;
+    envStreamPool = null;
+    return isEnvStreamUsable(stream) ? stream : null;
+  }
   return null;
 }
 

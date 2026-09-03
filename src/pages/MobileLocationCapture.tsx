@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Button, Card } from "../components/Common";
 import { CheckCircle, MapPin, RefreshCw, Smartphone, XCircle } from "lucide-react";
 import apiClient from "../services/apiClient";
-import { getLiveLocation } from "../utils/liveLocation";
+import { getLiveLocationWithOptions } from "../utils/liveLocation";
 
 const MobileLocationCapture: React.FC = () => {
   const params = useMemo(
@@ -51,7 +51,11 @@ const MobileLocationCapture: React.FC = () => {
     setMessage("Getting precise GPS. Keep this tab open and hold the phone still...");
 
     try {
-      const coords = await getLiveLocation();
+      const coords = await getLiveLocationWithOptions({
+        preferCached: false,
+        maxAgeMs: 15000,
+        timeoutMs: 15000,
+      });
       const res: any = await apiClient.submitPublicMobileLocationCapture(token, {
         lat: coords.lat,
         lng: coords.lng,

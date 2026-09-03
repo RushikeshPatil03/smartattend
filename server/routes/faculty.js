@@ -825,6 +825,7 @@ router.post("/device-change-requests/:id/review", authMiddleware, async (req, re
       .from("device_change_requests")
       .update({
         status: decision,
+        selfie_data_url: "",
         reviewed_by: req.userId,
         reviewed_at: new Date().toISOString(),
         review_note: reviewNote,

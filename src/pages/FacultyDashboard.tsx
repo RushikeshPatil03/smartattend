@@ -159,6 +159,9 @@ const FacultyDashboard: React.FC = () => {
     { name: string; enrollmentNo: string; attendance: Record<string, "P" | "A"> }[]
   >([]);
   const [sheetLoading, setSheetLoading] = useState(false);
+  const sheetMatrixCacheRef = useRef<
+    Map<string, { columns: string[]; rows: any[]; cachedAt: number }>
+  >(new Map());
 
   // Device Requests States
   const [deviceRequests, setDeviceRequests] = useState<DeviceRequestItem[]>([]);
@@ -1353,8 +1356,18 @@ const FacultyDashboard: React.FC = () => {
   }, [deviceRejectNote, loadDeviceRequests]);
 
   // Manage Attendance Sheet Methods
-  const loadSheet = useCallback(async () => {
+  const loadSheet = useCallback(async (force = false) => {
     if (!sheetFilters.subjectId) return;
+
+    const filterKey = `${sheetFilters.subjectId}_${sheetFilters.departmentId || ""}_${sheetFilters.year || ""}_${sheetFilters.semester || ""}_${sheetFilters.section || ""}`;
+    const cached = sheetMatrixCacheRef.current.get(filterKey);
+    const now = Date.now();
+    if (!force && cached && now - cached.cachedAt < 60_000) {
+      setSheetColumns(cached.columns);
+      setSheetRows(cached.rows);
+      return;
+    }
+
     setSheetLoading(true);
     try {
       const res: any = await apiClient.fetchAttendance({
@@ -1436,6 +1449,11 @@ const FacultyDashboard: React.FC = () => {
         }
       });
 
+      sheetMatrixCacheRef.current.set(filterKey, {
+        columns,
+        rows,
+        cachedAt: Date.now(),
+      });
       setSheetColumns(columns);
       setSheetRows(rows);
     } catch (err: any) {
