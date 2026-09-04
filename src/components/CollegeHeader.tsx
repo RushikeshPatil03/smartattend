@@ -76,26 +76,18 @@ const CollegeHeader: React.FC<CollegeHeaderProps> = ({
               <div
                 className={`${
                   focusCollegeBrand
-                    ? "h-14 w-14 rounded-[18px] shadow-[0_14px_34px_-24px_rgba(15,23,42,0.8)] ring-2 ring-white/90 sm:h-[70px] sm:w-[70px] sm:rounded-[22px]"
+                    ? "h-14 w-14 rounded-[18px] shadow-[0_14px_34px_-24px_rgba(15,23,42,0.8)] ring-2 ring-white/90 sm:h-[72px] sm:w-[72px] sm:rounded-[22px]"
                     : "h-11 w-11 rounded-2xl"
-                } flex shrink-0 overflow-hidden border border-slate-200/80 bg-slate-100/80 backdrop-blur`}
+                } flex shrink-0 items-center justify-center overflow-hidden border border-slate-200/80 bg-white/90 p-1.5 backdrop-blur`}
               >
-                {profilePhotoUrl ? (
-                  <img
-                    src={profilePhotoUrl}
-                    alt={`${displayCollege} logo`}
-                    className="h-full w-full object-cover"
-                    onError={(e) => {
-                      (e.currentTarget as HTMLImageElement).src = "/icon-192.png";
-                    }}
-                  />
-                ) : (
-                  <img
-                    src="/icon-192.png"
-                    alt={`${displayCollege} logo`}
-                    className="h-full w-full object-cover"
-                  />
-                )}
+                <img
+                  src={profilePhotoUrl || "/icon-192.png?v=5"}
+                  alt={`${displayCollege} logo`}
+                  className="h-full w-full object-contain"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).src = "/icon-192.png?v=5";
+                  }}
+                />
               </div>
             ) : null}
             <div className="min-w-0 flex-1">
