@@ -640,14 +640,15 @@ const StudentDashboard: React.FC = () => {
   }, [todaysClasses]);
   useEffect(() => {
     mountedRef.current = true;
-    void preloadCameraQrScanner();
-    void preloadLivePhotoCapture();
-    void loadModelsIfNeeded();
-    void prewarmFrontCamera();
-    void prewarmQrCamera();
-    if (registeredFacePhoto) {
-      void computeDescriptorFromImageURL(registeredFacePhoto);
-    }
+    // Parallel background warmup - eliminates cold starts
+    void Promise.all([
+      preloadCameraQrScanner(),
+      preloadLivePhotoCapture(),
+      loadModelsIfNeeded(),
+      prewarmFrontCamera(),
+      prewarmQrCamera(),
+      registeredFacePhoto ? computeDescriptorFromImageURL(registeredFacePhoto) : Promise.resolve(),
+    ]);
     if (typeof navigator !== "undefined" && navigator?.permissions?.query) {
       navigator.permissions.query({ name: "camera" as any }).catch(() => undefined);
     }
@@ -1362,7 +1363,7 @@ const StudentDashboard: React.FC = () => {
                       const freshExpiry = Date.now() + FACE_VERIFICATION_WINDOW_MS;
                       window.setTimeout(() => {
                         void simulateScan(freshExpiry);
-                      }, 200);
+                      }, 60);
                     }
                   }}
                   disabled={faceGateStatus === "MATCHING" || !registeredFacePhoto}

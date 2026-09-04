@@ -65,6 +65,9 @@ declare global {
 let scriptPromise: Promise<FaceApi> | null = null;
 let modelsPromise: Promise<FaceApi> | null = null;
 let warmupPromise: Promise<void> | null = null;
+let cachedFaceApi: FaceApi | null = null;
+let cachedTrackingOptions: unknown = null;
+let cachedDetectorOptions: unknown = null;
 const memoryDescriptorCache = new Map<string, Float32Array>();
 const inFlightDescriptorPromises = new Map<string, Promise<Float32Array>>();
 
@@ -137,23 +140,26 @@ async function loadModelWeights(faceapi: FaceApi, modelBaseUrl: string) {
 }
 
 /**
- * Executes a lightweight dummy inference pass to compile WebGL shaders and allocate
- * tensor buffers in the background during idle time. Eliminates 1-2s first-inference freeze.
+ * Executes a lightweight dummy inference pass across all 3 neural networks (detector,
+ * landmarks, descriptor) to compile WebGL shaders and allocate tensor buffers in the
+ * background during idle time. Eliminates the 500-1200ms first-inference freeze.
  */
 async function warmUpEngine(faceapi: FaceApi): Promise<void> {
   if (warmupPromise) return warmupPromise;
   warmupPromise = (async () => {
     try {
       const dummyCanvas = document.createElement("canvas");
-      dummyCanvas.width = 64;
-      dummyCanvas.height = 64;
+      dummyCanvas.width = 160;
+      dummyCanvas.height = 160;
       const ctx = dummyCanvas.getContext("2d", { willReadFrequently: true });
       if (ctx) {
         ctx.fillStyle = "#808080";
-        ctx.fillRect(0, 0, 64, 64);
-        await faceapi
-          .detectSingleFace(dummyCanvas, new faceapi.TinyFaceDetectorOptions({ inputSize: 128, scoreThreshold: 0.5 }))
-          .withFaceLandmarks(true);
+        ctx.fillRect(0, 0, 160, 160);
+        await Promise.allSettled([
+          faceapi.detectSingleFace(dummyCanvas, trackingDetectorOptions(faceapi)),
+          (faceapi as any).detectFaceLandmarksTiny?.(dummyCanvas),
+          (faceapi as any).computeFaceDescriptor?.(dummyCanvas),
+        ]);
       }
     } catch {
       // Warmup failures are non-blocking
@@ -163,6 +169,7 @@ async function warmUpEngine(faceapi: FaceApi): Promise<void> {
 }
 
 export function loadModelsIfNeeded(): Promise<FaceApi> {
+  if (cachedFaceApi) return Promise.resolve(cachedFaceApi);
   if (modelsPromise) return modelsPromise;
 
   modelsPromise = (async () => {
@@ -179,7 +186,9 @@ export function loadModelsIfNeeded(): Promise<FaceApi> {
       }
     }
 
-    // Immediately compile WebGL shaders and allocate tensor buffers
+    cachedFaceApi = faceapi;
+
+    // Immediately compile WebGL shaders and allocate tensor buffers for all 3 nets
     try {
       await warmUpEngine(faceapi);
     } catch {
@@ -189,6 +198,7 @@ export function loadModelsIfNeeded(): Promise<FaceApi> {
     return faceapi;
   })().catch((error) => {
     modelsPromise = null;
+    cachedFaceApi = null;
     throw error;
   });
 
@@ -291,17 +301,23 @@ function drawTrackingSquare(source: CanvasImageSource, width: number, height: nu
 }
 
 function trackingDetectorOptions(faceapi: FaceApi) {
-  return new faceapi.TinyFaceDetectorOptions({
-    inputSize: LIVENESS_TRACKING_SIZE,
-    scoreThreshold: 0.45,
-  });
+  if (!cachedTrackingOptions) {
+    cachedTrackingOptions = new faceapi.TinyFaceDetectorOptions({
+      inputSize: LIVENESS_TRACKING_SIZE,
+      scoreThreshold: 0.45,
+    });
+  }
+  return cachedTrackingOptions;
 }
 
 function detectorOptions(faceapi: FaceApi) {
-  return new faceapi.TinyFaceDetectorOptions({
-    inputSize: FACE_API_INPUT_SIZE,
-    scoreThreshold: 0.5,
-  });
+  if (!cachedDetectorOptions) {
+    cachedDetectorOptions = new faceapi.TinyFaceDetectorOptions({
+      inputSize: FACE_API_INPUT_SIZE,
+      scoreThreshold: 0.5,
+    });
+  }
+  return cachedDetectorOptions;
 }
 
 async function detectDescriptor(faceapi: FaceApi, canvas: HTMLCanvasElement) {
@@ -366,7 +382,7 @@ export async function computeDescriptorFromVideoFrame(video: HTMLVideoElement) {
   if (!video || !video.videoWidth || !video.videoHeight || video.readyState < 2) {
     throw new Error("Camera feed is not ready yet.");
   }
-  const faceapi = await loadModelsIfNeeded();
+  const faceapi = cachedFaceApi || (await loadModelsIfNeeded());
   const canvas = drawSmallSquare(video, video.videoWidth, video.videoHeight, true);
   return detectDescriptor(faceapi, canvas);
 }
@@ -375,7 +391,7 @@ export async function computeLandmarksFromVideoFrame(video: HTMLVideoElement) {
   if (!video || !video.videoWidth || !video.videoHeight || video.readyState < 2) {
     return null;
   }
-  const faceapi = await loadModelsIfNeeded();
+  const faceapi = cachedFaceApi || (await loadModelsIfNeeded());
   const canvas = drawTrackingSquare(video, video.videoWidth, video.videoHeight);
   const result = await faceapi
     .detectSingleFace(canvas, trackingDetectorOptions(faceapi))
@@ -384,7 +400,7 @@ export async function computeLandmarksFromVideoFrame(video: HTMLVideoElement) {
 }
 
 export async function compareFaceDescriptors(left: Float32Array, right: Float32Array) {
-  const faceapi = await loadModelsIfNeeded();
+  const faceapi = cachedFaceApi || (await loadModelsIfNeeded());
   const distance = faceapi.euclideanDistance(left, right);
   return {
     distance,

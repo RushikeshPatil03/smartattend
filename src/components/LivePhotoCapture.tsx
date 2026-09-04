@@ -140,9 +140,9 @@ const FRONT_CAMERA_CONSTRAINTS: MediaStreamConstraints = {
   audio: false,
   video: {
     facingMode: "user" as const,
-    width: { ideal: 480, max: 640 },
-    height: { ideal: 640, max: 800 },
-    frameRate: { ideal: 24, max: 30 },
+    width: { ideal: 640 },
+    height: { ideal: 480 },
+    frameRate: { ideal: 30, min: 15 },
   },
 };
 
@@ -198,23 +198,24 @@ const LivePhotoCapture: React.FC<{
     canAutoGateCapture: boolean;
     captureEnabled: boolean;
   }) => void;
-}> = ({
-  value,
-  onChange,
-  onCaptured,
-  disabled = false,
-  autoStart = false,
-  autoCapture = false,
-  hideLauncher = false,
-  title = "Live Profile Photo",
-  description = "Look into the front camera and keep your face centered for verification.",
-  captureRequestKey = 0,
-  showCapturedPreview = true,
-  compactMode = false,
-  enableFaceQuality = false,
-  faceVerificationReferenceUrl = "",
-  onStateChange,
-}) => {
+}> = (props) => {
+  const {
+    value,
+    onChange,
+    onCaptured,
+    disabled = false,
+    autoStart = false,
+    autoCapture = false,
+    hideLauncher = false,
+    title = "Live Profile Photo",
+    description = "Look into the front camera and keep your face centered for verification.",
+    captureRequestKey = 0,
+    showCapturedPreview = true,
+    compactMode = false,
+    faceVerificationReferenceUrl = "",
+    onStateChange,
+  } = props;
+  const enableFaceQuality = props.enableFaceQuality ?? !props.faceVerificationReferenceUrl;
   const [cameraLoading, setCameraLoading] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
   const [captureError, setCaptureError] = useState("");
@@ -482,29 +483,31 @@ const LivePhotoCapture: React.FC<{
 
         // Wait until video has valid dimensions and is actively streaming frames
         await new Promise<void>((resolve) => {
-          if (video.videoWidth > 0 && video.videoHeight > 0) {
+          if (
+            (video.readyState >= 2 || video.currentTime > 0) &&
+            video.videoWidth > 0 &&
+            video.videoHeight > 0
+          ) {
             resolve();
             return;
           }
           let resolved = false;
+          const events = ["loadedmetadata", "loadeddata", "canplay", "playing", "timeupdate"];
           const onReady = () => {
-            if (!resolved) {
+            if (!resolved && video.videoWidth > 0 && video.videoHeight > 0) {
               resolved = true;
-              video.removeEventListener("loadeddata", onReady);
-              video.removeEventListener("playing", onReady);
+              events.forEach((ev) => video.removeEventListener(ev, onReady));
               resolve();
             }
           };
-          video.addEventListener("loadeddata", onReady, { once: true });
-          video.addEventListener("playing", onReady, { once: true });
+          events.forEach((ev) => video.addEventListener(ev, onReady, { once: true }));
           setTimeout(() => {
             if (!resolved) {
               resolved = true;
-              video.removeEventListener("loadeddata", onReady);
-              video.removeEventListener("playing", onReady);
+              events.forEach((ev) => video.removeEventListener(ev, onReady));
               resolve();
             }
-          }, 1200);
+          }, 800);
         });
       }
     } catch (error: any) {
@@ -557,13 +560,14 @@ const LivePhotoCapture: React.FC<{
 
         setLivenessPassed(true);
         setVerificationMessage("Matching your registered face...");
-        imageDataUrl = captureVideoFrame(videoRef.current, DEFAULT_CAPTURE_OPTIONS);
 
         try {
-          const [referenceDescriptor, liveDescriptor] = await Promise.all([
+          const [capturedDataUrl, referenceDescriptor, liveDescriptor] = await Promise.all([
+            Promise.resolve().then(() => captureVideoFrame(videoRef.current!, DEFAULT_CAPTURE_OPTIONS)),
             computeDescriptorFromImageURL(faceVerificationReferenceUrl),
-            computeDescriptorFromVideoFrame(videoRef.current),
+            computeDescriptorFromVideoFrame(videoRef.current!),
           ]);
+          imageDataUrl = capturedDataUrl;
           const match = await compareFaceDescriptors(referenceDescriptor, liveDescriptor);
           if (!match.matched) {
             throw new Error("Face did not match the registered profile photo.");
@@ -740,7 +744,7 @@ const LivePhotoCapture: React.FC<{
       return;
     }
 
-    const delay = 450;
+    const delay = 0;
     autoCaptureTimerRef.current = window.setTimeout(() => {
       capturePhoto();
       autoCaptureTimerRef.current = null;
@@ -827,8 +831,15 @@ const LivePhotoCapture: React.FC<{
               autoPlay
               playsInline
               muted
-              className="absolute inset-0 h-full w-full object-contain -scale-x-100"
-              style={{ background: "black" }}
+              onLoadedMetadata={() => {
+                setCameraActive(true);
+                setCameraLoading(false);
+              }}
+              className="absolute inset-0 h-full w-full object-cover -scale-x-100 transition-opacity duration-200"
+              style={{
+                opacity: cameraLoading ? 0 : 1,
+                background: "#020617",
+              }}
             />
 
             {/* Circular Progress Ring & Direction Guidance Overlay */}
@@ -893,7 +904,7 @@ const LivePhotoCapture: React.FC<{
                       fill="none"
                       filter={livenessPassed || livenessProgress >= 0.8 ? "url(#emeraldGlow)" : undefined}
                       style={{
-                        transition: "stroke-dashoffset 90ms ease-out, stroke 200ms ease",
+                        transition: "stroke-dashoffset 60ms ease-out, stroke 200ms ease",
                       }}
                     />
                   ) : null}

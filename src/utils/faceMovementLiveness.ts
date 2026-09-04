@@ -22,8 +22,8 @@ export const DEFAULT_MOVEMENT_MAX_TIME_MS = Math.max(
   Number(import.meta.env.VITE_FACEAPI_MOVEMENT_MAX_TIME_MS || 4500)
 );
 export const DEFAULT_MOVEMENT_SAMPLE_FPS = Math.max(
-  8,
-  Math.min(14, Number(import.meta.env.VITE_FACEAPI_MOVEMENT_SAMPLE_FPS || 10))
+  10,
+  Math.min(24, Number(import.meta.env.VITE_FACEAPI_MOVEMENT_SAMPLE_FPS || 18))
 );
 export const DEFAULT_MOVEMENT_TRANSLATE_THRESHOLD = Number(
   import.meta.env.VITE_FACEAPI_MOVEMENT_TRANSLATE_THRESHOLD || 0.045
@@ -32,10 +32,10 @@ export const DEFAULT_MOVEMENT_ROTATION_THRESHOLD = Number(
   import.meta.env.VITE_FACEAPI_MOVEMENT_ROTATION_THRESHOLD || 0.045
 );
 
-export const RELATIVE_PITCH_DELTA_THRESHOLD = 0.052;
-export const RELATIVE_YAW_DELTA_THRESHOLD = 0.070;
-export const MIN_LIVENESS_DURATION_MS = 350;
-export const CONSECUTIVE_FRAMES_REQUIRED = 2;
+export const RELATIVE_PITCH_DELTA_THRESHOLD = 0.046;
+export const RELATIVE_YAW_DELTA_THRESHOLD = 0.058;
+export const MIN_LIVENESS_DURATION_MS = 180;
+export const CONSECUTIVE_FRAMES_REQUIRED = 1;
 
 export type ChallengeDirection = "UP" | "DOWN" | "LEFT" | "RIGHT";
 
@@ -221,6 +221,8 @@ export async function runMovementLiveness(
   let challengePassed = false;
 
   while (performance.now() - startedAt < maxTimeMs) {
+    const loopStart = performance.now();
+
     // Yield to the browser compositor to ensure smooth camera rendering
     await new Promise<void>((resolve) => {
       if (typeof requestAnimationFrame !== "undefined") {
@@ -239,7 +241,9 @@ export async function runMovementLiveness(
       if (missingFaceSamples >= maxMissingAllowed) {
         break;
       }
-      await wait(sampleIntervalMs);
+      const loopCost = performance.now() - loopStart;
+      const pause = Math.max(10, sampleIntervalMs - loopCost);
+      await wait(pause);
       continue;
     }
 
@@ -248,7 +252,10 @@ export async function runMovementLiveness(
 
     if (!baseline) {
       baseline = pose;
-      await wait(sampleIntervalMs);
+      // Fast yield so next frame is immediately evaluated against baseline
+      const loopCost = performance.now() - loopStart;
+      const pause = Math.max(10, Math.min(25, sampleIntervalMs - loopCost));
+      await wait(pause);
       continue;
     }
 
@@ -343,7 +350,12 @@ export async function runMovementLiveness(
       targetThreshold,
     });
 
-    await wait(sampleIntervalMs);
+    // Adaptive frame pacing: only sleep the remainder of sampleIntervalMs
+    const loopCost = performance.now() - loopStart;
+    const remainingWait = Math.max(0, sampleIntervalMs - loopCost);
+    if (remainingWait > 2) {
+      await wait(remainingWait);
+    }
   }
 
   return {
