@@ -8,6 +8,17 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import './index.css';
 import { initDeviceFingerprint } from './services/attendanceClient';
 
+// Auto-recover from stale chunks after new deployments
+if (typeof window !== "undefined") {
+  window.addEventListener("vite:preloadError", (event) => {
+    event.preventDefault();
+    if ("caches" in window) {
+      caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k)))).catch(() => {});
+    }
+    window.location.reload();
+  });
+}
+
 // Initialize device identity early so IndexedDB is ready before any login/attendance flow
 void initDeviceFingerprint();
 

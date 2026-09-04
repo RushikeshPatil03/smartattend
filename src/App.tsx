@@ -11,16 +11,28 @@ function lazyWithRetry<T extends React.ComponentType<any>>(
   componentImport: () => Promise<{ default: T }>
 ) {
   return React.lazy(async () => {
-    const isRefreshed = JSON.parse(
-      window.sessionStorage.getItem("retry-chunk-refreshed") || "false"
-    );
     try {
-      const component = await componentImport();
-      window.sessionStorage.setItem("retry-chunk-refreshed", "false");
-      return component;
+      return await componentImport();
     } catch (error) {
-      if (!isRefreshed) {
-        window.sessionStorage.setItem("retry-chunk-refreshed", "true");
+      const reloadKey = "smartattend_chunk_autoreload_ts";
+      const lastReload = Number(window.sessionStorage.getItem(reloadKey) || 0);
+      const now = Date.now();
+
+      // If a chunk fails due to a new deployment, purge stale caches and reload once safely
+      if (now - lastReload > 15000) {
+        window.sessionStorage.setItem(reloadKey, String(now));
+        if ("caches" in window) {
+          try {
+            const keys = await caches.keys();
+            await Promise.all(keys.map((k) => caches.delete(k)));
+          } catch {}
+        }
+        if ("serviceWorker" in navigator) {
+          try {
+            const registrations = await navigator.serviceWorker.getRegistrations();
+            await Promise.all(registrations.map((r) => r.update()));
+          } catch {}
+        }
         window.location.reload();
         return new Promise<{ default: T }>(() => {});
       }

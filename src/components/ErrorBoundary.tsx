@@ -31,13 +31,24 @@ export class ErrorBoundary extends Component<Props, State> {
     const isChunkError =
       errorMsg.includes("dynamically imported module") ||
       errorMsg.includes("Loading chunk") ||
-      errorMsg.includes("Failed to fetch dynamically imported module");
+      errorMsg.includes("Failed to fetch dynamically imported module") ||
+      errorMsg.includes("MIME type");
 
     if (isChunkError) {
-      const reloaded = sessionStorage.getItem("smartattend_chunk_autoreload");
-      if (!reloaded) {
-        sessionStorage.setItem("smartattend_chunk_autoreload", "true");
+      const reloadKey = "smartattend_chunk_autoreload_ts";
+      const lastReload = Number(sessionStorage.getItem(reloadKey) || 0);
+      const now = Date.now();
+      if (now - lastReload > 15000) {
+        sessionStorage.setItem(reloadKey, String(now));
+        if ("caches" in window) {
+          try {
+            caches.keys().then((names) => {
+              names.forEach((name) => caches.delete(name));
+            });
+          } catch {}
+        }
         window.location.reload();
+        return;
       }
     }
   }
