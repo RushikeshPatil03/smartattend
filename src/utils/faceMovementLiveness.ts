@@ -32,10 +32,10 @@ export const DEFAULT_MOVEMENT_ROTATION_THRESHOLD = Number(
   import.meta.env.VITE_FACEAPI_MOVEMENT_ROTATION_THRESHOLD || 0.045
 );
 
-export const RELATIVE_PITCH_DELTA_THRESHOLD = 0.046;
-export const RELATIVE_YAW_DELTA_THRESHOLD = 0.058;
-export const MIN_LIVENESS_DURATION_MS = 180;
-export const CONSECUTIVE_FRAMES_REQUIRED = 1;
+export const RELATIVE_PITCH_DELTA_THRESHOLD = 0.062;
+export const RELATIVE_YAW_DELTA_THRESHOLD = 0.078;
+export const MIN_LIVENESS_DURATION_MS = 220;
+export const CONSECUTIVE_FRAMES_REQUIRED = 2;
 
 export type ChallengeDirection = "UP" | "DOWN" | "LEFT" | "RIGHT";
 
@@ -304,6 +304,9 @@ export async function runMovementLiveness(
       }
     } else {
       consecutiveFrames = Math.max(0, consecutiveFrames - 1);
+      if (deltaRatio < 0.70) {
+        challengePassed = false;
+      }
     }
 
     // Check completion condition

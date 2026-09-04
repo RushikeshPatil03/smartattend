@@ -59,6 +59,29 @@ function isDataUrlImage(value) {
   return /^data:image\/(png|jpeg|jpg|webp);base64,/i.test(raw);
 }
 
+const DEVICE_CHANGE_MAX_RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+async function deleteOldDeviceChangeRequests(studentId = null) {
+  const supabase = getSupabaseClient();
+  if (!supabase) return;
+
+  try {
+    const cutoff = new Date(Date.now() - DEVICE_CHANGE_MAX_RETENTION_MS).toISOString();
+    let query = supabase
+      .from("device_change_requests")
+      .delete()
+      .lte("created_at", cutoff);
+
+    if (studentId) {
+      query = query.eq("student", String(studentId));
+    }
+
+    await query;
+  } catch (err) {
+    console.error("Error deleting old device change requests (>7 days):", err.message);
+  }
+}
+
 async function expireOldDeviceChangeRequests(studentId = null) {
   const supabase = getSupabaseClient();
   if (!supabase) return;
@@ -499,7 +522,10 @@ router.post("/device-change/verify-student", async (req, res) => {
       return res.status(401).json({ ok: false, error: "Invalid student credentials" });
     }
 
-    await expireOldDeviceChangeRequests(student.id);
+    await Promise.allSettled([
+      expireOldDeviceChangeRequests(student.id),
+      deleteOldDeviceChangeRequests(student.id),
+    ]);
     const recentRequest = await findRecentDeviceChangeRequest(student.id);
 
     if (recentRequest) {
@@ -589,7 +615,10 @@ router.post("/device-change/request", async (req, res) => {
       return res.status(404).json({ ok: false, error: "Student not found" });
     }
 
-    await expireOldDeviceChangeRequests(student.id);
+    await Promise.allSettled([
+      expireOldDeviceChangeRequests(student.id),
+      deleteOldDeviceChangeRequests(student.id),
+    ]);
     const recentRequest = await findRecentDeviceChangeRequest(student.id);
 
     if (recentRequest) {

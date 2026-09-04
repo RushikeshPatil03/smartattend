@@ -119,6 +119,29 @@ async function releaseRegistrationSlot(regId) {
   }
 }
 
+const DEVICE_CHANGE_MAX_RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+async function deleteOldDeviceChangeRequests(filter = {}) {
+  const supabase = getSupabaseClient();
+  if (!supabase) return;
+
+  try {
+    const cutoff = new Date(Date.now() - DEVICE_CHANGE_MAX_RETENTION_MS).toISOString();
+    let query = supabase
+      .from("device_change_requests")
+      .delete()
+      .lte("created_at", cutoff);
+
+    if (filter.department) {
+      query = query.eq("department", String(filter.department));
+    }
+
+    await query;
+  } catch (err) {
+    console.error("Error deleting old device change requests (>7 days):", err.message);
+  }
+}
+
 async function expireOldDeviceChangeRequests(filter = {}) {
   const supabase = getSupabaseClient();
   if (!supabase) return;
@@ -523,7 +546,11 @@ router.get("/device-change-requests", authMiddleware, async (req, res) => {
 
     const deptId = req.user.department;
     const adminId = req.user.created_by_admin || req.user.createdByAdmin;
-    await expireOldDeviceChangeRequests({ department: deptId });
+    await Promise.allSettled([
+      expireOldDeviceChangeRequests({ department: deptId }),
+      deleteOldDeviceChangeRequests({ department: deptId }),
+      scrubReviewedDeviceRequestPhotos({ department: deptId }),
+    ]);
 
     const status = String(req.query.status || "pending").toLowerCase();
     const allowedStatuses = ["pending", "approved", "rejected", "expired", "all"];
@@ -611,8 +638,8 @@ router.get("/device-change-requests", authMiddleware, async (req, res) => {
         reviewedBy: r.rev ? { ...r.rev, _id: r.rev.id } : r.reviewed_by,
         oldDeviceFingerprint: r.old_device_fingerprint,
         requestedDeviceFingerprint: r.requested_device_fingerprint,
-        selfieDataUrl: r.selfie_data_url || "",
-        selfie_data_url: r.selfie_data_url || "",
+        selfieDataUrl: r.status === "pending" ? (r.selfie_data_url || "") : "",
+        selfie_data_url: r.status === "pending" ? (r.selfie_data_url || "") : "",
         status: r.status,
         expiresAt: r.expires_at,
         reviewedAt: r.reviewed_at,
@@ -674,7 +701,7 @@ router.get("/device-change-requests/:id/photos", authMiddleware, async (req, res
     return res.json({
       ok: true,
       requestId: request.id,
-      selfieDataUrl: request.selfie_data_url || "",
+      selfieDataUrl: request.status === "pending" ? (request.selfie_data_url || "") : "",
       officialPhotoUrl: officialPhotoUrl || "",
       studentName,
       enrollmentNo,
@@ -707,7 +734,11 @@ router.post("/device-change-requests/:id/review", authMiddleware, async (req, re
 
     const deptId = req.user.department;
     const adminId = req.user.created_by_admin || req.user.createdByAdmin;
-    await expireOldDeviceChangeRequests({ department: deptId });
+    await Promise.allSettled([
+      expireOldDeviceChangeRequests({ department: deptId }),
+      deleteOldDeviceChangeRequests({ department: deptId }),
+      scrubReviewedDeviceRequestPhotos({ department: deptId }),
+    ]);
 
     const supabase = getSupabaseClient();
     if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });

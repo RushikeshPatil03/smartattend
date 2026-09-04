@@ -76,5 +76,7 @@ const DeviceChangeRequestSchema = new mongoose.Schema(
 
 DeviceChangeRequestSchema.index({ student: 1, createdAt: -1 });
 DeviceChangeRequestSchema.index({ department: 1, status: 1, expiresAt: 1 });
+// Automatically purge device change requests after 7 days across all statuses
+DeviceChangeRequestSchema.index({ createdAt: 1 }, { expireAfterSeconds: 7 * 24 * 60 * 60 });
 
 module.exports = mongoose.model("DeviceChangeRequest", DeviceChangeRequestSchema);
