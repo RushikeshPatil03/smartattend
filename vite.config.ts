@@ -27,7 +27,7 @@ export default defineConfig(({ mode }) => {
           cleanupOutdatedCaches: true,
           navigateFallback: "/index.html",
           navigateFallbackDenylist: [/^\/api\//, /^\/assets\//, /\.[a-zA-Z0-9]+$/],
-          globPatterns: ["**/*.{js,css,ico,png,svg,json}"],
+          globPatterns: ["**/*.{js,css,html,ico,png,svg,json}"],
           maximumFileSizeToCacheInBytes: 20 * 1024 * 1024, // 20 MB for face models & wasm
         },
       }),
