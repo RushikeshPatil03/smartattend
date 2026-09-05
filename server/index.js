@@ -252,6 +252,62 @@ app.get("/api/health", async (_req, res) => {
 });
 
 // ----------------------------------------------------
+// Root Landing Route (eliminates "Cannot GET /")
+// ----------------------------------------------------
+app.get("/", (req, res) => {
+  if (req.accepts("html")) {
+    return res.type("html").send(`
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Smart Attendance API • Operational</title>
+        <style>
+          * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+          body { background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+          .card { background: rgba(30, 41, 59, 0.7); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 24px; padding: 36px; max-width: 520px; width: 100%; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5); backdrop-filter: blur(12px); text-align: center; }
+          .badge { display: inline-flex; align-items: center; gap: 8px; background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.4); color: #34d399; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; padding: 6px 14px; border-radius: 999px; margin-bottom: 20px; }
+          .dot { width: 8px; height: 8px; background: #10b981; border-radius: 50%; box-shadow: 0 0 12px #10b981; }
+          h1 { font-size: 24px; font-weight: 800; margin-bottom: 10px; letter-spacing: -0.5px; }
+          p { color: #94a3b8; font-size: 14px; line-height: 1.6; margin-bottom: 24px; }
+          .btn-group { display: flex; flex-direction: column; gap: 12px; }
+          .btn { display: inline-block; padding: 12px 24px; border-radius: 12px; font-size: 14px; font-weight: 600; text-decoration: none; transition: all 0.2s ease; }
+          .btn-primary { background: linear-gradient(135deg, #059669, #0d9488); color: white; box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3); }
+          .btn-secondary { background: rgba(255, 255, 255, 0.05); color: #cbd5e1; border: 1px solid rgba(255, 255, 255, 0.1); }
+          .footer { margin-top: 24px; font-size: 12px; color: #64748b; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <div class="badge">
+            <span class="dot"></span>
+            Backend API Active
+          </div>
+          <h1>Smart Attendance System API</h1>
+          <p>This is the backend API service powered by Node.js & Supabase. It serves authentication, realtime session grants, QR validation, and attendance ledgers.</p>
+          <div class="btn-group">
+            <a href="/api/health" class="btn btn-primary">View Health Diagnostics</a>
+            ${env.FRONTEND_URL ? `<a href="${env.FRONTEND_URL}" class="btn btn-secondary">Go to Frontend Portal</a>` : ""}
+          </div>
+          <div class="footer">Environment: ${env.NODE_ENV} • Node.js ${process.version}</div>
+        </div>
+      </body>
+      </html>
+    `);
+  }
+
+  res.json({
+    ok: true,
+    service: "smart-qr-attendance-backend",
+    message: "Smart Attendance Backend API is online and operational",
+    healthCheck: "/api/health",
+    frontendUrl: env.FRONTEND_URL || "https://smartattend.app",
+    version: "1.0.0",
+  });
+});
+
+// ----------------------------------------------------
 // Global Error Handler
 // ----------------------------------------------------
 app.use((err, _req, res, _next) => {
