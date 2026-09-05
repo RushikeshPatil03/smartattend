@@ -137,7 +137,9 @@ function isTunnelOrigin(origin) {
       u.hostname.endsWith(".localtunnel.me") ||
       u.hostname.endsWith(".trycloudflare.com") ||
       u.hostname.endsWith(".pages.dev") ||
-      u.hostname.endsWith(".onrender.com")
+      u.hostname.endsWith(".onrender.com") ||
+      u.hostname.endsWith(".vercel.app") ||
+      u.hostname.endsWith(".netlify.app")
     );
   } catch {
     return false;

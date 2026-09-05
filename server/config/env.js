@@ -109,6 +109,8 @@ const defaultCorsOriginPatterns = [
   "https://*.smartattend.app",
   "https://*.pages.dev",
   "https://*.onrender.com",
+  "https://*.vercel.app",
+  "https://*.netlify.app",
 ];
 
 const corsOriginPatterns = Array.from(

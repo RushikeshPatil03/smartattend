@@ -3,14 +3,18 @@
 // FINAL – aligned with backend auth + two-step QR flow
 //
 
+const FALLBACK_PROD_API = "https://smartattend-api-lpbx.onrender.com";
+
 const RAW_API_BASE = String(import.meta.env.VITE_API_BASE_URL || "").trim();
 
 const API_BASE = (() => {
-  if (RAW_API_BASE && RAW_API_BASE !== "." && RAW_API_BASE !== "./") {
-    return RAW_API_BASE.replace(/\/+$/, "");
-  }
   if (typeof window !== "undefined") {
     const host = window.location.hostname;
+    const isLocalhost = host === "localhost" || host === "127.0.0.1" || host === "::1";
+    const isPrivateIP =
+      host.startsWith("192.168.") ||
+      host.startsWith("10.") ||
+      /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host);
     const isTunnel =
       host.endsWith(".loca.lt") ||
       host.endsWith(".localtunnel.me") ||
@@ -18,9 +22,51 @@ const API_BASE = (() => {
       host.endsWith(".ts.net") ||
       host.endsWith(".tailscale.net");
 
-    return isTunnel ? "" : `${window.location.protocol}//${host}:4000`;
+    // 1. If accessed on a mobile phone or local device via Wi-Fi LAN IP (e.g. http://192.168.1.5:5173)
+    if (isPrivateIP) {
+      if (
+        RAW_API_BASE &&
+        !RAW_API_BASE.includes("localhost") &&
+        !RAW_API_BASE.includes("127.0.0.1") &&
+        RAW_API_BASE.startsWith("http")
+      ) {
+        return RAW_API_BASE.replace(/\/+$/, "");
+      }
+      return `${window.location.protocol}//${host}:4000`;
+    }
+
+    // 2. If running locally on laptop
+    if (isLocalhost) {
+      if (RAW_API_BASE && RAW_API_BASE !== "." && RAW_API_BASE !== "./") {
+        return RAW_API_BASE.replace(/\/+$/, "");
+      }
+      return `${window.location.protocol}//${host}:4000`;
+    }
+
+    // 3. Tunnel environments
+    if (isTunnel) {
+      return "";
+    }
+
+    // 4. Production deployment (Cloudflare Pages, Vercel, Render, custom domain):
+    if (
+      RAW_API_BASE &&
+      RAW_API_BASE !== "." &&
+      RAW_API_BASE !== "./" &&
+      !RAW_API_BASE.includes("localhost") &&
+      !RAW_API_BASE.includes("127.0.0.1")
+    ) {
+      return RAW_API_BASE.replace(/\/+$/, "");
+    }
+
+    // Fallback: Default to official production API so production builds never hit invalid :4000 ports
+    return FALLBACK_PROD_API;
   }
-  return "http://localhost:4000";
+
+  if (RAW_API_BASE && !RAW_API_BASE.includes("localhost")) {
+    return RAW_API_BASE.replace(/\/+$/, "");
+  }
+  return FALLBACK_PROD_API;
 })();
 
 function buildUrl(url: string): string {
@@ -34,9 +80,17 @@ function buildUrl(url: string): string {
   return `${API_BASE}${cleanPath}`;
 }
 
+// 60 seconds timeout to accommodate free-tier cold starts (e.g. Render spin-up)
 const DEFAULT_REQUEST_TIMEOUT_MS = Number(
-  import.meta.env.VITE_API_REQUEST_TIMEOUT_MS || 15000
+  import.meta.env.VITE_API_REQUEST_TIMEOUT_MS || 60000
 );
+
+// Background warm-up ping for free-tier server instances
+if (typeof window !== "undefined" && API_BASE && API_BASE.includes("onrender.com")) {
+  try {
+    fetch(`${API_BASE}/api/health`, { method: "GET", mode: "cors" }).catch(() => {});
+  } catch {}
+}
 
 class ApiClient {
   token: string | null =
@@ -139,11 +193,13 @@ class ApiClient {
         if (externalSignal?.aborted) {
           return { ok: false, error: "Request cancelled", aborted: true };
         }
+        const timeoutSec = Math.round(DEFAULT_REQUEST_TIMEOUT_MS / 1000);
+        const isRender = API_BASE.includes("onrender.com");
         return {
           ok: false,
-          error: `Request timed out after ${Math.round(
-            DEFAULT_REQUEST_TIMEOUT_MS / 1000
-          )}s`,
+          error: isRender
+            ? `Server is spinning up (free tier cold start). Please retry in a moment.`
+            : `Request timed out after ${timeoutSec}s. Please check your network connection.`,
         };
       }
       return { ok: false, error: err?.message || "Network error" };
