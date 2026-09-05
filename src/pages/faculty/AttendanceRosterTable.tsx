@@ -1,4 +1,4 @@
-import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import React, { useDeferredValue, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   Download,
   Filter,
@@ -13,8 +13,34 @@ import {
   AlertTriangle,
   Sparkles,
   Zap,
+  Layers,
+  Eye,
+  Edit3,
+  MoreVertical,
+  CheckCircle2,
+  XCircle,
+  Trash2,
+  Check,
+  Save,
+  X,
 } from "lucide-react";
 import { Badge, Button, Skeleton } from "../../components/Common";
+import apiClient from "../../services/apiClient";
+
+export interface AssignedClassOption {
+  key: string;
+  classCode: string;
+  subjectId: string;
+  subjectName: string;
+  subjectCode: string;
+  departmentId: string;
+  departmentCode: string;
+  departmentName: string;
+  year: number | string;
+  semester: number | string;
+  section: string;
+  label: string;
+}
 
 interface SheetRow {
   name: string;
@@ -53,7 +79,7 @@ interface AttendanceRosterTableProps {
       subjectId: string;
     }>
   >;
-  onLoadSheet: () => Promise<void>;
+  onLoadSheet: (force?: boolean) => Promise<void>;
   onExportCsv: () => void;
 }
 
@@ -154,7 +180,10 @@ function useVirtualScroll({
 const AttendanceTableRow = React.memo<{
   row: EnrichedSheetRow;
   sheetColumns: string[];
-}>(({ row, sheetColumns }) => {
+  tableMode: "view" | "edit";
+  stagedChanges: Map<string, "P" | "A">;
+  toggleCell: (enrollmentNo: string, sessionId: string, next: "P" | "A") => void;
+}>(({ row, sheetColumns, tableMode, stagedChanges, toggleCell }) => {
   // Row background + left accent border by risk tier
   const rowBg = row.isCritical
     ? "bg-rose-50 border-l-4 border-rose-500"
@@ -174,6 +203,15 @@ const AttendanceTableRow = React.memo<{
     : row.isWarning
     ? "bg-amber-100 text-amber-800 border border-amber-400"
     : "bg-emerald-100 text-emerald-800 border border-emerald-300";
+
+  const getEffectiveStatus = (enrollmentNo: string, colStr: string): "P" | "A" => {
+    const sid = colStr.split("::")[0];
+    const key = `${enrollmentNo}|${sid}`;
+    if (stagedChanges.has(key)) {
+      return stagedChanges.get(key)!;
+    }
+    return row.attendance[colStr] || "A";
+  };
 
   return (
     <tr
@@ -220,24 +258,36 @@ const AttendanceTableRow = React.memo<{
         </span>
       </td>
 
-      {/* Per-session heatmap cells — P: emerald-50, A: rose-50 */}
-      {sheetColumns.map((c) => {
-        const status = row.attendance[c];
-        const isPresent = status === "P";
+      {/* Per-session heatmap cells */}
+      {sheetColumns.map((col) => {
+        const effectiveStatus = getEffectiveStatus(row.enrollmentNo, col);
+        const sid = col.split("::")[0];
+        const isStaged = stagedChanges.has(`${row.enrollmentNo}|${sid}`);
         return (
           <td
-            key={`${row.enrollmentNo}-${c}`}
-            className="px-2 py-2 text-center"
+            key={col}
+            onClick={() => {
+              if (tableMode !== "edit") return;
+              const next = effectiveStatus === "P" ? "A" : "P";
+              toggleCell(row.enrollmentNo, sid, next);
+            }}
+            onDoubleClick={() => {
+              if (tableMode !== "edit") return;
+              const next = effectiveStatus === "P" ? "A" : "P";
+              toggleCell(row.enrollmentNo, sid, next);
+            }}
+            className={`text-center font-mono font-bold text-xs select-none transition-colors duration-100 ${
+              tableMode === "edit" ? "cursor-pointer hover:bg-slate-100/80 active:scale-95" : ""
+            } ${
+              isStaged ? "ring-2 ring-amber-400 ring-inset" : ""
+            }`}
+            title={tableMode === "edit" ? "Double-click to flip P/A" : undefined}
           >
-            <span
-              className={`inline-flex h-6 w-7 items-center justify-center rounded-md text-[10px] font-bold ${
-                isPresent
-                  ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
-                  : "bg-rose-50 text-rose-700 border border-rose-200"
-              }`}
-            >
-              {status || "A"}
-            </span>
+            {effectiveStatus === "P" ? (
+              <span className="inline-block px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">P</span>
+            ) : (
+              <span className="inline-block px-1.5 py-0.5 rounded bg-rose-100 text-rose-800">A</span>
+            )}
           </td>
         );
       })}
@@ -262,6 +312,293 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
   const [filterAtRiskOnly, setFilterAtRiskOnly] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
+  // Extract all admin-assigned class code presets across faculty subjects
+  const assignedClassPresets = useMemo<AssignedClassOption[]>(() => {
+    const options: AssignedClassOption[] = [];
+    const seen = new Set<string>();
+
+    (mySubjects || []).forEach((sub: any) => {
+      const subId = String(sub._id || sub.id || "");
+      const subName = sub.name || "Subject";
+      const subCode = sub.code || "";
+      const assignments = Array.isArray(sub.assignments) ? sub.assignments : [];
+
+      if (assignments.length > 0) {
+        assignments.forEach((a: any) => {
+          const deptObj =
+            typeof a.department === "object" && a.department !== null
+              ? a.department
+              : (departments || []).find((d: any) => String(d._id || d.id) === String(a.department));
+          const deptId = String(deptObj?._id || deptObj?.id || a.department || "");
+          const deptCode = deptObj?.code || deptObj?.name || "DEPT";
+          const deptName = deptObj?.name || deptCode;
+          const classCode = String(a.classCode || a.class_code || "").trim();
+          const sec = String(a.section || "").trim().toUpperCase();
+          const yr = a.year || sub.year || "";
+          const sem = a.semester || sub.semester || "";
+
+          const key = `${subId}_${classCode || `${deptId}_${yr}_${sem}_${sec}`}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            const label = classCode
+              ? `${classCode} • ${deptCode} • Sec ${sec}`
+              : `${subCode} • ${deptCode} • Sec ${sec || "All"}${yr ? ` (Y${yr} S${sem})` : ""}`;
+
+            options.push({
+              key,
+              classCode,
+              subjectId: subId,
+              subjectName: subName,
+              subjectCode: subCode,
+              departmentId: deptId,
+              departmentCode: deptCode,
+              departmentName: deptName,
+              year: yr,
+              semester: sem,
+              section: sec,
+              label,
+            });
+          }
+        });
+      } else {
+        // Fallback if no specific section assignments exist for subject
+        const firstDeptId = Array.isArray(sub.departments)
+          ? typeof sub.departments[0] === "object"
+            ? String(sub.departments[0]?._id || sub.departments[0]?.id || "")
+            : String(sub.departments[0] || "")
+          : "";
+        const deptObj = (departments || []).find((d: any) => String(d._id || d.id) === firstDeptId);
+        const deptCode = deptObj?.code || "ALL";
+        const deptName = deptObj?.name || "All Departments";
+        const key = `${subId}_fallback`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          options.push({
+            key,
+            classCode: "",
+            subjectId: subId,
+            subjectName: subName,
+            subjectCode: subCode,
+            departmentId: firstDeptId,
+            departmentCode: deptCode,
+            departmentName: deptName,
+            year: sub.year || "",
+            semester: sub.semester || "",
+            section: "",
+            label: `${subCode} • ${subName} (Y${sub.year || "?"} S${sub.semester || "?"})`,
+          });
+        }
+      }
+    });
+
+    return options;
+  }, [mySubjects, departments]);
+
+  const [selectedPresetKey, setSelectedPresetKey] = useState<string>(() => {
+    if (sheetFilters.subjectId) {
+      const match = assignedClassPresets.find(
+        (p) =>
+          p.subjectId === sheetFilters.subjectId &&
+          (!sheetFilters.section || p.section === sheetFilters.section)
+      );
+      return match ? match.key : "";
+    }
+    return assignedClassPresets[0]?.key || "";
+  });
+
+  // Handler when faculty picks a class preset:
+  const handleSelectPreset = (presetKey: string) => {
+    setSelectedPresetKey(presetKey);
+    const selected = assignedClassPresets.find((p) => p.key === presetKey);
+    if (!selected) return;
+    // Atomically update all underlying sheet filters
+    setSheetFilters((prev) => ({
+      ...prev,
+      subjectId: selected.subjectId,
+      departmentId: selected.departmentId,
+      year: String(selected.year || ""),
+      semester: String(selected.semester || ""),
+      section: selected.section,
+    }));
+  };
+
+  // Auto-select first assigned class preset if no filter is currently active
+  useEffect(() => {
+    if (!sheetFilters.subjectId && assignedClassPresets.length > 0) {
+      const first = assignedClassPresets[0];
+      if (first) {
+        setSelectedPresetKey(first.key);
+        setSheetFilters((prev) => ({
+          ...prev,
+          subjectId: first.subjectId,
+          departmentId: first.departmentId,
+          year: String(first.year || ""),
+          semester: String(first.semester || ""),
+          section: first.section,
+        }));
+      }
+    }
+  }, [assignedClassPresets, sheetFilters.subjectId, setSheetFilters]);
+
+  // Keep selectedPresetKey in sync if sheetFilters changes externally
+  useEffect(() => {
+    if (sheetFilters.subjectId) {
+      const match = assignedClassPresets.find(
+        (p) =>
+          p.subjectId === sheetFilters.subjectId &&
+          (!sheetFilters.section || p.section === sheetFilters.section)
+      );
+      if (match && match.key !== selectedPresetKey) {
+        setSelectedPresetKey(match.key);
+      }
+    }
+  }, [sheetFilters.subjectId, sheetFilters.section, assignedClassPresets, selectedPresetKey]);
+
+  // Mode: 'view' (read-only) | 'edit' (interactive)
+  const [tableMode, setTableMode] = useState<"view" | "edit">("view");
+  // Staged cell overrides: Key is `${enrollmentNo}|${sessionId}` -> "P" | "A"
+  const [stagedChanges, setStagedChanges] = useState<Map<string, "P" | "A">>(new Map());
+  // Active session header dropdown state
+  const [activeHeaderMenuSessionId, setActiveHeaderMenuSessionId] = useState<string | null>(null);
+  // Session delete confirmation modal state
+  const [deleteConfirmSession, setDeleteConfirmSession] = useState<{
+    sessionId: string;
+    dateLabel: string;
+  } | null>(null);
+  const [isSavingChanges, setIsSavingChanges] = useState(false);
+  const [isDeletingSession, setIsDeletingSession] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Close header dropdown when clicking outside
+  useEffect(() => {
+    if (!activeHeaderMenuSessionId) return;
+    const handleClickOutside = () => setActiveHeaderMenuSessionId(null);
+    document.addEventListener("click", handleClickOutside);
+    return () => document.removeEventListener("click", handleClickOutside);
+  }, [activeHeaderMenuSessionId]);
+
+  // Reset staged edits whenever subject changes or baseline sheet rows are reloaded
+  useEffect(() => {
+    setStagedChanges(new Map());
+    setActiveHeaderMenuSessionId(null);
+  }, [sheetFilters.subjectId, sheetRows]);
+
+  // Toggle cell handler:
+  const toggleCell = useCallback(
+    (enrollmentNo: string, sessionId: string, nextStatus: "P" | "A") => {
+      setStagedChanges((prev) => {
+        const next = new Map(prev);
+        const key = `${enrollmentNo}|${sessionId}`;
+        const origRow = sheetRows.find((r) => r.enrollmentNo === enrollmentNo);
+        const colStr = sheetColumns.find((c) => c.split("::")[0] === sessionId);
+        const origStatus: "P" | "A" = colStr && origRow?.attendance?.[colStr] === "P" ? "P" : "A";
+
+        if (nextStatus === origStatus) {
+          next.delete(key);
+        } else {
+          next.set(key, nextStatus);
+        }
+        return next;
+      });
+    },
+    [sheetRows, sheetColumns]
+  );
+
+  // Bulk mark session:
+  const bulkMarkSession = useCallback(
+    (sessionId: string, targetStatus: "P" | "A") => {
+      setStagedChanges((prev) => {
+        const next = new Map(prev);
+        const colStr = sheetColumns.find((c) => c.split("::")[0] === sessionId);
+        sheetRows.forEach((row) => {
+          const key = `${row.enrollmentNo}|${sessionId}`;
+          const origStatus: "P" | "A" = colStr && row.attendance?.[colStr] === "P" ? "P" : "A";
+          if (targetStatus === origStatus) {
+            next.delete(key);
+          } else {
+            next.set(key, targetStatus);
+          }
+        });
+        return next;
+      });
+    },
+    [sheetRows, sheetColumns]
+  );
+
+  // Confirm delete session execution:
+  const handleConfirmDeleteSession = async () => {
+    if (!deleteConfirmSession) return;
+    setIsDeletingSession(true);
+    try {
+      await apiClient.cancelSession(deleteConfirmSession.sessionId);
+      setStagedChanges((prev) => {
+        const next = new Map(prev);
+        Array.from(next.keys()).forEach((k) => {
+          if (k.endsWith(`|${deleteConfirmSession.sessionId}`)) {
+            next.delete(k);
+          }
+        });
+        return next;
+      });
+      setDeleteConfirmSession(null);
+      // Re-fetch fresh sheet data bypassing any client-side cache
+      await onLoadSheet(true);
+    } catch (err: any) {
+      alert(err?.message || "Failed to delete session");
+    } finally {
+      setIsDeletingSession(false);
+    }
+  };
+
+  // Atomic save handler:
+  const handleBatchSave = async () => {
+    if (stagedChanges.size === 0) return;
+    setIsSavingChanges(true);
+    setSaveError(null);
+    const updates = Array.from(stagedChanges.entries()).map(([key, status]) => {
+      const [enrollmentNo, sessionId] = key.split("|");
+      return {
+        sessionId,
+        enrollmentNo,
+        status: status === "P" ? ("present" as const) : ("absent" as const),
+      };
+    });
+    try {
+      const res: any = await apiClient.batchUpdateMatrixAttendance({
+        subjectId: sheetFilters.subjectId,
+        updates,
+      });
+      if (!res?.ok) throw new Error(res?.error || "Batch update failed");
+      // Auto refresh matrix with force=true to bypass client cache and pull fresh database state
+      await onLoadSheet(true);
+      // Clear staged changes after fresh sheet is loaded
+      setStagedChanges(new Map());
+    } catch (err: any) {
+      setSaveError(err?.message || "Failed to commit attendance updates.");
+    } finally {
+      setIsSavingChanges(false);
+    }
+  };
+
+  // Derive local rows applying staged in-memory edits at 60 FPS
+  const localRows = useMemo<SheetRow[]>(() => {
+    if (stagedChanges.size === 0) return sheetRows;
+    return sheetRows.map((row) => {
+      let hasChange = false;
+      const newAttendance = { ...row.attendance };
+      for (const col of sheetColumns) {
+        const sid = col.split("::")[0];
+        const key = `${row.enrollmentNo}|${sid}`;
+        if (stagedChanges.has(key)) {
+          newAttendance[col] = stagedChanges.get(key)!;
+          hasChange = true;
+        }
+      }
+      if (!hasChange) return row;
+      return { ...row, attendance: newAttendance };
+    });
+  }, [sheetRows, sheetColumns, stagedChanges]);
+
   // Concurrency optimization: Defer heavy search filtering so UI inputs remain 100% responsive
   const deferredSearchTerm = useDeferredValue(searchTerm);
 
@@ -275,7 +612,7 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
   // Compute student summary percentages + risk tier (single pass, O(n·cols))
   const enrichedRows = useMemo<EnrichedSheetRow[]>(() => {
     const totalCols = sheetColumns.length;
-    return sheetRows.map((row) => {
+    return localRows.map((row) => {
       let attended = 0;
       for (let i = 0; i < sheetColumns.length; i++) {
         if (row.attendance[sheetColumns[i]] === "P") attended++;
@@ -294,7 +631,7 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
         isAtRisk,
       };
     });
-  }, [sheetRows, sheetColumns]);
+  }, [localRows, sheetColumns]);
 
   // Filtered rows using deferred search query
   const filteredRows = useMemo(() => {
@@ -362,12 +699,47 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Mode Switcher: View vs Edit Mode */}
+            <div className="flex items-center gap-2">
+              <label htmlFor="matrix-table-mode" className="text-xs font-semibold text-slate-500">
+                Mode:
+              </label>
+              <select
+                id="matrix-table-mode"
+                value={tableMode}
+                onChange={(e) => {
+                  const nextMode = e.target.value as "view" | "edit";
+                  if (nextMode === "view" && stagedChanges.size > 0) {
+                    const confirmDiscard = window.confirm(
+                      `You have ${stagedChanges.size} unsaved attendance changes. Discard them and return to View mode?`
+                    );
+                    if (!confirmDiscard) return;
+                    setStagedChanges(new Map());
+                  }
+                  setTableMode(nextMode);
+                }}
+                className={`rounded-xl border px-3 py-1.5 text-xs font-bold transition-all shadow-xs cursor-pointer ${
+                  tableMode === "edit"
+                    ? "border-amber-400 bg-amber-50 text-amber-900 ring-2 ring-amber-300"
+                    : "border-slate-200 bg-white text-slate-700 hover:border-slate-300"
+                }`}
+              >
+                <option value="view">👁 View Attendance</option>
+                <option value="edit">✎ Edit Attendance</option>
+              </select>
+            </div>
+
             <button
               type="button"
               onClick={onExportCsv}
-              disabled={!sheetRows.length}
-              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200/90 bg-white px-4.5 py-2.5 text-xs font-bold text-slate-700 hover:border-emerald-400 hover:bg-emerald-50/50 shadow-xs transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={!sheetRows.length || (tableMode === "edit" && stagedChanges.size > 0)}
+              title={
+                tableMode === "edit" && stagedChanges.size > 0
+                  ? "Save or discard staged changes before exporting"
+                  : undefined
+              }
+              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200/90 bg-white px-4 py-2 text-xs font-bold text-slate-700 hover:border-emerald-400 hover:bg-emerald-50/50 shadow-xs transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Download size={15} className="text-emerald-600" />
               Download CSV
@@ -375,123 +747,93 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
           </div>
         </div>
 
-        {/* Filter Selection Grid */}
-        <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 items-end">
-          <div>
-            <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
-              Department
-            </label>
-            <select
-              className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300"
-              value={sheetFilters.departmentId}
-              onChange={(e) =>
-                setSheetFilters((p) => ({ ...p, departmentId: e.target.value }))
-              }
-            >
-              <option value="">All Departments</option>
-              {departments.map((d: any) => (
-                <option key={d._id || d.id} value={d._id || d.id}>
-                  {d.name}
-                </option>
-              ))}
-            </select>
+        {/* Interactive Edit Mode Guidance Banner */}
+        {tableMode === "edit" && (
+          <div className="mb-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-amber-200/90 bg-amber-50/80 px-4 py-3 text-xs text-amber-900 shadow-2xs">
+            <div className="flex items-center gap-2">
+              <span className="flex h-2 w-2 rounded-full bg-amber-600 animate-pulse" />
+              <span>
+                <strong>Interactive Edit Mode Active:</strong> Click or double-click any cell to toggle <strong>P &harr; A</strong>. Click <MoreVertical size={12} className="inline text-slate-600" /> on any session column header for bulk options or session deletion.
+              </span>
+            </div>
+            {stagedChanges.size > 0 && (
+              <span className="shrink-0 font-bold text-amber-800 font-mono bg-white border border-amber-300 px-2.5 py-1 rounded-xl text-[11px] shadow-2xs">
+                {stagedChanges.size} staged change{stagedChanges.size > 1 ? "s" : ""}
+              </span>
+            )}
           </div>
+        )}
 
-          <div>
-            <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
-              Year
-            </label>
-            <select
-              className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300"
-              value={sheetFilters.year}
-              onChange={(e) =>
-                setSheetFilters((p) => ({ ...p, year: e.target.value }))
-              }
-            >
-              <option value="">All Years</option>
-              {[1, 2, 3, 4].map((y) => (
-                <option key={y} value={y}>
-                  Year {y}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
-              Semester
-            </label>
-            <select
-              className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300"
-              value={sheetFilters.semester}
-              onChange={(e) =>
-                setSheetFilters((p) => ({ ...p, semester: e.target.value }))
-              }
-            >
-              <option value="">All Semesters</option>
-              {[1, 2, 3, 4, 5, 6, 7, 8].map((s) => (
-                <option key={s} value={s}>
-                  Semester {s}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
-              Section
-            </label>
-            <select
-              className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300"
-              value={sheetFilters.section}
-              onChange={(e) =>
-                setSheetFilters((p) => ({ ...p, section: e.target.value }))
-              }
-            >
-              <option value="">All Sections</option>
-              {["A", "B", "C", "D"].map((sec) => (
-                <option key={sec} value={sec}>
-                  Section {sec}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="lg:col-span-2">
-            <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
-              Subject <span className="text-emerald-600">*</span>
-            </label>
-            <div className="flex gap-2">
-              <select
-                className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300"
-                value={sheetFilters.subjectId}
-                onChange={(e) =>
-                  setSheetFilters((p) => ({ ...p, subjectId: e.target.value }))
-                }
-              >
-                <option value="">-- Choose Subject --</option>
-                {mySubjects.map((s: any) => (
-                  <option key={s._id || s.id} value={s._id || s.id}>
-                    {s.name} ({s.code})
-                  </option>
-                ))}
-              </select>
-
+        {/* Sleek Assigned Class Code Preset Bar */}
+        <div className="rounded-2xl border border-slate-200/90 bg-slate-50/70 p-4 sm:p-5 shadow-2xs backdrop-blur-md mb-6">
+          <div className="flex flex-col md:flex-row md:items-end gap-3.5">
+            {/* Assigned Class Code Preset Dropdown */}
+            <div className="flex-1">
+              <label className="block text-[11px] font-extrabold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center gap-1.5">
+                <Sparkles size={13} className="text-emerald-600" />
+                Filter by Class Code (Assigned by Admin)
+              </label>
+              
+              {assignedClassPresets.length === 0 ? (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 font-medium">
+                  No assigned class codes found. Please confirm subject allocations with your administrator.
+                </div>
+              ) : (
+                <select
+                  value={selectedPresetKey}
+                  onChange={(e) => handleSelectPreset(e.target.value)}
+                  className="w-full rounded-xl border border-slate-300/90 bg-white px-4 py-2.5 text-xs font-bold text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs transition hover:border-slate-400 cursor-pointer"
+                >
+                  <option value="" disabled>-- Select Assigned Class --</option>
+                  {assignedClassPresets.map((preset) => (
+                    <option key={preset.key} value={preset.key}>
+                      {preset.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+            {/* Generate Ledger Button */}
+            <div className="shrink-0">
               <button
                 type="button"
-                onClick={onLoadSheet}
+                onClick={() => onLoadSheet(true)}
                 disabled={sheetLoading || !sheetFilters.subjectId}
-                className="inline-flex items-center gap-1.5 shrink-0 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 px-5 py-3 text-xs font-extrabold text-white shadow-[0_8px_20px_-4px_rgba(16,185,129,0.35)] hover:shadow-[0_12px_24px_-4px_rgba(16,185,129,0.45)] hover:brightness-105 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 px-6 py-2.5 text-xs font-extrabold text-white shadow-[0_8px_20px_-4px_rgba(16,185,129,0.35)] hover:shadow-[0_12px_24px_-4px_rgba(16,185,129,0.45)] hover:brightness-105 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed active:scale-98"
               >
                 {sheetLoading ? (
                   <RefreshCw size={15} className="animate-spin" />
                 ) : (
                   <List size={15} />
                 )}
-                <span>Generate</span>
+                <span>Generate Matrix</span>
               </button>
             </div>
           </div>
+          {/* Active Selection Metadata Preview Badge */}
+          {selectedPresetKey && (
+            <div className="mt-3 pt-3 border-t border-slate-200/60 flex flex-wrap items-center gap-2 text-[11px] text-slate-500 font-medium">
+              <span className="text-slate-400">Active Parameters:</span>
+              <span className="bg-white px-2 py-0.5 rounded-md border border-slate-200 font-mono font-bold text-slate-700">
+                Subject: {sheetFilters.subjectId ? (mySubjects.find((s: any) => String(s.id || s._id) === sheetFilters.subjectId)?.name || "Selected") : "None"}
+              </span>
+              {sheetFilters.section && (
+                <span className="bg-white px-2 py-0.5 rounded-md border border-slate-200 font-bold text-slate-700">
+                  Section: {sheetFilters.section}
+                </span>
+              )}
+              {sheetFilters.semester && (
+                <span className="bg-white px-2 py-0.5 rounded-md border border-slate-200 font-bold text-slate-700">
+                  Sem: {sheetFilters.semester}
+                </span>
+              )}
+              {sheetFilters.year && (
+                <span className="bg-white px-2 py-0.5 rounded-md border border-slate-200 font-bold text-slate-700">
+                  Year: {sheetFilters.year}
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Quick Search & Summary Stats */}
@@ -620,15 +962,78 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
                     <th className="px-5 py-4 whitespace-nowrap bg-slate-50/95">Enrollment USN</th>
                     <th className="px-5 py-4 whitespace-nowrap bg-slate-50/95">Student Name</th>
                     <th className="px-4 py-4 text-center whitespace-nowrap bg-slate-50/95">Quorum Score</th>
-                    {sheetColumns.map((c) => {
-                      const label = c.split("::")[1] || c;
+                    {sheetColumns.map((colStr) => {
+                      const [sessionId, dateLabel] = colStr.split("::");
+                      const isMenuOpen = activeHeaderMenuSessionId === sessionId;
                       return (
                         <th
-                          key={c}
-                          className="px-3 py-4 text-center font-mono font-semibold whitespace-nowrap hover:bg-slate-100 transition bg-slate-50/95"
-                          title={c}
+                          key={colStr}
+                          className={`relative px-3 py-4 text-center font-mono font-semibold whitespace-nowrap bg-slate-50/95 transition border-l border-slate-200/50 ${
+                            tableMode === "edit" ? "hover:bg-slate-100/90" : ""
+                          }`}
+                          title={colStr}
                         >
-                          {label}
+                          <div className="flex items-center justify-center gap-1.5">
+                            <span>{dateLabel || sessionId}</span>
+                            {tableMode === "edit" && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveHeaderMenuSessionId((prev) =>
+                                    prev === sessionId ? null : sessionId
+                                  );
+                                }}
+                                className="rounded-lg p-1 text-slate-400 hover:text-slate-800 hover:bg-slate-200/80 transition cursor-pointer"
+                                title="Session actions"
+                              >
+                                <MoreVertical size={13} />
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Session Actions Dropdown Menu */}
+                          {tableMode === "edit" && isMenuOpen && (
+                            <div
+                              onClick={(e) => e.stopPropagation()}
+                              className="absolute right-0 top-full z-30 mt-1 w-48 rounded-2xl bg-white shadow-2xl border border-slate-200 p-1.5 text-left normal-case font-sans tracking-normal font-normal"
+                            >
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  bulkMarkSession(sessionId, "P");
+                                  setActiveHeaderMenuSessionId(null);
+                                }}
+                                className="w-full flex items-center gap-2 px-3 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-50 rounded-xl transition cursor-pointer"
+                              >
+                                <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
+                                <span>Mark All Present</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  bulkMarkSession(sessionId, "A");
+                                  setActiveHeaderMenuSessionId(null);
+                                }}
+                                className="w-full flex items-center gap-2 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-50 rounded-xl transition cursor-pointer"
+                              >
+                                <XCircle size={14} className="text-rose-600 shrink-0" />
+                                <span>Mark All Absent</span>
+                              </button>
+                              <div className="h-px bg-slate-100 my-1" />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveHeaderMenuSessionId(null);
+                                  setDeleteConfirmSession({ sessionId, dateLabel: dateLabel || sessionId });
+                                }}
+                                className="w-full flex items-center gap-2 px-3 py-2 text-xs font-bold text-rose-600 hover:bg-rose-50 rounded-xl transition cursor-pointer"
+                              >
+                                <Trash2 size={14} className="text-rose-600 shrink-0" />
+                                <span>Delete Session</span>
+                              </button>
+                            </div>
+                          )}
                         </th>
                       );
                     })}
@@ -663,6 +1068,9 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
                           key={row.enrollmentNo}
                           row={row}
                           sheetColumns={sheetColumns}
+                          tableMode={tableMode}
+                          stagedChanges={stagedChanges}
+                          toggleCell={toggleCell}
                         />
                       ))}
 
@@ -680,6 +1088,99 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
           </>
         )}
       </div>
+
+      {/* ── Floating ACID Batch Save Bar ──────────────────────────────────────── */}
+      {tableMode === "edit" && stagedChanges.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-4 rounded-3xl bg-slate-900/95 px-6 py-3.5 text-white shadow-2xl border border-slate-700/60 backdrop-blur-xl animate-in fade-in slide-in-from-bottom-4">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-2.5 w-2.5 rounded-full bg-amber-400 animate-pulse" />
+            <span className="text-xs font-bold text-slate-200">
+              <strong className="text-amber-300 font-mono text-sm mr-1">{stagedChanges.size}</strong> pending{" "}
+              {stagedChanges.size === 1 ? "edit" : "edits"} staged
+            </span>
+          </div>
+
+          {saveError && (
+            <span className="text-[11px] text-rose-300 font-medium max-w-xs truncate">
+              {saveError}
+            </span>
+          )}
+
+          <div className="h-4 w-px bg-slate-700" />
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setStagedChanges(new Map())}
+              disabled={isSavingChanges}
+              className="rounded-xl px-3.5 py-1.5 text-xs font-semibold text-slate-300 hover:text-white hover:bg-slate-800 transition cursor-pointer disabled:opacity-50"
+            >
+              Discard
+            </button>
+
+            <button
+              type="button"
+              onClick={handleBatchSave}
+              disabled={isSavingChanges}
+              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-1.5 text-xs font-extrabold text-white shadow-md hover:brightness-110 active:scale-95 transition cursor-pointer disabled:opacity-50"
+            >
+              {isSavingChanges ? (
+                <RefreshCw size={13} className="animate-spin" />
+              ) : (
+                <Save size={13} />
+              )}
+              <span>{isSavingChanges ? "Saving Batch..." : "Save Changes"}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Session Delete Confirmation Modal ─────────────────────────────────── */}
+      {deleteConfirmSession && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
+          <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl animate-in fade-in zoom-in-95">
+            <div className="flex items-center gap-3 text-rose-600 mb-3">
+              <div className="rounded-full bg-rose-100 p-2.5">
+                <AlertTriangle size={22} className="text-rose-600" />
+              </div>
+              <h3 className="text-base font-bold text-slate-900">Delete Attendance Session</h3>
+            </div>
+            <p className="text-xs text-slate-600 mb-4 leading-relaxed">
+              Are you sure you want to permanently delete the session for{" "}
+              <strong>{deleteConfirmSession.dateLabel || deleteConfirmSession.sessionId}</strong>?
+              This action will permanently delete all attendance records associated with this session. This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2.5">
+              <button
+                type="button"
+                disabled={isDeletingSession}
+                onClick={() => setDeleteConfirmSession(null)}
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingSession}
+                onClick={handleConfirmDeleteSession}
+                className="flex items-center gap-1.5 rounded-xl bg-rose-600 px-4 py-2 text-xs font-bold text-white hover:bg-rose-500 transition cursor-pointer disabled:opacity-50"
+              >
+                {isDeletingSession ? (
+                  <>
+                    <RefreshCw size={13} className="animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 size={13} />
+                    <span>Delete Permanently</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 });

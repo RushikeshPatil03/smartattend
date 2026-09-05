@@ -1310,6 +1310,9 @@ const FacultyDashboard: React.FC = () => {
     if (!sheetFilters.subjectId) return;
 
     const filterKey = `${sheetFilters.subjectId}_${sheetFilters.departmentId || ""}_${sheetFilters.year || ""}_${sheetFilters.semester || ""}_${sheetFilters.section || ""}`;
+    if (force) {
+      sheetMatrixCacheRef.current.delete(filterKey);
+    }
     const cached = sheetMatrixCacheRef.current.get(filterKey);
     const now = Date.now();
     if (!force && cached && now - cached.cachedAt < 60_000) {

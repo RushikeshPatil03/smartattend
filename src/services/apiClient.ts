@@ -391,6 +391,18 @@ class ApiClient {
   manualAttendance = (data: any) =>
     this.post("/api/attendance/manual", data);
 
+  batchUpdateMatrixAttendance = (data: {
+    updates: Array<{
+      sessionId: string;
+      enrollmentNo: string;
+      status: "present" | "absent";
+    }>;
+    subjectId?: string;
+  }) => this.post("/api/attendance/matrix/batch-update", data);
+
+  deleteAttendanceSession = (sessionId: string) =>
+    this.delete(`/api/attendance/session/${encodeURIComponent(sessionId)}`);
+
   fetchAttendance = (filters: any) => {
     const qs = new URLSearchParams(filters || {}).toString();
     return this.get(`/api/attendance?${qs}`);

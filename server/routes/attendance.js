@@ -1926,6 +1926,202 @@ router.post("/manual", auth(["FACULTY", "ADMIN"]), handleManualAttendance);
 router.post("/session/:id/manual", auth(["FACULTY", "ADMIN"]), handleManualAttendance);
 
 // ----------------------------------------------------
+// POST /api/attendance/matrix/batch-update
+// Atomically update/delete multiple attendance entries across sessions
+// ----------------------------------------------------
+router.post("/matrix/batch-update", auth(["FACULTY", "ADMIN"]), async (req, res) => {
+  try {
+    const { updates = [], subjectId } = req.body || {};
+
+    if (!Array.isArray(updates) || updates.length === 0) {
+      return res.status(400).json({ ok: false, error: "No updates provided" });
+    }
+
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
+
+    // 1. Gather all session IDs involved and verify faculty permissions
+    const sessionIds = [...new Set(updates.map((u) => String(u.sessionId)).filter(Boolean))];
+    const { data: validSessions, error: sessErr } = await supabase
+      .from("sessions")
+      .select("id, faculty, subject, year, semester, section")
+      .in("id", sessionIds);
+
+    if (sessErr || !validSessions) throw sessErr || new Error("Failed to verify sessions");
+
+    if (req.userRole === "FACULTY") {
+      const unauthorized = validSessions.some((s) => String(s.faculty) !== String(req.userId));
+      if (unauthorized) {
+        return res.status(403).json({ ok: false, error: "Forbidden: Unauthorized session modification" });
+      }
+    }
+
+    const sessionLookup = new Map(validSessions.map((s) => [String(s.id), s]));
+
+    // 2. Fetch student IDs matching enrollment numbers (case-insensitive fallback)
+    const rawEnrollmentNos = [...new Set(updates.map((u) => String(u.enrollmentNo).trim()).filter(Boolean))];
+    const upperEnrollmentNos = [...new Set(rawEnrollmentNos.map((e) => e.toUpperCase()))];
+    const lowerEnrollmentNos = [...new Set(rawEnrollmentNos.map((e) => e.toLowerCase()))];
+    const lookupVariants = [...new Set([...rawEnrollmentNos, ...upperEnrollmentNos, ...lowerEnrollmentNos])];
+
+    const { data: students, error: stuErr } = await supabase
+      .from("students")
+      .select("id, enrollment_no, name, email, department")
+      .in("enrollment_no", lookupVariants);
+
+    if (stuErr || !students) throw stuErr || new Error("Failed to lookup students");
+
+    const studentLookup = new Map();
+    students.forEach((s) => {
+      if (s.enrollment_no) {
+        studentLookup.set(String(s.enrollment_no).trim().toUpperCase(), s);
+        studentLookup.set(String(s.enrollment_no).trim().toLowerCase(), s);
+        studentLookup.set(String(s.enrollment_no).trim(), s);
+      }
+      if (s.id) {
+        studentLookup.set(String(s.id), s);
+      }
+    });
+
+    // 3. Separate into Present (Upserts) and Absent (Deletions)
+    const presentPayloads = [];
+    const absentPairs = []; // { sessionId, studentId, enrollmentNo }
+
+    for (const item of updates) {
+      const sid = String(item.sessionId);
+      const eno = String(item.enrollmentNo).trim();
+      const sess = sessionLookup.get(sid);
+      const stu = studentLookup.get(eno.toUpperCase()) || studentLookup.get(eno.toLowerCase()) || studentLookup.get(eno);
+
+      if (!sess || !stu) continue;
+
+      const isPres = item.status === "present" || item.status === "P";
+      if (isPres) {
+        presentPayloads.push({
+          session: sid,
+          student: stu.id,
+          faculty: sess.faculty,
+          subject: sess.subject,
+          enrollment_no: stu.enrollment_no,
+          student_name: stu.name,
+          student_email: stu.email,
+          year: sess.year,
+          semester: sess.semester,
+          section: sess.section,
+          status: "present",
+          timestamp: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+      } else {
+        absentPairs.push({ sessionId: sid, studentId: stu.id, enrollmentNo: stu.enrollment_no || eno });
+      }
+    }
+
+    // 4. Execute atomic writes
+    // 4a. Upsert present records
+    if (presentPayloads.length > 0) {
+      let { error: upsertErr } = await supabase
+        .from("attendances")
+        .upsert(presentPayloads, { onConflict: "session,student" });
+
+      if (upsertErr && (upsertErr.code === "PGRST204" || upsertErr.code === "42703" || String(upsertErr.message || "").includes("column"))) {
+        const basePayloads = presentPayloads.map((p) => ({
+          session: p.session,
+          student: p.student,
+          faculty: p.faculty,
+          subject: p.subject,
+          status: "present",
+          timestamp: p.timestamp,
+          updated_at: p.updated_at,
+        }));
+        const retryRes = await supabase
+          .from("attendances")
+          .upsert(basePayloads, { onConflict: "session,student" });
+        upsertErr = retryRes.error;
+      }
+
+      if (upsertErr) throw upsertErr;
+    }
+
+    // 4b. Delete absent records
+    for (const pair of absentPairs) {
+      await supabase
+        .from("attendances")
+        .delete()
+        .eq("session", pair.sessionId)
+        .eq("student", pair.studentId);
+
+      if (pair.enrollmentNo) {
+        await supabase
+          .from("attendances")
+          .delete()
+          .eq("session", pair.sessionId)
+          .ilike("enrollment_no", pair.enrollmentNo);
+      }
+    }
+
+    // 5. Invalidate caches for all affected sessions
+    for (const sid of sessionIds) {
+      invalidateCachedSession(sid);
+    }
+
+    return res.json({
+      ok: true,
+      modifiedCount: updates.length,
+      presentUpserted: presentPayloads.length,
+      absentDeleted: absentPairs.length,
+    });
+  } catch (err) {
+    console.error("Matrix batch update error:", err);
+    return res.status(500).json({ ok: false, error: err?.message || "Failed to update attendance records" });
+  }
+});
+
+// ----------------------------------------------------
+// DELETE /api/attendance/session/:id
+// Cascade delete session and all associated attendance data
+// ----------------------------------------------------
+router.delete("/session/:id", auth(["FACULTY", "ADMIN"]), async (req, res) => {
+  try {
+    const sessionId = String(req.params.id);
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
+
+    let fetchQuery = supabase.from("sessions").select("id, faculty").eq("id", sessionId);
+    if (req.userRole === "FACULTY") {
+      fetchQuery = fetchQuery.eq("faculty", req.userId);
+    }
+    const { data: session, error: sessErr } = await fetchQuery.single();
+    if (sessErr || !session) {
+      return res.status(404).json({ ok: false, error: "Session not found or unauthorized" });
+    }
+
+    // Invalidate session cache
+    invalidateCachedSession(sessionId);
+
+    // Clean dependent records in safe foreign-key order
+    try { await supabase.from("attendance_audits").delete().eq("session", sessionId); } catch {}
+    try { await supabase.from("scan_grants").delete().eq("session_id", sessionId); } catch {}
+    try { await supabase.from("qr_states").delete().eq("session_id", sessionId); } catch {}
+    try { await supabase.from("totp_secrets").delete().eq("session_id", sessionId); } catch {}
+    try { await supabase.from("attendances").delete().eq("session", sessionId); } catch {}
+
+    const { error: delErr } = await supabase.from("sessions").delete().eq("id", sessionId);
+    if (delErr) {
+      await supabase
+        .from("sessions")
+        .update({ is_active: false, end_time: new Date().toISOString() })
+        .eq("id", sessionId);
+    }
+
+    return res.json({ ok: true, message: "Session deleted successfully" });
+  } catch (err) {
+    console.error("Delete session error:", err);
+    return res.status(500).json({ ok: false, error: err?.message || "Failed to delete session" });
+  }
+});
+
+// ----------------------------------------------------
 // 6) ATTENDANCE AUDITS (ADMIN / FACULTY)
 // GET /api/attendance/audits
 // ----------------------------------------------------
