@@ -208,16 +208,32 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const resolveRegistrationLink = useCallback((type: string, token: string, serverLink?: string) => {
+    const configuredFrontend = normalizeFrontendOrigin(import.meta.env.VITE_FRONTEND_URL || "");
     const currentOrigin =
       typeof window !== "undefined" ? normalizeFrontendOrigin(window.location.origin) : "";
-    const fallbackOrigin =
-      normalizeFrontendOrigin(
-        import.meta.env.VITE_FRONTEND_URL ||
-        `${window.location.protocol}//${window.location.host}`
-      );
+    
+    // Check if current origin is localhost/private IP
+    let isCurrentLocal = false;
+    if (currentOrigin) {
+      try {
+        const u = new URL(currentOrigin);
+        isCurrentLocal =
+          u.hostname === "localhost" ||
+          u.hostname === "127.0.0.1" ||
+          u.hostname === "0.0.0.0" ||
+          u.hostname.startsWith("192.168.") ||
+          u.hostname.startsWith("10.") ||
+          /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(u.hostname);
+      } catch {}
+    }
 
-    const fallbackLink = `${fallbackOrigin}/register?token=${token}&role=${type}`;
-    if (!serverLink) return currentOrigin ? `${currentOrigin}/register?token=${token}&role=${type}` : fallbackLink;
+    // Best public origin to use when distributing links to mobile devices
+    const bestPublicOrigin = configuredFrontend || (!isCurrentLocal && currentOrigin ? currentOrigin : "https://smartattend.app");
+    const fallbackLink = `${bestPublicOrigin}/register?token=${token}&role=${type}`;
+
+    if (!serverLink) {
+      return fallbackLink;
+    }
 
     try {
       const parsed = new URL(serverLink);
@@ -226,8 +242,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         parsed.hostname === "127.0.0.1" ||
         parsed.hostname === "0.0.0.0";
 
+      // If server returned localhost or we have a public domain configured
+      if (looksLocalhost && bestPublicOrigin) {
+        const best = new URL(bestPublicOrigin);
+        parsed.protocol = best.protocol;
+        parsed.host = best.host;
+        return parsed.toString();
+      }
+
       if (currentOrigin && (looksLocalhost || parsed.origin !== currentOrigin)) {
-        const current = new URL(currentOrigin);
+        const current = new URL(bestPublicOrigin || currentOrigin);
         parsed.protocol = current.protocol;
         parsed.host = current.host;
         return parsed.toString();
@@ -235,7 +259,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
       return normalizeFrontendOrigin(parsed.toString()) + parsed.pathname + parsed.search;
     } catch {
-      return currentOrigin ? `${currentOrigin}/register?token=${token}&role=${type}` : fallbackLink;
+      return fallbackLink;
     }
   }, [normalizeFrontendOrigin]);
 

@@ -182,6 +182,8 @@ const Register: React.FC = () => {
   }, []);
 
   const fetchRegistrationContext = async (registrationToken: string) => {
+    setLoading(true);
+    setLinkError(null);
     try {
       const res = await apiClient.get(`/api/public/departments?token=${encodeURIComponent(registrationToken)}`);
       if (!res?.ok) {
@@ -192,8 +194,9 @@ const Register: React.FC = () => {
 
       setDepartments(Array.isArray(res.departments) ? res.departments : []);
       setRegistrationMeta(res.registration || null);
+      setLinkError(null);
     } catch {
-      setLinkError("Unable to load registration link details. Please check your internet connection and retry.");
+      setLinkError("Unable to load registration link details. The server may be waking up (cold start) or your connection was interrupted.");
       setDepartments([]);
     } finally {
       setLoading(false);
@@ -400,11 +403,21 @@ const Register: React.FC = () => {
               <h2 className="text-2xl font-extrabold text-slate-900 tracking-tight">Registration Link Error</h2>
               <p className="mt-2.5 text-sm text-slate-500 font-normal leading-relaxed">{linkError}</p>
 
-              <div className="mt-6 pt-4 border-t border-slate-100">
+              <div className="mt-6 pt-4 border-t border-slate-100 flex flex-col gap-2.5">
+                {token ? (
+                  <button
+                    type="button"
+                    onClick={() => fetchRegistrationContext(token)}
+                    className="w-full relative overflow-hidden rounded-2xl py-3 px-5 font-bold text-sm text-white shadow-lg transition-all duration-300 flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:shadow-xl hover:brightness-105 active:brightness-95 cursor-pointer"
+                  >
+                    <RefreshCw size={16} />
+                    <span>Retry Connection</span>
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => navigateTo(View.LOGIN)}
-                  className="w-full relative overflow-hidden rounded-2xl py-3 px-5 font-bold text-sm text-white shadow-lg transition-all duration-300 flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:shadow-xl hover:brightness-105 active:brightness-95 cursor-pointer"
+                  className="w-full relative overflow-hidden rounded-2xl py-3 px-5 font-bold text-sm text-slate-700 bg-slate-100 hover:bg-slate-200 transition-all duration-300 flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <ArrowLeft size={16} />
                   <span>Back to Login</span>

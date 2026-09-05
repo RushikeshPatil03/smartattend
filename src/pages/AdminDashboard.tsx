@@ -192,6 +192,7 @@ const AdminDashboard: React.FC = () => {
     fetchUsers,
     logout,
     generateRegistrationLink,
+    resolveRegistrationLink,
     updateCurrentUser,
     updateFacultyDeviceLock,
   } = useApp();
@@ -722,9 +723,10 @@ const AdminDashboard: React.FC = () => {
       }
 
       const token = res.token || (res.record && res.record.token);
-      const nextLink = res.link || (token
+      const rawLink = res.link || (token
         ? `${window.location.origin}/register?token=${token}&role=${genType}`
         : "");
+      const nextLink = token ? resolveRegistrationLink(genType, token, rawLink) : rawLink;
 
       if (!token || !nextLink) {
         setGenError("Server did not return a token.");

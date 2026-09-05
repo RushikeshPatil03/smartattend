@@ -32,7 +32,9 @@ const API_BASE = (() => {
       ) {
         return RAW_API_BASE.replace(/\/+$/, "");
       }
-      return `${window.location.protocol}//${host}:4000`;
+      // If no explicit local backend URL is specified, default to production Render backend
+      // so mobile devices don't fail trying to reach non-existent port 4000 on their own IP
+      return FALLBACK_PROD_API;
     }
 
     // 2. If running locally on laptop
@@ -171,6 +173,12 @@ class ApiClient {
 
       // Normalize errors (do NOT silently ignore HTTP errors)
       if (!res.ok) {
+        // Automatically retry once on cold-start HTTP errors (502 Bad Gateway / 503 Service Unavailable / 504 Gateway Timeout)
+        if ((res.status === 502 || res.status === 503 || res.status === 504) && retryOnAuth) {
+          await new Promise((r) => setTimeout(r, 2000));
+          return this.request(method, url, body, false, externalSignal);
+        }
+
         if (res.status === 401 && retryOnAuth && !url.startsWith("/api/auth/")) {
           const refreshed = await this.refreshSession();
           if (refreshed?.ok && this.token) {
@@ -201,6 +209,15 @@ class ApiClient {
             ? `Server is spinning up (free tier cold start). Please retry in a moment.`
             : `Request timed out after ${timeoutSec}s. Please check your network connection.`,
         };
+      }
+      // If network error (e.g. Failed to fetch while server is spinning up), retry once if allowed
+      if (retryOnAuth && !externalSignal?.aborted && (err?.message?.includes("fetch") || err?.message?.includes("NetworkError"))) {
+        try {
+          await new Promise((r) => setTimeout(r, 2000));
+          return await this.request(method, url, body, false, externalSignal);
+        } catch {
+          // fall through to return error
+        }
       }
       return { ok: false, error: err?.message || "Network error" };
     } finally {

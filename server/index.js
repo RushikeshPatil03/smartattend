@@ -109,7 +109,6 @@ function isAllowedOrigin(origin) {
 }
 
 function isLAN(origin) {
-  if (env.IS_PRODUCTION) return false;
   if (!origin) return true;
   try {
     const u = new URL(origin);
@@ -127,7 +126,6 @@ function isLAN(origin) {
 }
 
 function isTunnelOrigin(origin) {
-  if (env.IS_PRODUCTION) return false;
   if (!origin) return false;
   try {
     const u = new URL(origin);
@@ -153,7 +151,7 @@ app.use(
         return callback(null, true);
       }
       console.warn("Blocked CORS origin:", origin);
-      return callback(new Error("Not allowed by CORS"), false);
+      return callback(null, false);
     },
     credentials: true,
     allowedHeaders: ["Content-Type", "Authorization"],
