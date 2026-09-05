@@ -268,6 +268,14 @@ async function isStudentPresent(sessionId, studentId) {
   return set ? set.has(String(studentId)) : false;
 }
 
+async function removeInstantPresence(sessionId, studentId) {
+  if (!sessionId || !studentId) return;
+  const set = presenceMemoryStore.get(String(sessionId));
+  if (set) {
+    set.delete(String(studentId));
+  }
+}
+
 async function clearSessionSecret(sessionId) {
   if (!sessionId) return;
   const sid = String(sessionId);
@@ -300,6 +308,7 @@ module.exports = {
   verifyConsecutiveTotpTokens,
   verifyTotpSequence,
   recordInstantPresence,
+  removeInstantPresence,
   isStudentPresent,
   getPresentStudents,
   TOTP_BLOCK_DURATION_MS,

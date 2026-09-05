@@ -17,6 +17,7 @@ const {
   getMobileLocationCapture,
 } = require("../services/mobileLocationCapture");
 const authMiddleware = require("../middleware/authMiddleware");
+const { invalidateCachedSession } = require("./attendance");
 const env = require("../config/env");
 
 const DEFAULT_SESSION_RADIUS_METERS = Number(
@@ -1449,6 +1450,71 @@ router.post("/session/:id/stop", authMiddleware, async (req, res) => {
     const supabase = getSupabaseClient();
     if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
 
+    // Clean up QR, Secret, realtime channel, and active session memory cache
+    await clearSessionQR(sessionId);
+    await clearSessionSecret(sessionId);
+    await removeSessionChannel(sessionId);
+    if (typeof invalidateCachedSession === "function") {
+      invalidateCachedSession(sessionId);
+    }
+
+    const facultyId = req.userRole === "FACULTY" ? req.userId : null;
+
+    // Invoke atomic finalization stored procedure in PostgreSQL
+    let rpcRes = null;
+    try {
+      rpcRes = await supabase.rpc("finalize_session_atomic", {
+        p_session_id: sessionId,
+        p_faculty_id: facultyId,
+      });
+    } catch (rpcErr) {
+      console.warn("finalize_session_atomic RPC invoke error:", rpcErr?.message || rpcErr);
+    }
+
+    const rpcData = rpcRes?.data;
+    const rpcError = rpcRes?.error;
+
+    if (!rpcError && rpcData) {
+      if (!rpcData.ok) {
+        if (rpcData.already_stopped || rpcData.error_code === "CONFLICT") {
+          const session = rpcData.session || {};
+          return res.json({
+            ok: true,
+            session: {
+              ...session,
+              _id: session.id,
+              isActive: false,
+              endTime: session.end_time,
+              lastActivityAt: session.last_activity_at,
+            },
+            attendeeCount: rpcData.attendee_count ?? 0,
+            alreadyStopped: true,
+          });
+        }
+        if (rpcData.error_code === "NOT_FOUND") {
+          return res.status(404).json({ ok: false, error: rpcData.error || "Session not found" });
+        }
+        if (rpcData.error_code === "FORBIDDEN") {
+          return res.status(403).json({ ok: false, error: rpcData.error || "Forbidden" });
+        }
+        return res.status(400).json({ ok: false, error: rpcData.error || "Failed to stop session" });
+      }
+
+      const session = rpcData.session || {};
+      return res.json({
+        ok: true,
+        session: {
+          ...session,
+          _id: session.id,
+          isActive: false,
+          endTime: session.end_time,
+          lastActivityAt: session.last_activity_at,
+        },
+        attendeeCount: rpcData.attendee_count ?? 0,
+      });
+    }
+
+    // Resilient fallback in case RPC is not yet registered in database
     let updateQuery = supabase
       .from("sessions")
       .update({
@@ -1465,11 +1531,6 @@ router.post("/session/:id/stop", authMiddleware, async (req, res) => {
     }
 
     const { data: session, error } = await updateQuery.select("*").single();
-
-    // Clean up QR, Secret, and realtime channel
-    await clearSessionQR(sessionId);
-    await clearSessionSecret(sessionId);
-    await removeSessionChannel(sessionId);
 
     if (error || !session) {
       let existingQuery = supabase.from("sessions").select("*").eq("id", sessionId);

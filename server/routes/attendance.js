@@ -8,6 +8,7 @@ const {
   verifyTotpSequence,
   verifyConsecutiveTotpTokens,
   recordInstantPresence,
+  removeInstantPresence,
   isStudentPresent,
 } = require("../services/totpVerification");
 const { validateStudentLocation } = require("../services/locationValidation");
@@ -40,6 +41,13 @@ function setCachedSession(sid, session) {
   activeSessionsMemoryCache.delete(sid);
   activeSessionsMemoryCache.set(sid, { session, cachedAt: Date.now() });
 }
+
+function invalidateCachedSession(sessionId) {
+  if (sessionId) {
+    activeSessionsMemoryCache.delete(String(sessionId));
+  }
+}
+
 
 async function getCachedActiveSession(sessionId) {
   const sid = String(sessionId);
@@ -283,6 +291,65 @@ async function consumeScanGrant({ token, studentId, sessionId, fingerprint }) {
   return { ok: true };
 }
 
+/**
+ * Strict validation of student academic eligibility for an active class session.
+ * Enforces college, department, year, semester, and section match.
+ */
+function validateStudentSessionEligibility(student, session) {
+  if (!student || !session) {
+    return { ok: false, error: "Invalid student or session context" };
+  }
+
+  // 1. College Check
+  const subject = session.subj;
+  if (
+    subject?.created_by_admin &&
+    (student.created_by_admin || student.createdByAdmin) &&
+    String(subject.created_by_admin) !== String(student.created_by_admin || student.createdByAdmin)
+  ) {
+    return { ok: false, error: "Student does not belong to this college" };
+  }
+
+  // 2. Department Check
+  const sessionDept = session.department ? String(session.department) : null;
+  const studentDept = student.department ? String(student.department?.id || student.department) : null;
+  if (sessionDept && studentDept) {
+    if (sessionDept !== studentDept) {
+      return { ok: false, error: "Student not enrolled in this session's department" };
+    }
+  } else if (studentDept && Array.isArray(subject?.departments) && subject.departments.length > 0) {
+    if (!subject.departments.some((d) => String(d) === studentDept)) {
+      return { ok: false, error: "Student not enrolled in this session's department" };
+    }
+  }
+
+  // 3. Year & Semester Check
+  if (session.year != null && student.year != null && Number(session.year) !== Number(student.year)) {
+    return {
+      ok: false,
+      error: `Academic mismatch: You are in Year ${student.year}, but this lecture is for Year ${session.year}`,
+    };
+  }
+  if (session.semester != null && student.semester != null && Number(session.semester) !== Number(student.semester)) {
+    return {
+      ok: false,
+      error: `Academic mismatch: You are in Semester ${student.semester}, but this lecture is for Semester ${session.semester}`,
+    };
+  }
+
+  // 4. Section Check (Strict: Case-insensitive, trimmed)
+  const sessionSection = String(session.section || "").trim().toUpperCase();
+  const studentSection = String(student.section || "").trim().toUpperCase();
+  if (sessionSection && studentSection && sessionSection !== studentSection) {
+    return {
+      ok: false,
+      error: `Section mismatch: You are registered in Section ${studentSection}, but this lecture is for Section ${sessionSection}`,
+    };
+  }
+
+  return { ok: true };
+}
+
 // ----------------------------------------------------
 // 1) PRECHECK (STUDENT FIRST SCAN)
 // POST /api/attendance/precheck
@@ -333,33 +400,9 @@ router.post(
         return res.status(400).json({ ok: false, error: "Session is no longer active" });
       }
 
-      const subject = session.subj;
-      if (
-        String(subject?.created_by_admin || "") !==
-        String(student.created_by_admin || student.createdByAdmin || "")
-      ) {
-        return res.status(403).json({ ok: false, error: "Student does not belong to this college" });
-      }
-
-      const sessionDept = session.department;
-      const studentDept = student.department;
-      if (sessionDept) {
-        if (String(sessionDept) !== String(studentDept)) {
-          return res.status(403).json({ ok: false, error: "Student not in this session's department" });
-        }
-      } else {
-        const allowedDepts = subject?.departments || [];
-        if (!allowedDepts.some((d) => String(d) === String(studentDept))) {
-          return res.status(403).json({ ok: false, error: "Student not in this session's department" });
-        }
-      }
-
-      if (
-        Number(session.year) !== Number(student.year) ||
-        Number(session.semester) !== Number(student.semester) ||
-        String(session.section || "").toUpperCase() !== String(student.section || "").toUpperCase()
-      ) {
-        return res.status(403).json({ ok: false, error: "Student not in this year/semester/section" });
+      const eligibility = validateStudentSessionEligibility(student, session);
+      if (!eligibility.ok) {
+        return res.status(403).json({ ok: false, error: eligibility.error });
       }
 
       const locationCheck = validateStudentLocation(location, session.location);
@@ -373,12 +416,12 @@ router.post(
 
       const { data: existingAttendance } = await supabase
         .from("attendances")
-        .select("id")
+        .select("id, status")
         .eq("session", sessionId)
         .eq("student", student.id)
         .single();
 
-      if (existingAttendance) {
+      if (existingAttendance && existingAttendance.status !== "absent") {
         return res.status(409).json({ ok: false, error: "Attendance already marked for this session" });
       }
 
@@ -414,16 +457,9 @@ router.post(
 // ----------------------------------------------------
 // 2) MARK ATTENDANCE (TWO-STEP QR)
 // POST /api/attendance/mark
+// POST /api/attendance/scan-grant/mark
 // ----------------------------------------------------
-router.post(
-  "/mark",
-  auth(["STUDENT"]),
-  rateLimit({
-    prefix: "mark",
-    windowMs: 60 * 1000,
-    max: 15,
-  }),
-  async (req, res) => {
+const handleMarkAttendance = async (req, res) => {
     try {
       const student = req.user;
       const {
@@ -501,6 +537,11 @@ router.post(
         return res.status(400).json({ ok: false, error: "Session is no longer active" });
       }
 
+      const eligibility = validateStudentSessionEligibility(student, session);
+      if (!eligibility.ok) {
+        return res.status(403).json({ ok: false, error: eligibility.error });
+      }
+
       const locationCheck = validateStudentLocation(location, session.location);
       if (!locationCheck.ok) {
         return res.status(403).json({ ok: false, error: locationCheck.error });
@@ -531,6 +572,18 @@ router.post(
         };
       }
 
+      // Row-level validation: Direct DB check to verify session is currently active
+      const { data: liveSession, error: sessionCheckError } = await supabase
+        .from("sessions")
+        .select("is_active")
+        .eq("id", sessionId)
+        .single();
+
+      if (sessionCheckError || !liveSession || !liveSession.is_active) {
+        invalidateCachedSession(sessionId);
+        return res.status(400).json({ ok: false, error: "Session is no longer active" });
+      }
+
       // Insert Attendance atomically with USN snapshot (with schema-resilient fallback)
       const fullAttendancePayload = {
         session: sessionId,
@@ -558,7 +611,7 @@ router.post(
 
       let { data: attendance, error: insertError } = await supabase
         .from("attendances")
-        .insert(fullAttendancePayload)
+        .upsert(fullAttendancePayload, { onConflict: "session,student" })
         .select("*")
         .single();
 
@@ -581,7 +634,7 @@ router.post(
         };
         const retryRes = await supabase
           .from("attendances")
-          .insert(baseAttendancePayload)
+          .upsert(baseAttendancePayload, { onConflict: "session,student" })
           .select("*")
           .single();
         attendance = retryRes.data;
@@ -591,6 +644,10 @@ router.post(
       if (insertError || !attendance) {
         if (insertError?.code === "23505") {
           return res.status(409).json({ ok: false, error: "Attendance already marked for this session" });
+        }
+        if (String(insertError?.message || "").includes("Session is no longer active")) {
+          invalidateCachedSession(sessionId);
+          return res.status(400).json({ ok: false, error: "Session is no longer active" });
         }
         throw insertError || new Error("Failed to record attendance");
       }
@@ -666,8 +723,30 @@ router.post(
       console.error("Mark attendance error:", err);
       return res.status(500).json({ ok: false, error: err?.message || "Server error" });
     }
-  }
+  };
+
+router.post(
+  "/mark",
+  auth(["STUDENT"]),
+  rateLimit({
+    prefix: "mark",
+    windowMs: 60 * 1000,
+    max: 15,
+  }),
+  handleMarkAttendance
 );
+
+router.post(
+  "/scan-grant/mark",
+  auth(["STUDENT"]),
+  rateLimit({
+    prefix: "mark",
+    windowMs: 60 * 1000,
+    max: 15,
+  }),
+  handleMarkAttendance
+);
+
 
 // ----------------------------------------------------
 // 0) GET ATTENDANCE (GENERAL / ROSTER / FILTERED)
@@ -1359,6 +1438,22 @@ async function handleTotpAttendanceSubmission(req, res) {
       return res.status(400).json({ ok: false, error: totpValidation.error });
     }
 
+    const session = await getCachedActiveSession(sessionId);
+    if (!session) {
+      return res.status(404).json({ ok: false, error: "Session not found" });
+    }
+
+    const isRunning = Boolean(session?.is_active ?? session?.isActive);
+    if (!isRunning) {
+      return res.status(400).json({ ok: false, error: "Session is no longer active" });
+    }
+
+    // Strict Section & Academic Eligibility Check
+    const eligibility = validateStudentSessionEligibility(student, session);
+    if (!eligibility.ok) {
+      return res.status(403).json({ ok: false, error: eligibility.error });
+    }
+
     // Fast-path in-memory duplicate check
     const isAlreadyPresent = await isStudentPresent(sessionId, student.id);
     if (isAlreadyPresent) {
@@ -1370,18 +1465,10 @@ async function handleTotpAttendanceSubmission(req, res) {
         session: {
           id: sessionId,
           _id: sessionId,
+          subjectName: session.subj?.name || "Subject",
+          subjectCode: session.subj?.code || "",
         },
       });
-    }
-
-    const session = await getCachedActiveSession(sessionId);
-    if (!session) {
-      return res.status(404).json({ ok: false, error: "Session not found" });
-    }
-
-    const isRunning = Boolean(session?.is_active ?? session?.isActive);
-    if (!isRunning) {
-      return res.status(400).json({ ok: false, error: "Session is no longer active" });
     }
 
     let locationCheck = { ok: true, distanceMeters: null };
@@ -1419,10 +1506,22 @@ async function handleTotpAttendanceSubmission(req, res) {
     const supabase = getSupabaseClient();
     if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
 
-    // Atomic insert into attendances table
+    // Row-level validation: Direct DB check to verify session is currently active
+    const { data: liveSession, error: sessionCheckError } = await supabase
+      .from("sessions")
+      .select("is_active")
+      .eq("id", sessionId)
+      .single();
+
+    if (sessionCheckError || !liveSession || !liveSession.is_active) {
+      invalidateCachedSession(sessionId);
+      return res.status(400).json({ ok: false, error: "Session is no longer active" });
+    }
+
+    // Atomic upsert into attendances table
     const { data: attendance, error: insertError } = await supabase
       .from("attendances")
-      .insert({
+      .upsert({
         session: sessionId,
         student: student.id,
         faculty: session.faculty,
@@ -1439,7 +1538,7 @@ async function handleTotpAttendanceSubmission(req, res) {
           : null,
         device_fingerprint: normalizedFp,
         face_verification: faceVerificationResult,
-      })
+      }, { onConflict: "session,student" })
       .select("*")
       .single();
 
@@ -1648,7 +1747,7 @@ async function handleManualAttendance(req, res) {
 
     const { data: session } = await supabase
       .from("sessions")
-      .select("id, faculty, subject, department, year, semester, section")
+      .select("id, faculty, subject, department, year, semester, section, subj:subjects(id, name, code, created_by_admin, departments)")
       .eq("id", String(sessionId))
       .single();
 
@@ -1678,14 +1777,14 @@ async function handleManualAttendance(req, res) {
     if (studentId) {
       const { data } = await supabase
         .from("students")
-        .select("id, name, enrollment_no, email, profile_photo_url")
+        .select("id, name, enrollment_no, email, profile_photo_url, department, year, semester, section, created_by_admin")
         .eq("id", String(studentId))
         .single();
       student = data;
     } else if (enrollmentNo) {
       const { data } = await supabase
         .from("students")
-        .select("id, name, enrollment_no, email, profile_photo_url")
+        .select("id, name, enrollment_no, email, profile_photo_url, department, year, semester, section, created_by_admin")
         .ilike("enrollment_no", String(enrollmentNo).trim())
         .limit(1);
       student = data?.[0] || null;
@@ -1697,6 +1796,10 @@ async function handleManualAttendance(req, res) {
 
     let attendance = null;
     if (status === "present") {
+      const eligibility = validateStudentSessionEligibility(student, session);
+      if (!eligibility.ok) {
+        return res.status(403).json({ ok: false, error: eligibility.error });
+      }
       const fullPayload = {
         session: String(sessionId),
         student: String(student.id),
@@ -1748,6 +1851,20 @@ async function handleManualAttendance(req, res) {
         .delete()
         .eq("session", String(sessionId))
         .eq("student", String(student.id));
+
+      if (student.enrollment_no) {
+        await supabase
+          .from("attendances")
+          .delete()
+          .eq("session", String(sessionId))
+          .ilike("enrollment_no", String(student.enrollment_no).trim());
+      }
+
+      // Clear from in-memory presence cache so student can re-scan if needed
+      await removeInstantPresence(sessionId, student.id);
+      if (student.enrollment_no) {
+        await removeInstantPresence(sessionId, student.enrollment_no);
+      }
     }
 
     const requestMeta = getRequestMeta(req);
@@ -1873,3 +1990,5 @@ router.get("/audits", auth(["ADMIN", "FACULTY"]), async (req, res) => {
 });
 
 module.exports = router;
+module.exports.invalidateCachedSession = invalidateCachedSession;
+

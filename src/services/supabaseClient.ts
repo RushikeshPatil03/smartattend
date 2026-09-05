@@ -54,15 +54,21 @@ export interface AttendanceBroadcastPayload {
   timestamp: string;
 }
 
+export interface SubscribeAttendanceOptions {
+  batchWindowMs?: number;
+}
+
 /**
  * Subscribe to realtime attendance updates for a live class session
  * @param sessionId The active class session UUID
  * @param onAttendance Callback triggered whenever a student marks attendance
+ * @param options Optional subscription configuration
  * @returns Unsubscribe cleanup function
  */
 export function subscribeToSessionAttendance(
   sessionId: string,
-  onAttendance: (data: AttendanceBroadcastPayload) => void
+  onAttendance: (data: AttendanceBroadcastPayload) => void,
+  _options?: SubscribeAttendanceOptions
 ): () => void {
   if (!sessionId) return () => {};
 

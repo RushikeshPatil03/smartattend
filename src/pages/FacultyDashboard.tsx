@@ -10,6 +10,8 @@ import {
   Sparkles,
   ShieldCheck,
   CheckCircle2,
+  AlertTriangle,
+  X,
 } from "lucide-react";
 import apiClient from "../services/apiClient";
 import CollegeHeader from "../components/CollegeHeader";
@@ -23,7 +25,6 @@ import {
   FacultySubjectAnalyticsData,
   LiveAttendanceItem,
   DeviceRequestItem,
-  FinalizedClassSummary,
 } from "./faculty/types";
 import LiveSessionStudio from "./faculty/LiveSessionStudio";
 import SessionSetupCard from "./faculty/SessionSetupCard";
@@ -31,7 +32,6 @@ import AttendanceRosterTable from "./faculty/AttendanceRosterTable";
 import DeviceRequestsView from "./faculty/DeviceRequestsView";
 import FacultyAnalyticsModal from "./faculty/FacultyAnalyticsModal";
 import ManageSubjectsView from "./faculty/ManageSubjectsView";
-import ClassSummaryReportModal from "./faculty/ClassSummaryReportModal";
 
 const QR_REFRESH_MS = Math.max(
   2000,
@@ -185,15 +185,28 @@ const FacultyDashboard: React.FC = () => {
   const [analyticsAttendanceFilter, setAnalyticsAttendanceFilter] = useState("all");
   const [analyticsSearch, setAnalyticsSearch] = useState("");
 
-  // Post-Finalize Class Summary Report State
-  const [finalizedSummary, setFinalizedSummary] = useState<FinalizedClassSummary | null>(null);
+  // Optimistic Attendance Rollback Toast Notification State
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+
+  const showToast = useCallback((msg: string) => {
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    setToastMessage(msg);
+    toastTimerRef.current = window.setTimeout(() => {
+      setToastMessage(null);
+      toastTimerRef.current = null;
+    }, 4000);
+  }, []);
 
   // Refs
   const updateSessionTokenRef = useRef(updateSessionToken);
 
-  // Throttled Realtime Event Queue Buffer & Subscription Ref
-  const realtimeEventQueueRef = useRef<any[]>([]);
-  const realtimeFlushTimerRef = useRef<number | null>(null);
+  // Concurrency-Safe RequestAnimationFrame (RAF) Event Batching Queue & Timers
+  const queueRef = useRef<any[]>([]);
+  const rafTimerRef = useRef<number | null>(null);
+  const rafIdRef = useRef<number | null>(null);
   const realtimeUnsubscribeRef = useRef<(() => void) | null>(null);
 
   // Concurrency & Mutation Sequence Tracker for Optimistic Attendance Updates
@@ -745,7 +758,7 @@ const FacultyDashboard: React.FC = () => {
     persistRecentClasses,
   ]);
 
-  // Synchronous, immediate Realtime WebSocket Teardown and Buffer Clear
+  // Synchronous, immediate Realtime WebSocket Teardown, RAF cancellation, and Buffer Clear
   const disconnectRealtime = useCallback(() => {
     if (realtimeUnsubscribeRef.current) {
       try {
@@ -755,105 +768,22 @@ const FacultyDashboard: React.FC = () => {
       }
       realtimeUnsubscribeRef.current = null;
     }
-    if (realtimeFlushTimerRef.current) {
-      window.clearTimeout(realtimeFlushTimerRef.current);
-      realtimeFlushTimerRef.current = null;
+    if (rafTimerRef.current !== null) {
+      window.clearTimeout(rafTimerRef.current);
+      rafTimerRef.current = null;
     }
-    realtimeEventQueueRef.current = [];
+    if (rafIdRef.current !== null) {
+      window.cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = null;
+    }
+    queueRef.current = [];
   }, []);
 
-  // Finalize Attendance: Snapshots finalized session metrics, opens Class Summary Report modal, and cleans up active state
+
+  // Finalize Attendance: Teardown active realtime and local active session state without redundant API calls
   const stop = useCallback(() => {
     if (!activeSessionId) return;
 
-    // 1. Build immutable snapshot for the Class Summary Report
-    const presentList: any[] = [];
-    const absentList: any[] = [];
-    const seen = new Set<string>();
-
-    const currentMap = attendanceStatusMapRef.current;
-    const currentList = liveAttendanceRef.current;
-
-    (currentList || []).forEach((item: any) => {
-      const enrollmentNo = String(
-        item?.student?.enrollmentNo || item?.enrollmentNo || ""
-      ).trim();
-      if (!enrollmentNo || seen.has(enrollmentNo)) return;
-      seen.add(enrollmentNo);
-
-      const status =
-        currentMap[enrollmentNo] ||
-        (String(item?.status || "").toLowerCase() === "present"
-          ? "present"
-          : "absent");
-
-      const studentObj = {
-        enrollmentNo,
-        name: item?.student?.name || item?.name || "Student",
-        status,
-        photoUrl: item?.student?.profilePhotoUrl || item?.profilePhotoUrl || "",
-        timestamp: item?.timestamp || item?.markedAt || Date.now(),
-      };
-
-      if (status === "present") {
-        presentList.push(studentObj);
-      } else {
-        absentList.push(studentObj);
-      }
-    });
-
-    const pCount = presentList.length;
-    const aCount = absentList.length;
-    const total = Math.max(
-      Number(
-        totalClassStrength ||
-          (activeSession as any)?.totalStudents ||
-          (activeSession as any)?.totalStrength ||
-          0
-      ),
-      pCount + aCount
-    );
-    const pct = total > 0 ? (pCount / total) * 100 : 0;
-    const formattedPct = pct % 1 === 0 ? pct.toFixed(0) : pct.toFixed(1);
-
-    const summary: FinalizedClassSummary = {
-      sessionId: String(
-        (activeSession as any)?.id || (activeSession as any)?._id || activeSessionId || ""
-      ),
-      subjectName:
-        selectedSubject?.name ||
-        (activeSession as any)?.subjectName ||
-        "Subject",
-      subjectCode:
-        selectedSubject?.code ||
-        (activeSession as any)?.subjectCode ||
-        "SUB",
-      departmentName:
-        selectedDepartment?.name ||
-        (activeSession as any)?.departmentName ||
-        "Department",
-      departmentCode:
-        selectedDepartment?.code ||
-        (activeSession as any)?.departmentCode ||
-        "DEPT",
-      section: String((activeSession as any)?.section || formSection || "A"),
-      year: (activeSession as any)?.year || formYear || "",
-      semester: (activeSession as any)?.semester || formSem || "",
-      startTime: (activeSession as any)?.startTime || Date.now(),
-      endTime: Date.now(),
-      totalStrength: total,
-      presentCount: pCount,
-      absentCount: aCount,
-      attendancePercentage: formattedPct,
-      attendees: [...presentList, ...absentList].sort((a, b) =>
-        a.enrollmentNo.localeCompare(b.enrollmentNo)
-      ),
-    };
-
-    // 2. Open Class Summary Report Modal with full details
-    setFinalizedSummary(summary);
-
-    // 3. Teardown active realtime and local active session state without redundant API calls
     disconnectRealtime();
     endSessionLocal(activeSessionId);
     setActiveSessionId(null);
@@ -861,45 +791,8 @@ const FacultyDashboard: React.FC = () => {
     setTotalClassStrength(0);
     setLiveAttendance([]);
     setAttendanceStatusMap({});
-  }, [
-    activeSessionId,
-    activeSession,
-    selectedSubject,
-    selectedDepartment,
-    totalClassStrength,
-    formSection,
-    formYear,
-    formSem,
-    disconnectRealtime,
-    endSessionLocal,
-  ]);
-
-  const handleViewAttendanceSheetFromSummary = useCallback(
-    (summary: FinalizedClassSummary) => {
-      setFinalizedSummary(null);
-      // Auto-configure sheet filters to match the finalized class
-      const deptId =
-        normalizeId(selectedDepartment) ||
-        normalizeId((activeSession as any)?.department);
-      const subId =
-        normalizeId(selectedSubject) ||
-        normalizeId((activeSession as any)?.subject);
-      setSheetFilters({
-        departmentId: deptId || "",
-        subjectId: subId || "",
-        year: String(summary.year || formYear || ""),
-        semester: String(summary.semester || formSem || ""),
-        section: String(summary.section || formSection || ""),
-      });
-      setActiveTab("MANAGE_ATTENDANCE");
-    },
-    [selectedDepartment, selectedSubject, activeSession, formYear, formSem, formSection]
-  );
-
-  const handleStartNextClassFromSummary = useCallback(() => {
-    setFinalizedSummary(null);
-    setActiveTab("TAKE_ATTENDANCE");
-  }, []);
+    showToast("Attendance finalized and saved successfully.");
+  }, [activeSessionId, disconnectRealtime, endSessionLocal, showToast]);
 
   const cancelSession = useCallback(async () => {
     if (!activeSessionId) return;
@@ -921,7 +814,7 @@ const FacultyDashboard: React.FC = () => {
     }
   }, [activeSessionId, cancelSessionFromStore, disconnectRealtime]);
 
-  const loadCurrentAttendees = useCallback(async (includeDerived = false) => {
+  const loadCurrentAttendees = useCallback(async (includeDerived = true) => {
     if (!activeSessionId) return;
     setAttendeesLoading(true);
     setAttendanceDataLoaded(false);
@@ -1067,10 +960,10 @@ const FacultyDashboard: React.FC = () => {
               }
               return prev;
             });
-            alert(
+            showToast(
               `Failed to update attendance for ${targetEnrollment}: ${
                 res?.error || "Server error"
-              }. Reverted to previous status.`
+              }. Reverted.`
             );
           }
         } catch (err: any) {
@@ -1101,13 +994,13 @@ const FacultyDashboard: React.FC = () => {
             }
             return prev;
           });
-          alert(
-            `Network failure when updating ${targetEnrollment}. Reverted to previous status.`
+          showToast(
+            `Network failure updating ${targetEnrollment}. Reverted.`
           );
         }
       })();
     },
-    [activeSessionId, manualEnrollment]
+    [activeSessionId, manualEnrollment, showToast]
   );
 
   const handleAttendanceItemToggle = useCallback(
@@ -1131,31 +1024,74 @@ const FacultyDashboard: React.FC = () => {
     [activeSessionId, manual]
   );
 
-  // Flush Throttled Realtime Events to State
+  // Flush Throttled Realtime Events to State in a Single Atomic Batch
   const flushRealtimeQueue = useCallback(() => {
-    if (!realtimeEventQueueRef.current.length) return;
-    const events = [...realtimeEventQueueRef.current];
-    realtimeEventQueueRef.current = [];
+    if (rafTimerRef.current !== null) {
+      window.clearTimeout(rafTimerRef.current);
+      rafTimerRef.current = null;
+    }
+    if (rafIdRef.current !== null) {
+      window.cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = null;
+    }
+
+    if (!queueRef.current.length) return;
+    const rawEvents = [...queueRef.current];
+    queueRef.current = [];
+
+    // Deduplicate items in buffer by studentId or enrollmentNo (preserving latest state)
+    const dedupedMap = new Map<string, any>();
+    rawEvents.forEach((att) => {
+      const studentId = String(
+        att?.studentId || att?.student?._id || att?.student?.id || ""
+      ).trim();
+      const enrollmentNo = String(
+        att?.enrollmentNo || att?.student?.enrollmentNo || ""
+      ).trim();
+      const key = studentId || enrollmentNo || String(att?.id || att?._id || Math.random());
+      dedupedMap.set(key, att);
+    });
+    const events = Array.from(dedupedMap.values());
 
     setLiveAttendance((prev) => {
       let nextList = [...prev];
       events.forEach((att) => {
-        const enrollmentNo = String(att.enrollmentNo || "").trim();
-        const existingIdx = nextList.findIndex(
-          (item: any) =>
-            String(item?.student?.enrollmentNo || item?.enrollmentNo || "").trim() ===
-            enrollmentNo
-        );
-        const newRecord = {
+        const enrollmentNo = String(
+          att.enrollmentNo || att.student?.enrollmentNo || ""
+        ).trim();
+        const studentId = String(
+          att.studentId || att.student?._id || att.student?.id || ""
+        ).trim();
+
+        const existingIdx = nextList.findIndex((item: any) => {
+          const itemEnrollment = String(
+            item?.student?.enrollmentNo || item?.enrollmentNo || ""
+          ).trim();
+          const itemStudentId = String(
+            item?.student?.id || item?.student?._id || item?.studentId || ""
+          ).trim();
+          return (
+            (enrollmentNo && itemEnrollment === enrollmentNo) ||
+            (studentId && itemStudentId === studentId)
+          );
+        });
+
+        const newRecord: LiveAttendanceItem = {
           _id: att.id || att._id,
           id: att.id || att._id,
-          timestamp: att.timestamp,
-          status: att.status || "present",
+          timestamp: att.timestamp || new Date().toISOString(),
+          status: att.status === "absent" ? "absent" : "present",
           student: {
-            name: att.studentName,
-            enrollmentNo: att.enrollmentNo,
+            name: att.studentName || att.student?.name || enrollmentNo || "Student",
+            enrollmentNo: enrollmentNo,
+            profilePhotoUrl: att.profilePhotoUrl || att.student?.profilePhotoUrl,
+            email: att.studentEmail || att.student?.email,
           },
+          enrollmentNo: enrollmentNo,
+          distanceMeters: att.distanceMeters ?? att.location?.distanceMeters,
+          isFaceVerified: att.isFaceVerified ?? att.face_verification?.verified,
         };
+
         if (existingIdx >= 0) {
           nextList[existingIdx] = { ...nextList[existingIdx], ...newRecord };
         } else {
@@ -1168,7 +1104,9 @@ const FacultyDashboard: React.FC = () => {
     setAttendanceStatusMap((prev) => {
       const nextMap = { ...prev };
       events.forEach((att) => {
-        const enrollmentNo = String(att.enrollmentNo || "").trim();
+        const enrollmentNo = String(
+          att.enrollmentNo || att.student?.enrollmentNo || ""
+        ).trim();
         if (enrollmentNo) {
           nextMap[enrollmentNo] = att.status === "absent" ? "absent" : "present";
         }
@@ -1177,27 +1115,38 @@ const FacultyDashboard: React.FC = () => {
     });
   }, []);
 
-  // Supabase Realtime Attendance Subscription with 150ms Buffer
+  // Schedule batch flush using 300ms window synchronized with next browser animation frame
+  const scheduleQueueFlush = useCallback(() => {
+    if (rafTimerRef.current !== null || rafIdRef.current !== null) {
+      return;
+    }
+
+    rafTimerRef.current = window.setTimeout(() => {
+      rafTimerRef.current = null;
+      rafIdRef.current = window.requestAnimationFrame(() => {
+        rafIdRef.current = null;
+        flushRealtimeQueue();
+      });
+    }, 300);
+  }, [flushRealtimeQueue]);
+
+  // Supabase Realtime Attendance Subscription with Concurrency-Safe 300ms RAF Buffer
   useEffect(() => {
     if (!activeSessionId) {
       disconnectRealtime();
       return;
     }
 
-    loadCurrentAttendees();
+    loadCurrentAttendees(true);
 
     const unsubscribe = subscribeToSessionAttendance(
       activeSessionId,
       (payload) => {
-        if (!payload?.attendance) return;
-        realtimeEventQueueRef.current.push(payload.attendance);
+        const attendanceData = payload?.attendance || payload;
+        if (!attendanceData) return;
 
-        if (!realtimeFlushTimerRef.current) {
-          realtimeFlushTimerRef.current = window.setTimeout(() => {
-            flushRealtimeQueue();
-            realtimeFlushTimerRef.current = null;
-          }, 150);
-        }
+        queueRef.current.push(attendanceData);
+        scheduleQueueFlush();
       }
     );
 
@@ -1206,7 +1155,8 @@ const FacultyDashboard: React.FC = () => {
     return () => {
       disconnectRealtime();
     };
-  }, [activeSessionId, disconnectRealtime, flushRealtimeQueue, loadCurrentAttendees]);
+  }, [activeSessionId, disconnectRealtime, scheduleQueueFlush, loadCurrentAttendees]);
+
 
   // Load Device Requests
   const loadDeviceRequests = useCallback(async () => {
@@ -1806,14 +1756,68 @@ const FacultyDashboard: React.FC = () => {
           onClose={closeSubjectAnalytics}
         />
 
-        {/* Post-Finalize Class Summary Report Modal */}
-        <ClassSummaryReportModal
-          isOpen={Boolean(finalizedSummary)}
-          summary={finalizedSummary}
-          onClose={() => setFinalizedSummary(null)}
-          onViewAttendanceSheet={handleViewAttendanceSheetFromSummary}
-          onStartNextClass={handleStartNextClassFromSummary}
-        />
+
+        {/* Optimistic UI Rollback Floating Toast */}
+        <AnimatePresence>
+          {toastMessage && (
+            <motion.div
+              initial={{ opacity: 0, y: -20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -20, scale: 0.95 }}
+              transition={{ duration: 0.2 }}
+              className="fixed top-6 inset-x-4 z-[110] flex justify-center pointer-events-none"
+            >
+              {(() => {
+                const isSuccess =
+                  toastMessage.toLowerCase().includes("finalized") ||
+                  toastMessage.toLowerCase().includes("successfully");
+
+                return (
+                  <div
+                    className={`pointer-events-auto flex items-center gap-3 rounded-2xl border px-5 py-3.5 shadow-2xl backdrop-blur-xl text-xs font-semibold ${
+                      isSuccess
+                        ? "border-emerald-500/40 bg-slate-900/95 text-emerald-200"
+                        : "border-rose-500/40 bg-slate-900/95 text-rose-200"
+                    }`}
+                  >
+                    <span
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${
+                        isSuccess
+                          ? "bg-emerald-500/20 text-emerald-400"
+                          : "bg-rose-500/20 text-rose-400"
+                      }`}
+                    >
+                      {isSuccess ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}
+                    </span>
+                    <div className="max-w-md">
+                      <p
+                        className={`font-bold ${
+                          isSuccess ? "text-emerald-100" : "text-rose-100"
+                        }`}
+                      >
+                        {toastMessage}
+                      </p>
+                      <p
+                        className={`text-[11px] font-normal mt-0.5 ${
+                          isSuccess ? "text-emerald-300/70" : "text-rose-300/70"
+                        }`}
+                      >
+                        {isSuccess ? "Session committed." : "Roster state restored."}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setToastMessage(null)}
+                      className="ml-2 rounded-lg p-1 text-slate-400 hover:text-white transition cursor-pointer"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                );
+              })()}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );

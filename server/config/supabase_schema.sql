@@ -514,6 +514,115 @@ BEGIN
 END;
 $$;
 
+-- Finalize session atomically, count attendees, and record audit log in a single transaction
+CREATE OR REPLACE FUNCTION finalize_session_atomic(
+    p_session_id UUID,
+    p_faculty_id UUID DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_session sessions%ROWTYPE;
+    v_attendee_count INT := 0;
+    v_now TIMESTAMPTZ := now();
+BEGIN
+    -- 1. Lock the session row exclusively for update to prevent concurrency race conditions
+    SELECT * INTO v_session
+    FROM sessions
+    WHERE id = p_session_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RETURN jsonb_build_object(
+            'ok', false,
+            'error_code', 'NOT_FOUND',
+            'status', 404,
+            'error', 'Session not found'
+        );
+    END IF;
+
+    -- 2. Verify faculty ownership if p_faculty_id is provided
+    IF p_faculty_id IS NOT NULL AND v_session.faculty != p_faculty_id THEN
+        RETURN jsonb_build_object(
+            'ok', false,
+            'error_code', 'FORBIDDEN',
+            'status', 403,
+            'error', 'Session not owned by faculty'
+        );
+    END IF;
+
+    -- 3. Check if already inactive (Conflict / idempotent already-stopped)
+    IF NOT v_session.is_active THEN
+        SELECT COUNT(*)::INT INTO v_attendee_count
+        FROM attendances
+        WHERE session = p_session_id AND status = 'present';
+
+        RETURN jsonb_build_object(
+            'ok', false,
+            'error_code', 'CONFLICT',
+            'status', 409,
+            'already_stopped', true,
+            'error', 'Session is already inactive',
+            'session', row_to_json(v_session),
+            'attendee_count', v_attendee_count
+        );
+    END IF;
+
+    -- 4. Atomically deactivate the session
+    UPDATE sessions
+    SET is_active = false,
+        end_time = v_now,
+        last_activity_at = v_now,
+        updated_at = v_now
+    WHERE id = p_session_id
+    RETURNING * INTO v_session;
+
+    -- 5. Perform exact count of present attendees for the finalized session
+    SELECT COUNT(*)::INT INTO v_attendee_count
+    FROM attendances
+    WHERE session = p_session_id AND status = 'present';
+
+    -- 6. Insert audit log atomically in the same transaction
+    INSERT INTO attendance_audits (
+        session,
+        student,
+        faculty,
+        subject,
+        action,
+        method,
+        actor_role,
+        actor,
+        request_meta,
+        created_at
+    ) VALUES (
+        v_session.id,
+        NULL,
+        v_session.faculty,
+        v_session.subject,
+        'SESSION_STOP',
+        'ATOMIC_RPC',
+        CASE WHEN p_faculty_id IS NULL THEN 'ADMIN' ELSE 'FACULTY' END,
+        COALESCE(p_faculty_id, v_session.faculty),
+        jsonb_build_object(
+            'attendee_count', v_attendee_count,
+            'stopped_at', v_session.end_time
+        ),
+        v_now
+    );
+
+    -- 7. Return atomic success result
+    RETURN jsonb_build_object(
+        'ok', true,
+        'already_stopped', false,
+        'session', row_to_json(v_session),
+        'attendee_count', v_attendee_count
+    );
+END;
+$$;
+
+
 -- ========================================================================
 -- 6. ROW LEVEL SECURITY (RLS) POLICIES
 -- ========================================================================
