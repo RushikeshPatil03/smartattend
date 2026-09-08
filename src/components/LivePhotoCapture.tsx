@@ -21,7 +21,9 @@ import {
   compareFaceDescriptors,
   computeDescriptorFromImageURL,
   computeDescriptorFromVideoFrame,
+  isModelsLoaded,
   loadModelsIfNeeded,
+  preloadForStudent,
 } from "../utils/faceApiLoader";
 import {
   runMovementLiveness,
@@ -359,10 +361,10 @@ const LivePhotoCapture: React.FC<{
   }, []);
 
   useEffect(() => {
-    void loadModelsIfNeeded();
-    if (faceVerificationReferenceUrl) {
-      void computeDescriptorFromImageURL(faceVerificationReferenceUrl);
-    }
+    // Kick off model loading AND reference-descriptor pre-computation in parallel.
+    // preloadForStudent() uses Promise.allSettled internally — it never throws, so
+    // this effect is always safe to fire-and-forget from a mount side-effect.
+    void preloadForStudent(faceVerificationReferenceUrl);
   }, [faceVerificationReferenceUrl]);
 
   useEffect(() => {
@@ -543,7 +545,11 @@ const LivePhotoCapture: React.FC<{
         setLivenessChallenge(null);
         setLivenessDirection(null);
 
-        await loadModelsIfNeeded();
+        // Models should already be loaded from mount preload; this is a defensive
+        // fallback that hits the cached in-flight promise — not a new load.
+        if (!isModelsLoaded()) {
+          await loadModelsIfNeeded();
+        }
         const liveness = await runMovementLiveness(videoRef.current!, {
           onChallengeUpdate: (update) => {
             setVerificationMessage(update.prompt);
@@ -698,8 +704,25 @@ const LivePhotoCapture: React.FC<{
     let frameId: number | null = null;
     let lastRunAt = 0;
 
+    // Stagger MediaPipe init by 400ms from loop start to avoid simultaneous heavy
+    // initialisation with face-api.js (script parse + WebGL shader compilation).
+    // Both libraries compete for the same GPU resources; sequencing them cuts total
+    // cold-init time and prevents frame-rate stuttering on the first few frames.
+    const loopStartedAt = performance.now();
+    const MEDIAPIPE_STARTUP_DELAY_MS = 400;
+    let startupDelayDone = false;
+
     const run = async () => {
       if (cancelled) return;
+
+      // Respect the startup stagger: skip MediaPipe calls until the delay has elapsed
+      if (!startupDelayDone) {
+        if (performance.now() - loopStartedAt < MEDIAPIPE_STARTUP_DELAY_MS) {
+          frameId = requestAnimationFrame(run);
+          return;
+        }
+        startupDelayDone = true;
+      }
 
       const now = performance.now();
       if (now - lastRunAt >= FACE_QUALITY_INTERVAL_MS && videoRef.current) {
@@ -721,6 +744,7 @@ const LivePhotoCapture: React.FC<{
       }
     };
   }, [cameraActive, cameraLoading, disabled, enableFaceQuality, value, verificationInProgress]);
+
 
   useEffect(() => {
     if (autoCaptureTimerRef.current != null) {

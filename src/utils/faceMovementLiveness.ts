@@ -19,7 +19,7 @@ export const CHALLENGES: readonly LivenessChallenge[] = [
 
 export const DEFAULT_MOVEMENT_MAX_TIME_MS = Math.max(
   3000,
-  Number(import.meta.env.VITE_FACEAPI_MOVEMENT_MAX_TIME_MS || 4500)
+  Number(import.meta.env.VITE_FACEAPI_MOVEMENT_MAX_TIME_MS || 5500)
 );
 export const DEFAULT_MOVEMENT_SAMPLE_FPS = Math.max(
   10,
@@ -35,7 +35,7 @@ export const DEFAULT_MOVEMENT_ROTATION_THRESHOLD = Number(
 export const RELATIVE_PITCH_DELTA_THRESHOLD = 0.062;
 export const RELATIVE_YAW_DELTA_THRESHOLD = 0.078;
 export const MIN_LIVENESS_DURATION_MS = 220;
-export const CONSECUTIVE_FRAMES_REQUIRED = 2;
+export const CONSECUTIVE_FRAMES_REQUIRED = 1;
 
 export type ChallengeDirection = "UP" | "DOWN" | "LEFT" | "RIGHT";
 
@@ -220,6 +220,12 @@ export async function runMovementLiveness(
   let consecutiveFrames = 0;
   let challengePassed = false;
 
+  // Adaptive sample pacing: on the first successful inference we observe real GPU cost.
+  // If inference eats >80% of the configured frame budget we widen the sleep window to
+  // actualCost×1.2 (capped at 100ms) so subsequent sleeps don't starve the GPU.
+  let inferenceObserved = false;
+  let adaptiveSampleIntervalMs = sampleIntervalMs;
+
   while (performance.now() - startedAt < maxTimeMs) {
     const loopStart = performance.now();
 
@@ -235,6 +241,19 @@ export async function runMovementLiveness(
     const landmarks = await computeLandmarksFromVideoFrame(video);
     const pose = landmarks ? getPoseSample(landmarks) : null;
 
+    // Adaptive timing: measure real inference cost on first successful frame.
+    // If inference exceeds 80% of the configured frame budget (e.g., 44ms > 0.8×55ms
+    // at 18fps on a low-end device), widen the sleep to actualCost×1.2 (max 100ms).
+    // This prevents the loop from immediately re-queuing inference with no GPU breathing
+    // room, which would stall WebGL and reduce effective throughput below the target FPS.
+    if (pose && !inferenceObserved) {
+      const actualCost = performance.now() - loopStart;
+      if (actualCost > sampleIntervalMs * 0.8) {
+        adaptiveSampleIntervalMs = Math.min(Math.round(actualCost * 1.2), 100);
+      }
+      inferenceObserved = true;
+    }
+
     if (!pose) {
       missingFaceSamples += 1;
       const maxMissingAllowed = !baseline ? 5 : 14;
@@ -242,7 +261,7 @@ export async function runMovementLiveness(
         break;
       }
       const loopCost = performance.now() - loopStart;
-      const pause = Math.max(10, sampleIntervalMs - loopCost);
+      const pause = Math.max(10, adaptiveSampleIntervalMs - loopCost);
       await wait(pause);
       continue;
     }
@@ -353,9 +372,11 @@ export async function runMovementLiveness(
       targetThreshold,
     });
 
-    // Adaptive frame pacing: only sleep the remainder of sampleIntervalMs
+    // Adaptive frame pacing: only sleep the remainder of adaptiveSampleIntervalMs.
+    // On fast devices this equals sampleIntervalMs; on slow devices it's been widened
+    // to give the GPU a proper idle window before the next inference call.
     const loopCost = performance.now() - loopStart;
-    const remainingWait = Math.max(0, sampleIntervalMs - loopCost);
+    const remainingWait = Math.max(0, adaptiveSampleIntervalMs - loopCost);
     if (remainingWait > 2) {
       await wait(remainingWait);
     }

@@ -14,6 +14,7 @@ import {
   getCache,
   setCache,
 } from "./utils/dataCache";
+import { clearDescriptorCache } from "./utils/faceApiLoader";
 
 /**
  * Application Views
@@ -452,6 +453,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       // Fallback
     }
     clearAllDataCaches();
+    clearDescriptorCache();
     setCurrentUser(null);
     setSessions([]);
     setAttendance([]);

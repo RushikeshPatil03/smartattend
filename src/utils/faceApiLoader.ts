@@ -71,6 +71,109 @@ let cachedDetectorOptions: unknown = null;
 const memoryDescriptorCache = new Map<string, Float32Array>();
 const inFlightDescriptorPromises = new Map<string, Promise<Float32Array>>();
 
+// ─── IndexedDB descriptor persistence ────────────────────────────────────────
+// DB: "smartattend_face_v1" / store: "faceapi_descriptors"
+// Value format: JSON array of 128 numbers (identical to sessionStorage format)
+// Writes are fire-and-forget; reads block only on a cold sessionStorage miss.
+
+const IDB_DB_NAME = "smartattend_face_v1";
+const IDB_STORE_NAME = "faceapi_descriptors";
+const IDB_VERSION = 1;
+
+let idbPromise: Promise<IDBDatabase> | null = null;
+
+/**
+ * Opens (or reuses) the descriptor IndexedDB connection.
+ * Returns null silently in environments without IDB support (SSR, private mode, etc.).
+ */
+function openDescriptorDB(): Promise<IDBDatabase> | null {
+  if (typeof indexedDB === "undefined") return null;
+  if (idbPromise) return idbPromise;
+
+  idbPromise = new Promise<IDBDatabase>((resolve, reject) => {
+    try {
+      const req = indexedDB.open(IDB_DB_NAME, IDB_VERSION);
+      req.onupgradeneeded = () => {
+        req.result.createObjectStore(IDB_STORE_NAME);
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => {
+        idbPromise = null; // allow retry
+        reject(req.error);
+      };
+    } catch (err) {
+      idbPromise = null;
+      reject(err);
+    }
+  });
+
+  return idbPromise;
+}
+
+/** Read a Float32Array descriptor from IDB. Returns null on any failure. */
+async function idbReadDescriptor(key: string): Promise<Float32Array | null> {
+  try {
+    const db = await openDescriptorDB();
+    if (!db) return null;
+    return await new Promise<Float32Array | null>((resolve) => {
+      const req = db
+        .transaction(IDB_STORE_NAME, "readonly")
+        .objectStore(IDB_STORE_NAME)
+        .get(key);
+      req.onsuccess = () => {
+        const val = req.result;
+        if (Array.isArray(val) && val.length === 128) {
+          resolve(new Float32Array(val));
+        } else {
+          resolve(null);
+        }
+      };
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Write descriptor to IDB asynchronously — fire-and-forget, never throws. */
+function idbWriteDescriptor(key: string, descriptor: Float32Array): void {
+  void (async () => {
+    try {
+      const db = await openDescriptorDB();
+      if (!db) return;
+      const values = Array.from(descriptor);
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE_NAME, "readwrite");
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.objectStore(IDB_STORE_NAME).put(values, key);
+      });
+    } catch {
+      // IDB write failures are non-blocking; sessionStorage + memory cache still work
+    }
+  })();
+}
+
+/** Clear IDB store — fire-and-forget, never throws. */
+function idbClearStore(): void {
+  void (async () => {
+    try {
+      const db = await openDescriptorDB();
+      if (!db) return;
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE_NAME, "readwrite");
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.objectStore(IDB_STORE_NAME).clear();
+      });
+    } catch {
+      // Non-blocking
+    }
+  })();
+}
+
+// ─── Descriptor cache key ─────────────────────────────────────────────────────
+
 function descriptorCacheKey(url: string) {
   let hash = 2166136261;
   for (let index = 0; index < url.length; index += 1) {
@@ -79,6 +182,8 @@ function descriptorCacheKey(url: string) {
   }
   return `faceapi-profile-v1-${(hash >>> 0).toString(36)}`;
 }
+
+// ─── Script + model loading ───────────────────────────────────────────────────
 
 function loadScriptFromUrl(url: string): Promise<FaceApi> {
   return new Promise<FaceApi>((resolve, reject) => {
@@ -205,6 +310,60 @@ export function loadModelsIfNeeded(): Promise<FaceApi> {
   return modelsPromise;
 }
 
+/**
+ * Returns true if face-api.js models are already loaded and cached in memory.
+ * Use this to skip an await in hot paths when models are guaranteed to be ready.
+ */
+export function isModelsLoaded(): boolean {
+  return cachedFaceApi !== null;
+}
+
+/**
+ * Preloads face-api.js models AND warms the reference descriptor for a student's
+ * profile photo. Call this on QR-scan-screen mount — not at capture time.
+ *
+ * Both tasks run in parallel via Promise.allSettled so neither can fail the other.
+ * The function itself never throws; all errors are swallowed to keep mount side-effect safe.
+ */
+export async function preloadForStudent(profilePhotoUrl: string): Promise<void> {
+  await Promise.allSettled([
+    loadModelsIfNeeded(),
+    profilePhotoUrl ? computeDescriptorFromImageURL(profilePhotoUrl) : Promise.resolve(),
+  ]);
+}
+
+/**
+ * Clears all three descriptor cache layers:
+ *   1. In-memory Map (instant)
+ *   2. sessionStorage keys matching "faceapi-profile-v1-" prefix
+ *   3. IndexedDB store (async, fire-and-forget)
+ *
+ * Call during student logout so the next student starts with a cold cache.
+ */
+export function clearDescriptorCache(): void {
+  // 1. Memory
+  memoryDescriptorCache.clear();
+
+  // 2. sessionStorage — iterate and remove matching keys without mutating during iteration
+  try {
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const k = sessionStorage.key(i);
+      if (k && k.startsWith("faceapi-profile-v1-")) {
+        keysToRemove.push(k);
+      }
+    }
+    keysToRemove.forEach((k) => sessionStorage.removeItem(k));
+  } catch {
+    // sessionStorage may be blocked in private contexts
+  }
+
+  // 3. IndexedDB — async, non-blocking
+  idbClearStore();
+}
+
+// ─── Canvas helpers ───────────────────────────────────────────────────────────
+
 let reusableVideoCanvas: HTMLCanvasElement | null = null;
 let reusableVideoContext: CanvasRenderingContext2D | null = null;
 
@@ -329,15 +488,20 @@ async function detectDescriptor(faceapi: FaceApi, canvas: HTMLCanvasElement) {
   return result.descriptor;
 }
 
+// ─── Public descriptor API ────────────────────────────────────────────────────
+
 export async function computeDescriptorFromImageURL(url: string): Promise<Float32Array> {
+  // 1. Hot path: memory cache (sub-millisecond)
   const cached = memoryDescriptorCache.get(url);
   if (cached) return cached;
 
-  // Concurrency lock: Return existing in-flight promise to prevent duplicate face detections
+  // 2. Concurrency lock: deduplicate concurrent callers for the same URL
   const inFlight = inFlightDescriptorPromises.get(url);
   if (inFlight) return inFlight;
 
   const cacheKey = descriptorCacheKey(url);
+
+  // 3. Warm path: sessionStorage (fast sync read, survives page reload)
   try {
     const stored = sessionStorage.getItem(cacheKey);
     if (stored) {
@@ -352,8 +516,25 @@ export async function computeDescriptorFromImageURL(url: string): Promise<Float3
     // Storage can be unavailable in private browser contexts; memory cache still works.
   }
 
+  // Create a single promise shared across concurrent callers — guarantees exactly
+  // one IDB read + one inference per URL regardless of call parallelism.
   const descriptorPromise = (async () => {
     try {
+      // 4. Cold path A: IndexedDB (survives PWA restarts; checked before re-inference)
+      const idbDescriptor = await idbReadDescriptor(cacheKey);
+      if (idbDescriptor) {
+        memoryDescriptorCache.set(url, idbDescriptor);
+        // Backfill sessionStorage for fast reads on subsequent page loads
+        try {
+          sessionStorage.setItem(cacheKey, JSON.stringify(Array.from(idbDescriptor)));
+        } catch {
+          // sessionStorage blocked in private contexts
+        }
+        return idbDescriptor;
+      }
+
+      // 5. Cold path B: full inference (network + GPU)
+      // Run model load and image fetch concurrently to minimize latency
       const [faceapi, image] = await Promise.all([loadModelsIfNeeded(), loadImage(url)]);
       const canvas = drawSmallSquare(
         image,
@@ -362,14 +543,21 @@ export async function computeDescriptorFromImageURL(url: string): Promise<Float3
         false
       );
       const descriptor = await detectDescriptor(faceapi, canvas);
+
+      // Populate all cache layers:
       memoryDescriptorCache.set(url, descriptor);
+      // sessionStorage: fast sync reads on next navigation within the same session
       try {
         sessionStorage.setItem(cacheKey, JSON.stringify(Array.from(descriptor)));
       } catch {
         // The descriptor remains cached in memory for this page session.
       }
+      // IndexedDB: persists across PWA restarts (fire-and-forget, never blocks return)
+      idbWriteDescriptor(cacheKey, descriptor);
+
       return descriptor;
     } finally {
+      // Always release the concurrency lock whether we succeeded or threw
       inFlightDescriptorPromises.delete(url);
     }
   })();

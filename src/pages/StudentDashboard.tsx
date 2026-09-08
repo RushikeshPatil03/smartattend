@@ -20,7 +20,7 @@ import {
 import { createSequentialBuffer } from "../services/sequentialQrBuffer";
 import { parseQrPayload, RotatingQrPayload } from "../utils/totpQrGenerator";
 
-import { loadModelsIfNeeded, computeDescriptorFromImageURL } from "../utils/faceApiLoader";
+import { preloadForStudent } from "../utils/faceApiLoader";
 
 const preloadCameraQrScanner = () => import("../components/CameraQrScanner");
 const CameraQrScanner = React.lazy(preloadCameraQrScanner);
@@ -644,10 +644,9 @@ const StudentDashboard: React.FC = () => {
     void Promise.all([
       preloadCameraQrScanner(),
       preloadLivePhotoCapture(),
-      loadModelsIfNeeded(),
+      preloadForStudent(registeredFacePhoto),
       prewarmFrontCamera(),
       prewarmQrCamera(),
-      registeredFacePhoto ? computeDescriptorFromImageURL(registeredFacePhoto) : Promise.resolve(),
     ]);
     if (typeof navigator !== "undefined" && navigator?.permissions?.query) {
       navigator.permissions.query({ name: "camera" as any }).catch(() => undefined);

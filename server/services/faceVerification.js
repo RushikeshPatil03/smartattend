@@ -108,14 +108,28 @@ async function verifyFaceForAttendance(student, payload = {}, now = new Date()) 
     String(student?.faceSignatureMirror || student?.face_signature_mirror || "").trim().toLowerCase(),
   ].filter(isValidFaceSignature);
 
-  if (!storedRef.length && !payload.faceMatch) {
+  // Build live signatures early so the no-enrollment guard can inspect them
+  const liveSignatures = [
+    String(payload.liveFaceSignature || "").trim().toLowerCase(),
+    String(payload.liveFaceSignatureMirror || "").trim().toLowerCase(),
+  ].filter(isValidFaceSignature);
+
+  // Change 6 — Explicit, documented no-enrollment bypass.
+  // All three conditions must be true: student has no stored reference, the client sent
+  // no faceMatch signal, and no live signature was provided.  This makes the open-
+  // enrollment path unambiguous in code review and audit logs.
+  if (!storedRef.length && payload.faceMatch == null && !liveSignatures.length) {
     return {
-      ok: true, // Fallback if no reference registered
+      ok: true,
       score: 1.0,
       threshold: FACE_MATCH_THRESHOLD,
+      note: "face-not-enrolled",
     };
   }
 
+  // Change 5 — Client-side verification handler.
+  // When the client executes on-device verification (face-api.js descriptor comparison
+  // and movement liveness), it sends faceMatch + faceMetrics.
   if (payload.faceMatch != null) {
     const match = Boolean(payload.faceMatch);
     if (!match) {
@@ -125,13 +139,9 @@ async function verifyFaceForAttendance(student, payload = {}, now = new Date()) 
       ok: true,
       score: Number(payload.faceMetrics?.confidence || 1.0),
       threshold: FACE_MATCH_THRESHOLD,
+      note: storedRef.length ? "client-verified" : "no-reference-registered",
     };
   }
-
-  const liveSignatures = [
-    String(payload.liveFaceSignature || "").trim().toLowerCase(),
-    String(payload.liveFaceSignatureMirror || "").trim().toLowerCase(),
-  ].filter(isValidFaceSignature);
 
   if (liveSignatures.length === 0) {
     return { ok: false, error: "Fresh live face signature is required" };
