@@ -65,7 +65,7 @@ async function reserveRegistrationSlot(regId) {
 
   const { data: current } = await supabase
     .from("registration_tokens")
-    .select("*")
+    .select("id, admin_id, type, is_active, uses_count, max_uses, expires_at")
     .eq("id", String(regId))
     .single();
 
@@ -85,7 +85,7 @@ async function reserveRegistrationSlot(regId) {
         updated_at: new Date().toISOString(),
       })
       .eq("id", String(regId))
-      .select("*")
+      .select("id, admin_id, is_active, uses_count, max_uses, expires_at, last_used_at")
       .single();
 
     return updated;
@@ -103,7 +103,7 @@ async function releaseRegistrationSlot(regId) {
   } catch {
     const { data: current } = await supabase
       .from("registration_tokens")
-      .select("*")
+      .select("id, uses_count, max_uses, expires_at, is_active")
       .eq("id", String(regId))
       .single();
 
@@ -312,7 +312,7 @@ router.post("/register", async (req, res) => {
 
     const { data: reg } = await supabase
       .from("registration_tokens")
-      .select("*")
+      .select("id, admin_id, type, is_active, uses_count, max_uses, expires_at")
       .eq("token", String(token))
       .single();
 
@@ -421,7 +421,10 @@ router.get("/session/active", authMiddleware, async (req, res) => {
 
     const { data: session } = await supabase
       .from("sessions")
-      .select("*")
+      .select(
+        "id, faculty, subject, department, year, semester, section, " +
+        "start_time, end_time, last_activity_at, is_active, location, created_at, updated_at"
+      )
       .eq("faculty", facultyId)
       .eq("is_active", true)
       .order("start_time", { ascending: false })
@@ -746,7 +749,10 @@ router.post("/device-change-requests/:id/review", authMiddleware, async (req, re
 
     const { data: request } = await supabase
       .from("device_change_requests")
-      .select("*")
+      .select(
+        "id, student, department, created_by_admin, status, expires_at, " +
+        "old_device_fingerprint, requested_device_fingerprint, review_note"
+      )
       .eq("id", req.params.id)
       .eq("department", String(deptId))
       .eq("created_by_admin", String(adminId))
@@ -1530,10 +1536,21 @@ router.post("/session/:id/stop", authMiddleware, async (req, res) => {
       updateQuery = updateQuery.eq("faculty", req.userId);
     }
 
-    const { data: session, error } = await updateQuery.select("*").single();
+    const { data: session, error } = await updateQuery
+      .select(
+        "id, faculty, subject, department, year, semester, section, " +
+        "start_time, end_time, last_activity_at, is_active, location"
+      )
+      .single();
 
     if (error || !session) {
-      let existingQuery = supabase.from("sessions").select("*").eq("id", sessionId);
+      let existingQuery = supabase
+        .from("sessions")
+        .select(
+          "id, faculty, subject, department, year, semester, section, " +
+          "start_time, end_time, last_activity_at, is_active, location"
+        )
+        .eq("id", sessionId);
       if (req.userRole === "FACULTY") existingQuery = existingQuery.eq("faculty", req.userId);
       const { data: existing } = await existingQuery.single();
 
@@ -1664,7 +1681,13 @@ router.get("/session/:id/qr", authMiddleware, async (req, res) => {
     const supabase = getSupabaseClient();
     if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
 
-    let query = supabase.from("sessions").select("*").eq("id", sessionId);
+    let query = supabase
+      .from("sessions")
+      .select(
+        "id, faculty, subject, department, year, semester, section, " +
+        "start_time, end_time, last_activity_at, is_active, location, created_at"
+      )
+      .eq("id", sessionId);
     if (req.userRole === "FACULTY") query = query.eq("faculty", req.userId);
     let { data: session } = await query.single();
 

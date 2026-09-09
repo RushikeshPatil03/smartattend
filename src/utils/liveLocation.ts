@@ -139,18 +139,33 @@ export function startRollingGpsWatcher(
 
   if (activeWatchId === null) {
     try {
+      // Phase 1: Low accuracy first — fast chip wake, no CPU spike
       activeWatchId = navigator.geolocation.watchPosition(
-        (pos) => handleIncomingPosition(pos),
-        (err) => {
-          if (err.code === 1) {
-            // Permission denied
-            stopInternalWatcher();
+        (pos) => {
+          handleIncomingPosition(pos);
+          // Phase 2: After first fix arrives, upgrade to high accuracy
+          if (activeWatchId !== null && watcherRefCount > 0) {
+            try {
+              navigator.geolocation.clearWatch(activeWatchId);
+              activeWatchId = navigator.geolocation.watchPosition(
+                (pos2) => handleIncomingPosition(pos2),
+                (err2) => {
+                  if (err2?.code === 1) stopInternalWatcher();
+                },
+                { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
+              );
+            } catch (e) {
+              console.warn("Failed to upgrade GPS watcher to high accuracy:", e);
+            }
           }
         },
+        (err) => {
+          if (err.code === 1) stopInternalWatcher();
+        },
         {
-          enableHighAccuracy: true,
-          maximumAge: 10000,
-          timeout: 15000,
+          enableHighAccuracy: false,
+          maximumAge: 30000,
+          timeout: 10000,
         }
       );
     } catch (err) {

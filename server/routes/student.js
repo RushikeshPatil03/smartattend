@@ -44,7 +44,7 @@ async function reserveRegistrationSlot(regId) {
 
   const { data: current } = await supabase
     .from("registration_tokens")
-    .select("*")
+    .select("id, admin_id, type, is_active, uses_count, max_uses, expires_at")
     .eq("id", String(regId))
     .single();
 
@@ -64,7 +64,7 @@ async function reserveRegistrationSlot(regId) {
         updated_at: new Date().toISOString(),
       })
       .eq("id", String(regId))
-      .select("*")
+      .select("id, admin_id, is_active, uses_count, max_uses, expires_at, last_used_at")
       .single();
 
     return updated;
@@ -82,7 +82,7 @@ async function releaseRegistrationSlot(regId) {
   } catch {
     const { data: current } = await supabase
       .from("registration_tokens")
-      .select("*")
+      .select("id, uses_count, max_uses, expires_at, is_active")
       .eq("id", String(regId))
       .single();
 
@@ -159,7 +159,7 @@ router.post("/register", async (req, res) => {
 
     const { data: reg } = await supabase
       .from("registration_tokens")
-      .select("*")
+      .select("id, admin_id, type, is_active, uses_count, max_uses, expires_at")
       .eq("token", String(token))
       .single();
 
@@ -306,19 +306,19 @@ router.get("/session/active", auth(["STUDENT"]), async (req, res) => {
         location,
         start_time,
         is_active,
-        subj:subjects(id, name, code, created_by_admin, departments),
+        subj:subjects(id, name, code),
         fac:faculties(id, name)
       `)
       .eq("year", Number(student.year))
       .eq("semester", Number(student.semester))
-      .eq("is_active", true);
+      .eq("is_active", true)
+      .eq("department", studentDeptId);
 
     if (error) throw error;
 
     const matchingSession = (rawSessions || []).find((s) => {
       const sSec = String(s.section || "").trim().toUpperCase();
       if (sSec && normalizedSection && sSec !== normalizedSection) return false;
-      if (s.department && String(s.department) !== studentDeptId) return false;
       return true;
     });
 
@@ -417,14 +417,13 @@ const handleStudentAttendanceOverview = async (req, res) => {
 
     const { data: allSubjects } = await supabase
       .from("subjects")
-      .select("id, name, code, allotted_faculties, departments")
+      .select("id, name, code")
       .eq("created_by_admin", adminId)
       .eq("year", Number(student.year))
-      .eq("semester", Number(student.semester));
+      .eq("semester", Number(student.semester))
+      .contains("departments", [studentDeptId]);
 
-    const subjects = (allSubjects || []).filter((s) =>
-      Array.isArray(s.departments) && s.departments.some((d) => String(d) === studentDeptId)
-    );
+    const subjects = allSubjects || [];
 
     const subjectIds = subjects.map((s) => s.id);
     if (subjectIds.length === 0) {

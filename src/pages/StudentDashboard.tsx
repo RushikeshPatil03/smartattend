@@ -596,6 +596,7 @@ const StudentDashboard: React.FC = () => {
   const resetTimerRef = useRef<number | null>(null);
   const sessionExpiredToastTimerRef = useRef<number | null>(null);
   const loadingRecentRef = useRef(false);
+  const gpsStopRef = useRef<(() => void) | null>(null);
   const cameraWarmupPromiseRef = useRef<Promise<void> | null>(null);
   const scannerResolveRef = useRef<((value: ScannerResult) => void) | null>(null);
   const sequentialQrBufferRef = useRef(createSequentialBuffer());
@@ -638,33 +639,78 @@ const StudentDashboard: React.FC = () => {
     const absent = todaysClasses.filter((record) => record.attendanceCode === "A").length;
     return { present, absent, total: todaysClasses.length };
   }, [todaysClasses]);
+  /**
+   * Schedule a callback during browser idle time with a deadline fallback.
+   * Uses requestIdleCallback when available (Chrome/Android), falls back
+   * to setTimeout for Safari/iOS.
+   */
+  function scheduleIdle(callback: () => void, fallbackDelayMs: number): void {
+    if (typeof requestIdleCallback !== "undefined") {
+      requestIdleCallback(() => callback(), { timeout: fallbackDelayMs + 500 });
+    } else {
+      setTimeout(callback, fallbackDelayMs);
+    }
+  }
+
   useEffect(() => {
     mountedRef.current = true;
-    // Parallel background warmup - eliminates cold starts
-    void Promise.all([
-      preloadCameraQrScanner(),
-      preloadLivePhotoCapture(),
-      preloadForStudent(registeredFacePhoto),
-      prewarmFrontCamera(),
-      prewarmQrCamera(),
-    ]);
-    if (typeof navigator !== "undefined" && navigator?.permissions?.query) {
-      navigator.permissions.query({ name: "camera" as any }).catch(() => undefined);
-    }
-    if (!departments.length) {
-      void fetchDepartments();
-    }
 
-    // Start rolling 30-second GPS cache watcher in background for instant 0ms scan resolution
-    const stopGpsWatcher = startRollingGpsWatcher((_loc) => {
-      if (mountedRef.current) {
-        setLocationReady(true);
+    // TIER 1 (t=0ms): Nothing heavy — let the page paint and become interactive first.
+
+    // TIER 2 (t=100ms): Start GPS watcher first, lowest GPU cost.
+    // GPS chip needs the most time to warm up so it gets priority.
+    const gpsTimer = window.setTimeout(() => {
+      if (!mountedRef.current) return;
+      const stopGpsWatcher = startRollingGpsWatcher((_loc) => {
+        if (mountedRef.current) setLocationReady(true);
+      });
+      // Store cleanup reference via closure
+      gpsStopRef.current = stopGpsWatcher;
+    }, 100);
+
+    // TIER 3 (t=300ms idle): Preload QR scanner JS chunk — pure network/parse, no GPU
+    scheduleIdle(() => {
+      if (!mountedRef.current) return;
+      void preloadCameraQrScanner();
+    }, 300);
+
+    // TIER 4 (t=600ms idle): Preload face capture chunk
+    scheduleIdle(() => {
+      if (!mountedRef.current) return;
+      void preloadLivePhotoCapture();
+    }, 600);
+
+    // TIER 5 (t=900ms idle): Warmup face-api.js models + reference descriptor.
+    // Face-api gets GPU first before MediaPipe to prevent WebGL context contention.
+    scheduleIdle(() => {
+      if (!mountedRef.current) return;
+      void preloadForStudent(registeredFacePhoto);
+    }, 900);
+
+    // TIER 6 (t=1300ms idle): MediaPipe and QR camera warmup last.
+    // MediaPipe WASM init is the heaviest, starts after face-api has GPU context.
+    scheduleIdle(() => {
+      if (!mountedRef.current) return;
+      void prewarmFrontCamera();
+      void prewarmQrCamera();
+    }, 1300);
+
+    // TIER 7 (t=1600ms idle): Camera permissions query — lowest priority
+    scheduleIdle(() => {
+      if (!mountedRef.current) return;
+      if (typeof navigator !== "undefined" && navigator?.permissions?.query) {
+        navigator.permissions.query({ name: "camera" as any }).catch(() => undefined);
       }
-    });
+      if (!departments.length) {
+        void fetchDepartments();
+      }
+    }, 1600);
 
     return () => {
       mountedRef.current = false;
-      stopGpsWatcher();
+      window.clearTimeout(gpsTimer);
+      gpsStopRef.current?.();
+      gpsStopRef.current = null;
       if (resetTimerRef.current) {
         window.clearTimeout(resetTimerRef.current);
         resetTimerRef.current = null;
@@ -889,7 +935,16 @@ const StudentDashboard: React.FC = () => {
     }, DYNAMIC_SECOND_SCAN_TIMEOUT_MS);
   }, [closeScanner]);
 
+  const lastStudentDataFetchMs = useRef<number>(0);
+  const STUDENT_DATA_FETCH_DEBOUNCE_MS = 30_000; // 30 seconds
+
   const loadStudentData = useCallback(async () => {
+    const now = Date.now();
+    if (now - lastStudentDataFetchMs.current < STUDENT_DATA_FETCH_DEBOUNCE_MS) {
+      return; // Skip — data is fresh enough
+    }
+    lastStudentDataFetchMs.current = now;
+
     if (loadingRecentRef.current) return;
     loadingRecentRef.current = true;
 
@@ -1179,6 +1234,7 @@ const StudentDashboard: React.FC = () => {
       }
 
       // 2. Silent background sync without blocking UI
+      lastStudentDataFetchMs.current = 0;
       void loadStudentData().catch(() => {});
 
       if (resetTimerRef.current) window.clearTimeout(resetTimerRef.current);

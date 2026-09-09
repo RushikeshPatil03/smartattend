@@ -612,7 +612,7 @@ const handleMarkAttendance = async (req, res) => {
       let { data: attendance, error: insertError } = await supabase
         .from("attendances")
         .upsert(fullAttendancePayload, { onConflict: "session,student" })
-        .select("*")
+        .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification")
         .single();
 
       if (insertError && (insertError.code === "PGRST204" || insertError.code === "42703" || String(insertError.message || "").includes("column"))) {
@@ -635,7 +635,7 @@ const handleMarkAttendance = async (req, res) => {
         const retryRes = await supabase
           .from("attendances")
           .upsert(baseAttendancePayload, { onConflict: "session,student" })
-          .select("*")
+          .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification")
           .single();
         attendance = retryRes.data;
         insertError = retryRes.error;
@@ -1820,7 +1820,7 @@ async function handleManualAttendance(req, res) {
       let { data: upserted, error } = await supabase
         .from("attendances")
         .upsert(fullPayload, { onConflict: "session,student" })
-        .select("*")
+        .select("id, session, student, status, timestamp")
         .single();
 
       // If custom columns don't exist yet in Supabase schema, gracefully retry with base columns
@@ -1837,7 +1837,7 @@ async function handleManualAttendance(req, res) {
         const retryRes = await supabase
           .from("attendances")
           .upsert(basePayload, { onConflict: "session,student" })
-          .select("*")
+          .select("id, session, student, status, timestamp")
           .single();
         upserted = retryRes.data;
         error = retryRes.error;
