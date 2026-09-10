@@ -9,13 +9,28 @@ try {
 }
 
 const STUDENT_AUTH_SELECT =
-  "id, name, email, password_hash, device_fingerprint, device_lock_enabled, enrollment_no, college_name, profile_photo_url, created_by_admin";
+  "id, name, email, password_hash, enrollment_no, device_fingerprint, college_name, profile_photo_url, created_by_admin";
 
 const FACULTY_AUTH_SELECT =
-  "id, name, email, password_hash, device_fingerprint, device_lock_enabled, college_name, profile_photo_url, created_by_admin";
+  "id, name, email, password_hash, department, device_fingerprint, device_lock_enabled, profile_photo_url, created_by_admin";
 
 const ADMIN_AUTH_SELECT =
   "id, name, email, password_hash, college_name, profile_photo_url";
+
+async function comparePassword(password, hash) {
+  if (!password || !hash) return false;
+  try {
+    return await bcrypt.compare(String(password), String(hash));
+  } catch (err) {
+    console.warn("Bcrypt compare fallback triggered:", err?.message || err);
+    try {
+      const bcryptjs = require("bcryptjs");
+      return await bcryptjs.compare(String(password), String(hash));
+    } catch {
+      return false;
+    }
+  }
+}
 
 const adminCollegeCache = new Map();
 const ADMIN_COLLEGE_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -248,13 +263,25 @@ router.post(
       const normalizedEmail = String(email).trim().toLowerCase();
 
       if (roleUpper === "ADMIN") {
-        const { data } = await supabase.from("admins").select(ADMIN_AUTH_SELECT).eq("email", normalizedEmail).single();
+        let { data, error } = await supabase.from("admins").select(ADMIN_AUTH_SELECT).ilike("email", normalizedEmail).single();
+        if (error || !data) {
+          const fallback = await supabase.from("admins").select("*").ilike("email", normalizedEmail).single();
+          data = fallback.data;
+        }
         user = data;
       } else if (roleUpper === "FACULTY") {
-        const { data } = await supabase.from("faculties").select(FACULTY_AUTH_SELECT).eq("email", normalizedEmail).single();
+        let { data, error } = await supabase.from("faculties").select(FACULTY_AUTH_SELECT).ilike("email", normalizedEmail).single();
+        if (error || !data) {
+          const fallback = await supabase.from("faculties").select("*").ilike("email", normalizedEmail).single();
+          data = fallback.data;
+        }
         user = data;
       } else if (roleUpper === "STUDENT") {
-        const { data } = await supabase.from("students").select(STUDENT_AUTH_SELECT).eq("email", normalizedEmail).single();
+        let { data, error } = await supabase.from("students").select(STUDENT_AUTH_SELECT).ilike("email", normalizedEmail).single();
+        if (error || !data) {
+          const fallback = await supabase.from("students").select("*").ilike("email", normalizedEmail).single();
+          data = fallback.data;
+        }
         user = data;
       } else {
         return res.status(400).json({ ok: false, error: "Invalid role" });
@@ -275,7 +302,7 @@ router.post(
           return res.status(500).json({ ok: false, error: "Password not set for admin" });
         }
 
-        const valid = await bcrypt.compare(password, storedHash);
+        const valid = await comparePassword(password, storedHash);
         if (!valid) {
           return res.status(401).json({ ok: false, error: "Invalid password" });
         }
@@ -318,7 +345,7 @@ router.post(
           return res.status(500).json({ ok: false, error: "Password not set for account" });
         }
 
-        const valid = await bcrypt.compare(password, storedHash);
+        const valid = await comparePassword(password, storedHash);
         if (!valid) {
           return res.status(401).json({ ok: false, error: "Invalid password" });
         }
@@ -421,13 +448,25 @@ router.post("/refresh", async (req, res) => {
     } else {
       // Fallback path: Legacy tokens lacking embedded fields
       if (role === "ADMIN") {
-        const { data } = await supabase.from("admins").select(ADMIN_AUTH_SELECT).eq("id", userId).single();
+        let { data, error } = await supabase.from("admins").select(ADMIN_AUTH_SELECT).eq("id", userId).single();
+        if (error || !data) {
+          const fallback = await supabase.from("admins").select("*").eq("id", userId).single();
+          data = fallback.data;
+        }
         user = data;
       } else if (role === "FACULTY") {
-        const { data } = await supabase.from("faculties").select(FACULTY_AUTH_SELECT).eq("id", userId).single();
+        let { data, error } = await supabase.from("faculties").select(FACULTY_AUTH_SELECT).eq("id", userId).single();
+        if (error || !data) {
+          const fallback = await supabase.from("faculties").select("*").eq("id", userId).single();
+          data = fallback.data;
+        }
         user = data;
       } else if (role === "STUDENT") {
-        const { data } = await supabase.from("students").select(STUDENT_AUTH_SELECT).eq("id", userId).single();
+        let { data, error } = await supabase.from("students").select(STUDENT_AUTH_SELECT).eq("id", userId).single();
+        if (error || !data) {
+          const fallback = await supabase.from("students").select("*").eq("id", userId).single();
+          data = fallback.data;
+        }
         user = data;
       }
 
@@ -580,7 +619,7 @@ router.post("/device-change/verify-student", async (req, res) => {
       return res.status(401).json({ ok: false, error: "Invalid student credentials" });
     }
 
-    const valid = await bcrypt.compare(String(password), student.password_hash || "");
+    const valid = await comparePassword(String(password), student.password_hash || "");
     if (!valid) {
       return res.status(401).json({ ok: false, error: "Invalid student credentials" });
     }

@@ -52,7 +52,6 @@ const MAX_DYNAMIC_SEQUENCE_GAP_SECONDS = Math.max(
   4,
   Number(import.meta.env.VITE_QR_SEQUENCE_GAP_SECONDS || 6)
 );
-const FIRST_DYNAMIC_ARM_WINDOW_MS = 2500;
 const FACE_VERIFICATION_WINDOW_MS = 15000;
 type ScannerResult = string | { first: string; second: string } | { sequence: RotatingQrPayload[] } | null;
 type DynamicPairScanResult =
@@ -575,7 +574,6 @@ const StudentDashboard: React.FC = () => {
   const [scannerError, setScannerError] = useState("");
   const [scannerHint, setScannerHint] = useState("");
   const [scannerStatusTone, setScannerStatusTone] = useState<"neutral" | "success" | "error">("neutral");
-  const [firstDynamicArmActive, setFirstDynamicArmActive] = useState(false);
   const [locationReady, setLocationReady] = useState(false);
   const [faceGateOpen, setFaceGateOpen] = useState(false);
   const [faceGateStatus, setFaceGateStatus] = useState<"VERIFYING" | "MATCHING" | "FAILED">("VERIFYING");
@@ -605,7 +603,6 @@ const StudentDashboard: React.FC = () => {
   const dynamicPairFirstCapturedAtRef = useRef<number | null>(null);
   const dynamicPairLockedRef = useRef(false);
   const dynamicPairTimeoutRef = useRef<number | null>(null);
-  const firstDynamicArmTimeoutRef = useRef<number | null>(null);
   const locationWarmupPromiseRef = useRef<Promise<any> | null>(null);
   const autoLaunchHandledRef = useRef(false);
   const pendingQrPairRef = useRef<DynamicPairScanResult | null>(null);
@@ -714,10 +711,6 @@ const StudentDashboard: React.FC = () => {
       if (resetTimerRef.current) {
         window.clearTimeout(resetTimerRef.current);
         resetTimerRef.current = null;
-      }
-      if (firstDynamicArmTimeoutRef.current) {
-        window.clearTimeout(firstDynamicArmTimeoutRef.current);
-        firstDynamicArmTimeoutRef.current = null;
       }
       if (faceGateTimerRef.current) window.clearTimeout(faceGateTimerRef.current);
       if (sessionExpiredToastTimerRef.current) {
@@ -829,7 +822,7 @@ const StudentDashboard: React.FC = () => {
     };
   }, [scannerOpen, closeScanner]);
 
-  const openDynamicPairScanner = useCallback(async (autoArm = false): Promise<DynamicPairScanResult | null> => {
+  const openDynamicPairScanner = useCallback(async (): Promise<DynamicPairScanResult | null> => {
     const hasMedia = !!navigator?.mediaDevices?.getUserMedia;
     if (!hasMedia) {
       setScanStep("ERROR");
@@ -864,29 +857,12 @@ const StudentDashboard: React.FC = () => {
       dynamicPairFirstPayloadRef.current = null;
       dynamicPairFirstCapturedAtRef.current = null;
       dynamicPairLockedRef.current = false;
-      setFirstDynamicArmActive(true);
       setIsScannerActive(true);
-      setScannerHint(
-        autoArm
-          ? "Point at the Dynamic QR — first code will capture automatically."
-          : "Point at the Dynamic QR — first code will capture automatically."
-      );
-      setScannerStatusTone("success");
+      setScannerHint("Point at the Dynamic QR — it will capture automatically.");
+      setScannerStatusTone("neutral");
       setScannerType("DYNAMIC_PAIR");
       setScannerError("");
       setScannerOpen(true);
-
-      if (autoArm) {
-        if (firstDynamicArmTimeoutRef.current) {
-          window.clearTimeout(firstDynamicArmTimeoutRef.current);
-        }
-        firstDynamicArmTimeoutRef.current = window.setTimeout(() => {
-          setFirstDynamicArmActive(false);
-          setScannerStatusTone("neutral");
-          setScannerHint("First QR was not captured. Tap the button or try again.");
-          firstDynamicArmTimeoutRef.current = null;
-        }, FIRST_DYNAMIC_ARM_WINDOW_MS);
-      }
     });
   }, []);
 
@@ -896,28 +872,7 @@ const StudentDashboard: React.FC = () => {
     setScannerStatusTone("neutral");
   }, [scannerOpen]);
 
-  const armFirstDynamicCapture = useCallback(() => {
-    if (dynamicPairLockedRef.current || dynamicPairFirstTokenRef.current) return;
-    if (firstDynamicArmTimeoutRef.current) {
-      window.clearTimeout(firstDynamicArmTimeoutRef.current);
-    }
-    setIsScannerActive(true);
-    setFirstDynamicArmActive(true);
-    setScannerStatusTone("success");
-    setScannerHint("First QR capture is active. Hold the phone steady on the current Dynamic QR.");
-    firstDynamicArmTimeoutRef.current = window.setTimeout(() => {
-      setFirstDynamicArmActive(false);
-      setScannerStatusTone("neutral");
-      setScannerHint("First QR was not captured. Tap the button again and hold steady.");
-      firstDynamicArmTimeoutRef.current = null;
-    }, FIRST_DYNAMIC_ARM_WINDOW_MS);
-  }, []);
-
   const resetDynamicPairFirst = useCallback((raw: string, payload: DynamicQrPayload, hint: string) => {
-    if (firstDynamicArmTimeoutRef.current) {
-      window.clearTimeout(firstDynamicArmTimeoutRef.current);
-      firstDynamicArmTimeoutRef.current = null;
-    }
     if (dynamicPairTimeoutRef.current) {
       window.clearTimeout(dynamicPairTimeoutRef.current);
     }
@@ -1461,8 +1416,6 @@ const StudentDashboard: React.FC = () => {
             isScannerActive={isScannerActive}
             faceVerifiedExpiresAt={faceVerifiedUntil}
             onSessionExpired={handleFaceSessionExpired}
-            actionLabel="Capture First QR"
-            onAction={armFirstDynamicCapture}
             onCancel={() => closeScanner(null)}
             onDetected={(decodedText) => {
               if (dynamicPairLockedRef.current) return true;
@@ -1473,21 +1426,6 @@ const StudentDashboard: React.FC = () => {
               if (scannerType === "DYNAMIC_PAIR") {
                 const totpPayload = parseQrPayload(raw);
                 if (totpPayload) {
-                  const bufferedCount = sequentialQrBufferRef.current.getPayloads().length;
-                  if (bufferedCount === 0 && !firstDynamicArmActive) {
-                    armFirstDynamicCapture();
-                    sequentialQrBufferRef.current.addBlock(totpPayload);
-                    setFirstDynamicArmActive(false);
-                    if (firstDynamicArmTimeoutRef.current) {
-                      window.clearTimeout(firstDynamicArmTimeoutRef.current);
-                      firstDynamicArmTimeoutRef.current = null;
-                    }
-                    try { navigator.vibrate?.(50); } catch {}
-                    setScannerStatusTone("success");
-                    setScannerHint("First QR captured! Hold steady for the next rotation...");
-                    return false;
-                  }
-
                   const status = sequentialQrBufferRef.current.addBlock(totpPayload);
 
                   if (status === "duplicate") {
@@ -1508,7 +1446,6 @@ const StudentDashboard: React.FC = () => {
 
                   try { navigator.vibrate?.(50); } catch {}
                   setScannerStatusTone("success");
-                  setFirstDynamicArmActive(false);
                   setScannerHint("First QR block captured. Keep the camera steady for the next rotation.");
                   return false;
                 }
@@ -1520,10 +1457,6 @@ const StudentDashboard: React.FC = () => {
                     setScannerStatusTone("error");
                     setScannerHint("This is not a valid Dynamic QR. Point at the attendance QR.");
                     return false;
-                  }
-
-                  if (!firstDynamicArmActive) {
-                    armFirstDynamicCapture();
                   }
 
                   resetDynamicPairFirst(
