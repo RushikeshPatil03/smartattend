@@ -54,6 +54,11 @@ interface AppContextValue {
     expiryHours?: number,
     maxRegistrations?: number
   ) => Promise<any>;
+  resolveRegistrationLink: (
+    type: string,
+    token: string,
+    serverLink?: string
+  ) => string;
 
   fetchSubjects: (forceRefresh?: boolean, signal?: AbortSignal) => Promise<any[]>;
   fetchDepartments: (forceRefresh?: boolean, signal?: AbortSignal) => Promise<any[]>;
@@ -831,6 +836,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     syncUserProfile,
 
     generateRegistrationLink,
+    resolveRegistrationLink,
 
     fetchSubjects,
     fetchDepartments,

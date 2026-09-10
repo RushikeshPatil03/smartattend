@@ -358,7 +358,8 @@ router.post(
       res.cookie("refreshToken", tokens.refreshToken, cookieOptions());
 
       let collegeName = user.college_name || user.collegeName || null;
-      let profilePhotoUrl = user.profile_photo_url || user.profilePhotoUrl || null;
+      let collegeLogoUrl = null;
+      const userPhoto = user.profile_photo_url || user.profilePhotoUrl || null;
 
       // Faculty/Student should receive their admin's college profile details
       const adminId = user.created_by_admin || user.createdByAdmin;
@@ -366,15 +367,20 @@ router.post(
         const adminProfile = await getAdminCollege(supabase, adminId);
         if (adminProfile) {
           collegeName = adminProfile.college_name || collegeName || null;
-          profilePhotoUrl = adminProfile.profile_photo_url || null;
+          collegeLogoUrl = adminProfile.profile_photo_url || null;
         }
+      } else if (roleUpper === "ADMIN") {
+        collegeLogoUrl = userPhoto;
       }
 
-      const safeProfilePhotoUrl = isDataUrlImage(profilePhotoUrl) ? null : profilePhotoUrl;
+      // College logo branding: strip base64 data URLs to protect egress
+      const safeCollegeLogo = isDataUrlImage(collegeLogoUrl) ? null : collegeLogoUrl;
+
+      // Student and Faculty personal profile photos must be preserved (including registered face photos)
       const facultyProfilePhotoUrl =
-        roleUpper === "FACULTY" ? String(safeProfilePhotoUrl || "") || null : null;
+        roleUpper === "FACULTY" ? String(userPhoto || "") || null : null;
       const studentProfilePhotoUrl =
-        roleUpper === "STUDENT" ? String(safeProfilePhotoUrl || "") || null : null;
+        roleUpper === "STUDENT" ? String(userPhoto || "") || null : null;
 
       return res.json({
         ok: true,
@@ -389,7 +395,7 @@ router.post(
           role: roleUpper,
           enrollmentNo: roleUpper === "STUDENT" ? user.enrollment_no || user.enrollmentNo || null : null,
           collegeName,
-          profilePhotoUrl: safeProfilePhotoUrl,
+          profilePhotoUrl: safeCollegeLogo,
           facultyProfilePhotoUrl,
           studentProfilePhotoUrl,
         },
@@ -421,18 +427,36 @@ router.post("/refresh", async (req, res) => {
     let user = null;
     const userId = String(rotation.decoded.id);
     let collegeName = null;
-    let profilePhotoUrl = null;
+    let collegeLogoUrl = null;
+    let userPhoto = null;
 
     // Fast path: Token payload contains user identity from issueTokenPair
     if (rotation.decoded.name) {
       const adminId = rotation.decoded.createdByAdmin;
       const adminToFetch = role === "ADMIN" ? userId : adminId;
-      if (adminToFetch) {
-        const adminProfile = await getAdminCollege(supabase, adminToFetch);
-        if (adminProfile) {
-          collegeName = adminProfile.college_name || null;
-          profilePhotoUrl = adminProfile.profile_photo_url || null;
-        }
+      const fetches = [
+        adminToFetch ? getAdminCollege(supabase, adminToFetch) : Promise.resolve(null),
+      ];
+
+      // If student or faculty, query their personal profile_photo_url so their photo is never lost
+      if (role === "STUDENT") {
+        fetches.push(
+          supabase.from("students").select("profile_photo_url").eq("id", userId).single().then(r => r.data?.profile_photo_url || null).catch(() => null)
+        );
+      } else if (role === "FACULTY") {
+        fetches.push(
+          supabase.from("faculties").select("profile_photo_url").eq("id", userId).single().then(r => r.data?.profile_photo_url || null).catch(() => null)
+        );
+      }
+
+      const [adminProfile, personalPhoto] = await Promise.all(fetches);
+      if (adminProfile) {
+        collegeName = adminProfile.college_name || null;
+        collegeLogoUrl = adminProfile.profile_photo_url || null;
+      }
+      userPhoto = personalPhoto || null;
+      if (role === "ADMIN") {
+        userPhoto = collegeLogoUrl;
       }
 
       user = {
@@ -443,7 +467,7 @@ router.post("/refresh", async (req, res) => {
         enrollment_no: rotation.decoded.enrollmentNo || null,
         created_by_admin: adminId || null,
         college_name: collegeName,
-        profile_photo_url: profilePhotoUrl,
+        profile_photo_url: userPhoto,
       };
     } else {
       // Fallback path: Legacy tokens lacking embedded fields
@@ -477,26 +501,28 @@ router.post("/refresh", async (req, res) => {
 
       user._id = user.id;
       collegeName = user.college_name || user.collegeName || null;
-      profilePhotoUrl = user.profile_photo_url || user.profilePhotoUrl || null;
+      userPhoto = user.profile_photo_url || user.profilePhotoUrl || null;
 
       const adminId = user.created_by_admin || user.createdByAdmin;
       if (role !== "ADMIN" && adminId) {
         const adminProfile = await getAdminCollege(supabase, adminId);
         if (adminProfile) {
           collegeName = adminProfile.college_name || collegeName || null;
-          profilePhotoUrl = adminProfile.profile_photo_url || null;
+          collegeLogoUrl = adminProfile.profile_photo_url || null;
         }
+      } else if (role === "ADMIN") {
+        collegeLogoUrl = userPhoto;
       }
     }
 
     const tokens = await rotation.issueFor(user);
     res.cookie("refreshToken", tokens.refreshToken, cookieOptions());
 
-    const safeProfilePhotoUrl = isDataUrlImage(profilePhotoUrl) ? null : profilePhotoUrl;
+    const safeCollegeLogo = isDataUrlImage(collegeLogoUrl) ? null : collegeLogoUrl;
     const facultyProfilePhotoUrl =
-      role === "FACULTY" ? String(safeProfilePhotoUrl || "") || null : null;
+      role === "FACULTY" ? String(userPhoto || "") || null : null;
     const studentProfilePhotoUrl =
-      role === "STUDENT" ? String(safeProfilePhotoUrl || "") || null : null;
+      role === "STUDENT" ? String(userPhoto || "") || null : null;
 
     return res.json({
       ok: true,
@@ -511,7 +537,7 @@ router.post("/refresh", async (req, res) => {
         role,
         enrollmentNo: role === "STUDENT" ? user.enrollment_no || user.enrollmentNo || null : null,
         collegeName,
-        profilePhotoUrl: safeProfilePhotoUrl,
+        profilePhotoUrl: safeCollegeLogo,
         facultyProfilePhotoUrl,
         studentProfilePhotoUrl,
       },
@@ -533,7 +559,8 @@ router.get("/me", authMiddleware, async (req, res) => {
     }
 
     let collegeName = user.college_name || user.collegeName || null;
-    let profilePhotoUrl = user.profile_photo_url || user.profilePhotoUrl || null;
+    let collegeLogoUrl = null;
+    const userPhoto = user.profile_photo_url || user.profilePhotoUrl || null;
 
     // Faculty/Student should always receive their admin's latest college profile details
     const adminId = user.created_by_admin || user.createdByAdmin;
@@ -541,21 +568,20 @@ router.get("/me", authMiddleware, async (req, res) => {
       const adminProfile = await getAdminCollege(supabase, adminId);
       if (adminProfile) {
         collegeName = adminProfile.college_name || collegeName || null;
-        profilePhotoUrl = adminProfile.profile_photo_url || null;
+        collegeLogoUrl = adminProfile.profile_photo_url || null;
       }
     } else if (roleUpper === "ADMIN") {
-      const adminProfile = await getAdminCollege(supabase, user.id);
-      if (adminProfile) {
-        collegeName = adminProfile.college_name || collegeName || null;
-        profilePhotoUrl = adminProfile.profile_photo_url || null;
-      }
+      collegeLogoUrl = userPhoto;
     }
 
-    const safeProfilePhotoUrl = isDataUrlImage(profilePhotoUrl) ? null : profilePhotoUrl;
+    // College logo branding: strip base64 data URLs to protect egress
+    const safeCollegeLogo = isDataUrlImage(collegeLogoUrl) ? null : collegeLogoUrl;
+
+    // Personal user photos (student face registration, faculty profile) must be preserved
     const facultyProfilePhotoUrl =
-      roleUpper === "FACULTY" ? String(safeProfilePhotoUrl || "") || null : null;
+      roleUpper === "FACULTY" ? String(userPhoto || "") || null : null;
     const studentProfilePhotoUrl =
-      roleUpper === "STUDENT" ? String(safeProfilePhotoUrl || "") || null : null;
+      roleUpper === "STUDENT" ? String(userPhoto || "") || null : null;
 
     return res.json({
       ok: true,
@@ -567,7 +593,7 @@ router.get("/me", authMiddleware, async (req, res) => {
         role: roleUpper,
         enrollmentNo: roleUpper === "STUDENT" ? user.enrollment_no || user.enrollmentNo || null : null,
         collegeName,
-        profilePhotoUrl: safeProfilePhotoUrl,
+        profilePhotoUrl: safeCollegeLogo,
         facultyProfilePhotoUrl,
         studentProfilePhotoUrl,
         createdByAdmin: adminId || null,

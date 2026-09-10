@@ -754,15 +754,10 @@ const StudentDashboard: React.FC = () => {
       window.clearTimeout(dynamicPairTimeoutRef.current);
       dynamicPairTimeoutRef.current = null;
     }
-    if (firstDynamicArmTimeoutRef.current) {
-      window.clearTimeout(firstDynamicArmTimeoutRef.current);
-      firstDynamicArmTimeoutRef.current = null;
-    }
     dynamicPairFirstTokenRef.current = null;
     dynamicPairFirstPayloadRef.current = null;
     dynamicPairFirstCapturedAtRef.current = null;
     sequentialQrBufferRef.current.flush();
-    setFirstDynamicArmActive(false);
     setIsScannerActive(false);
     setScannerHint("");
     setScannerStatusTone("neutral");
@@ -877,7 +872,6 @@ const StudentDashboard: React.FC = () => {
       window.clearTimeout(dynamicPairTimeoutRef.current);
     }
 
-    setFirstDynamicArmActive(false);
     dynamicPairFirstTokenRef.current = raw;
     dynamicPairFirstPayloadRef.current = payload;
     dynamicPairFirstCapturedAtRef.current = Date.now();
@@ -1004,7 +998,7 @@ const StudentDashboard: React.FC = () => {
       return;
     }
 
-    const pair = await openDynamicPairScanner(false);
+    const pair = await openDynamicPairScanner();
     if (!pair) {
       pendingQrPairRef.current = null;
       setScanStep("IDLE");

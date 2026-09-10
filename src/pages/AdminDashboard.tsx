@@ -726,7 +726,11 @@ const AdminDashboard: React.FC = () => {
       const rawLink = res.link || (token
         ? `${window.location.origin}/register?token=${token}&role=${genType}`
         : "");
-      const nextLink = token ? resolveRegistrationLink(genType, token, rawLink) : rawLink;
+      const nextLink = token
+        ? typeof resolveRegistrationLink === "function"
+          ? resolveRegistrationLink(genType, token, rawLink)
+          : rawLink
+        : rawLink;
 
       if (!token || !nextLink) {
         setGenError("Server did not return a token.");
