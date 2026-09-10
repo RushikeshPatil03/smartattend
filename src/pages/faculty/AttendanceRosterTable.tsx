@@ -464,7 +464,10 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
   const [deleteConfirmSession, setDeleteConfirmSession] = useState<{
     sessionId: string;
     dateLabel: string;
+    presentCount: number;
   } | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [showDiscardWarning, setShowDiscardWarning] = useState(false);
   const [isSavingChanges, setIsSavingChanges] = useState(false);
   const [isDeletingSession, setIsDeletingSession] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -481,6 +484,7 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
   useEffect(() => {
     setStagedChanges(new Map());
     setActiveHeaderMenuSessionId(null);
+    setShowDiscardWarning(false);
   }, [sheetFilters.subjectId, sheetRows]);
 
   // Toggle cell handler:
@@ -529,6 +533,7 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
   const handleConfirmDeleteSession = async () => {
     if (!deleteConfirmSession) return;
     setIsDeletingSession(true);
+    setDeleteError(null);
     try {
       await apiClient.cancelSession(deleteConfirmSession.sessionId);
       setStagedChanges((prev) => {
@@ -541,10 +546,11 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
         return next;
       });
       setDeleteConfirmSession(null);
+      setDeleteError(null);
       // Re-fetch fresh sheet data bypassing any client-side cache
       await onLoadSheet(true);
     } catch (err: any) {
-      alert(err?.message || "Failed to delete session");
+      setDeleteError(err?.message || "Failed to delete session. Please try again.");
     } finally {
       setIsDeletingSession(false);
     }
@@ -563,16 +569,25 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
         status: status === "P" ? ("present" as const) : ("absent" as const),
       };
     });
+    const batchStartedAt = new Date().toISOString();
     try {
       const res: any = await apiClient.batchUpdateMatrixAttendance({
         subjectId: sheetFilters.subjectId,
         updates,
+        batchStartedAt,
       });
       if (!res?.ok) throw new Error(res?.error || "Batch update failed");
       // Auto refresh matrix with force=true to bypass client cache and pull fresh database state
       await onLoadSheet(true);
       // Clear staged changes after fresh sheet is loaded
       setStagedChanges(new Map());
+
+      if (res?.skippedCount > 0) {
+        setSaveError(
+          `${res.skippedCount} record(s) could not be saved (students not found in system). ` +
+          `Changes saved: ${res.modifiedCount}.`
+        );
+      }
     } catch (err: any) {
       setSaveError(err?.message || "Failed to commit attendance updates.");
     } finally {
@@ -711,11 +726,8 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
                 onChange={(e) => {
                   const nextMode = e.target.value as "view" | "edit";
                   if (nextMode === "view" && stagedChanges.size > 0) {
-                    const confirmDiscard = window.confirm(
-                      `You have ${stagedChanges.size} unsaved attendance changes. Discard them and return to View mode?`
-                    );
-                    if (!confirmDiscard) return;
-                    setStagedChanges(new Map());
+                    setShowDiscardWarning(true);
+                    return;
                   }
                   setTableMode(nextMode);
                 }}
@@ -746,6 +758,36 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
             </button>
           </div>
         </div>
+
+        {/* Inline Discard Warning Banner */}
+        {showDiscardWarning && (
+          <div className="mb-3 flex items-center justify-between gap-3 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs font-semibold text-amber-900 animate-in slide-in-from-top-2">
+            <span>
+              ⚠️ You have <strong>{stagedChanges.size}</strong> unsaved change
+              {stagedChanges.size > 1 ? "s" : ""}. Discard and switch to View mode?
+            </span>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowDiscardWarning(false)}
+                className="rounded-xl border border-amber-300 bg-white px-3 py-1.5 text-xs font-bold text-amber-800 hover:bg-amber-100 transition cursor-pointer"
+              >
+                Keep Editing
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setStagedChanges(new Map());
+                  setTableMode("view");
+                  setShowDiscardWarning(false);
+                }}
+                className="rounded-xl bg-amber-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-amber-500 transition cursor-pointer"
+              >
+                Discard Changes
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Interactive Edit Mode Guidance Banner */}
         {tableMode === "edit" && (
@@ -1025,7 +1067,11 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
                                 type="button"
                                 onClick={() => {
                                   setActiveHeaderMenuSessionId(null);
-                                  setDeleteConfirmSession({ sessionId, dateLabel: dateLabel || sessionId });
+                                  const colStr = sheetColumns.find((c) => c.split("::")[0] === sessionId);
+                                  const presentCount = colStr
+                                    ? sheetRows.filter((r) => r.attendance[colStr] === "P").length
+                                    : 0;
+                                  setDeleteConfirmSession({ sessionId, dateLabel: dateLabel || sessionId, presentCount });
                                 }}
                                 className="w-full flex items-center gap-2 px-3 py-2 text-xs font-bold text-rose-600 hover:bg-rose-50 rounded-xl transition cursor-pointer"
                               >
@@ -1147,14 +1193,26 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
             </div>
             <p className="text-xs text-slate-600 mb-4 leading-relaxed">
               Are you sure you want to permanently delete the session for{" "}
-              <strong>{deleteConfirmSession.dateLabel || deleteConfirmSession.sessionId}</strong>?
-              This action will permanently delete all attendance records associated with this session. This cannot be undone.
+              <strong>{deleteConfirmSession.dateLabel || deleteConfirmSession.sessionId}</strong>?{" "}
+              This will permanently delete {deleteConfirmSession.presentCount > 0
+                ? `${deleteConfirmSession.presentCount} student attendance record${deleteConfirmSession.presentCount > 1 ? "s" : ""} marked Present`
+                : "all attendance records (no students marked present yet)"
+              } for this session. This cannot be undone.
             </p>
+            {deleteError && (
+              <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs font-semibold text-rose-700 flex items-center gap-2">
+                <AlertTriangle size={13} className="shrink-0 text-rose-500" />
+                <span>{deleteError}</span>
+              </div>
+            )}
             <div className="flex justify-end gap-2.5">
               <button
                 type="button"
                 disabled={isDeletingSession}
-                onClick={() => setDeleteConfirmSession(null)}
+                onClick={() => {
+                  setDeleteConfirmSession(null);
+                  setDeleteError(null);
+                }}
                 className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 transition cursor-pointer"
               >
                 Cancel

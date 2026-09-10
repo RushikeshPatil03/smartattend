@@ -1,6 +1,11 @@
 const express = require("express");
 const router = express.Router();
-const bcrypt = require("bcryptjs");
+let bcrypt;
+try {
+  bcrypt = require("bcrypt");
+} catch {
+  bcrypt = require("bcryptjs");
+}
 
 const { getSupabaseClient } = require("../config/supabase");
 const {
@@ -1439,6 +1444,36 @@ router.post("/session/start", authMiddleware, async (req, res) => {
   } catch (err) {
     console.error("Session start error:", err);
     return res.status(500).json({ ok: false, error: "Server error" });
+  }
+});
+
+// ----------------------------------------------------
+// SESSION STATUS CHECK (LIGHTWEIGHT AUTO-EXPIRY DETECTOR)
+// GET /api/faculty/sessions/:id/status
+// ----------------------------------------------------
+router.get(["/sessions/:id/status", "/session/:id/status"], authMiddleware, async (req, res) => {
+  try {
+    const sessionId = String(req.params.id);
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
+
+    const { data: session, error } = await supabase
+      .from("sessions")
+      .select("id, is_active")
+      .eq("id", sessionId)
+      .single();
+
+    if (error || !session) {
+      return res.json({ ok: true, isActive: false, sessionId });
+    }
+
+    return res.json({
+      ok: true,
+      isActive: Boolean(session.is_active),
+      sessionId,
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err?.message || "Server error" });
   }
 });
 

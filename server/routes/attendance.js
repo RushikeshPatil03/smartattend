@@ -31,6 +31,16 @@ const sessionInflightPromises = new Map();
 const ACTIVE_SESSION_CACHE_TTL_MS = 5000;
 const ACTIVE_SESSION_CACHE_MAX_SIZE = 200;
 
+const sessionTouchThrottleMs = new Map(); // sessionId -> lastTouchedTimestamp
+const TOUCH_THROTTLE_MS = 30_000; // 30 seconds
+
+function throttledTouchSession(sessionId) {
+  const last = sessionTouchThrottleMs.get(String(sessionId)) || 0;
+  if (Date.now() - last < TOUCH_THROTTLE_MS) return Promise.resolve(null);
+  sessionTouchThrottleMs.set(String(sessionId), Date.now());
+  return touchSession(sessionId);
+}
+
 function setCachedSession(sid, session) {
   if (activeSessionsMemoryCache.size >= ACTIVE_SESSION_CACHE_MAX_SIZE) {
     const oldestKey = activeSessionsMemoryCache.keys().next().value;
@@ -44,7 +54,9 @@ function setCachedSession(sid, session) {
 
 function invalidateCachedSession(sessionId) {
   if (sessionId) {
-    activeSessionsMemoryCache.delete(String(sessionId));
+    const sid = String(sessionId);
+    activeSessionsMemoryCache.delete(sid);
+    sessionTouchThrottleMs.delete(sid);
   }
 }
 
@@ -128,11 +140,21 @@ function cleanupExpiredActiveSessions() {
   }
 }
 
-// Background cleanup interval (sweeps orphaned grants and expired sessions every 60s)
+function cleanupExpiredSessionTouches() {
+  const now = Date.now();
+  for (const [key, lastTouched] of sessionTouchThrottleMs.entries()) {
+    if (now - Number(lastTouched || 0) > 10 * 60 * 1000) {
+      sessionTouchThrottleMs.delete(key);
+    }
+  }
+}
+
+// Background cleanup interval (sweeps orphaned grants, expired sessions, and stale touches every 60s)
 const memoryStoresCleanupInterval = setInterval(() => {
   try {
     cleanupExpiredScanGrants();
     cleanupExpiredActiveSessions();
+    cleanupExpiredSessionTouches();
   } catch (err) {
     console.warn("Memory store cleanup warning:", err?.message || err);
   }
@@ -684,7 +706,7 @@ const handleMarkAttendance = async (req, res) => {
       });
 
       // 2. Fire side effects asynchronously (non-blocking) with error handlers
-      touchSession(sessionId).catch((err) => {
+      throttledTouchSession(sessionId).catch((err) => {
         console.warn("Background touchSession warning:", err?.message || err);
       });
 
@@ -1219,6 +1241,10 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
       .order("timestamp", { ascending: false })
       .limit(500);
 
+    if (year) query = query.eq("year", Number(year));
+    if (semester) query = query.eq("semester", Number(semester));
+    if (section) query = query.eq("section", String(section).toUpperCase());
+    if (departmentId) query = query.eq("department_code", String(departmentId));
     if (req.userRole === "FACULTY") query = query.eq("faculty", req.userId);
     if (studentId) query = query.eq("student", String(studentId));
     if (req.userRole === "STUDENT") query = query.eq("student", req.userId);
@@ -1251,6 +1277,10 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
         .order("timestamp", { ascending: false })
         .limit(500);
 
+      if (year) baseQuery = baseQuery.eq("year", Number(year));
+      if (semester) baseQuery = baseQuery.eq("semester", Number(semester));
+      if (section) baseQuery = baseQuery.eq("section", String(section).toUpperCase());
+      if (departmentId) baseQuery = baseQuery.eq("department_code", String(departmentId));
       if (req.userRole === "FACULTY") baseQuery = baseQuery.eq("faculty", req.userId);
       if (studentId) baseQuery = baseQuery.eq("student", String(studentId));
       if (req.userRole === "STUDENT") baseQuery = baseQuery.eq("student", req.userId);
@@ -1295,21 +1325,7 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
     const facultyMap = new Map((facultyRes.data || []).map((f) => [String(f.id), f]));
     const studentMap = new Map((studentRes.data || []).map((s) => [String(s.id), s]));
 
-    const filtered = attendancesList.filter((item) => {
-      const sess = sessionMap.get(String(item.session));
-      const effectiveYear = sess?.year ?? item.year;
-      const effectiveSem = sess?.semester ?? item.semester;
-      const effectiveSec = sess?.section ?? item.section;
-      const effectiveDept = sess?.department ?? item.department_code;
-
-      if (year && Number(effectiveYear) !== Number(year)) return false;
-      if (semester && Number(effectiveSem) !== Number(semester)) return false;
-      if (section && String(effectiveSec || "").toUpperCase() !== String(section).toUpperCase()) return false;
-      if (departmentId && String(effectiveDept || "") !== String(departmentId)) return false;
-      return true;
-    });
-
-    const records = filtered.map((item) => {
+    const records = attendancesList.map((item) => {
       const stu = studentMap.get(String(item.student));
       const subj = subjectMap.get(String(item.subject));
       const fac = facultyMap.get(String(item.faculty));
@@ -1546,7 +1562,7 @@ async function handleTotpAttendanceSubmission(req, res) {
     await recordInstantPresence(sessionId, student.id);
 
     // Asynchronous non-blocking background tasks
-    touchSession(sessionId).catch(() => {});
+    throttledTouchSession(sessionId).catch(() => {});
 
     try {
       const requestMeta = getRequestMeta(req);
@@ -1723,7 +1739,7 @@ async function handleManualAttendance(req, res) {
 
     const { data: session } = await supabase
       .from("sessions")
-      .select("id, faculty, subject, department, year, semester, section, subj:subjects(id, name, code, created_by_admin, departments)")
+      .select("id, faculty, subject, department, year, semester, section, subj:subjects(id, name, code, created_by_admin, departments, allotted_faculties)")
       .eq("id", String(sessionId))
       .single();
 
@@ -1733,17 +1749,11 @@ async function handleManualAttendance(req, res) {
 
     if (req.userRole === "FACULTY") {
       const isDirectFaculty = String(session.faculty) === String(req.userId);
-      let isSubjectAllotted = false;
-      if (!isDirectFaculty) {
-        const { data: subj } = await supabase
-          .from("subjects")
-          .select("allotted_faculties")
-          .eq("id", String(session.subject))
-          .single();
-        isSubjectAllotted =
-          Array.isArray(subj?.allotted_faculties) &&
-          subj.allotted_faculties.some((f) => String(f) === String(req.userId));
-      }
+      const isSubjectAllotted =
+        !isDirectFaculty &&
+        Array.isArray(session.subj?.allotted_faculties) &&
+        session.subj.allotted_faculties.some((f) => String(f) === String(req.userId));
+
       if (!isDirectFaculty && !isSubjectAllotted) {
         return res.status(403).json({ ok: false, error: "Forbidden: Not allotted to this session" });
       }
@@ -1907,7 +1917,7 @@ router.post("/session/:id/manual", auth(["FACULTY", "ADMIN"]), handleManualAtten
 // ----------------------------------------------------
 router.post("/matrix/batch-update", auth(["FACULTY", "ADMIN"]), async (req, res) => {
   try {
-    const { updates = [], subjectId } = req.body || {};
+    const { updates = [], subjectId, batchStartedAt } = req.body || {};
 
     if (!Array.isArray(updates) || updates.length === 0) {
       return res.status(400).json({ ok: false, error: "No updates provided" });
@@ -1934,16 +1944,14 @@ router.post("/matrix/batch-update", auth(["FACULTY", "ADMIN"]), async (req, res)
 
     const sessionLookup = new Map(validSessions.map((s) => [String(s.id), s]));
 
-    // 2. Fetch student IDs matching enrollment numbers (case-insensitive fallback)
+    // 2. Fetch student IDs matching enrollment numbers (standardized uppercase)
     const rawEnrollmentNos = [...new Set(updates.map((u) => String(u.enrollmentNo).trim()).filter(Boolean))];
-    const upperEnrollmentNos = [...new Set(rawEnrollmentNos.map((e) => e.toUpperCase()))];
-    const lowerEnrollmentNos = [...new Set(rawEnrollmentNos.map((e) => e.toLowerCase()))];
-    const lookupVariants = [...new Set([...rawEnrollmentNos, ...upperEnrollmentNos, ...lowerEnrollmentNos])];
+    const upperEnrollmentNos = [...new Set(rawEnrollmentNos.map((e) => String(e).trim().toUpperCase()))];
 
     const { data: students, error: stuErr } = await supabase
       .from("students")
       .select("id, enrollment_no, name, email, department")
-      .in("enrollment_no", lookupVariants);
+      .in("enrollment_no", upperEnrollmentNos);
 
     if (stuErr || !students) throw stuErr || new Error("Failed to lookup students");
 
@@ -1951,8 +1959,6 @@ router.post("/matrix/batch-update", auth(["FACULTY", "ADMIN"]), async (req, res)
     students.forEach((s) => {
       if (s.enrollment_no) {
         studentLookup.set(String(s.enrollment_no).trim().toUpperCase(), s);
-        studentLookup.set(String(s.enrollment_no).trim().toLowerCase(), s);
-        studentLookup.set(String(s.enrollment_no).trim(), s);
       }
       if (s.id) {
         studentLookup.set(String(s.id), s);
@@ -1960,6 +1966,7 @@ router.post("/matrix/batch-update", auth(["FACULTY", "ADMIN"]), async (req, res)
     });
 
     // 3. Separate into Present (Upserts) and Absent (Deletions)
+    const skippedItems = [];
     const presentPayloads = [];
     const absentPairs = []; // { sessionId, studentId, enrollmentNo }
 
@@ -1967,9 +1974,16 @@ router.post("/matrix/batch-update", auth(["FACULTY", "ADMIN"]), async (req, res)
       const sid = String(item.sessionId);
       const eno = String(item.enrollmentNo).trim();
       const sess = sessionLookup.get(sid);
-      const stu = studentLookup.get(eno.toUpperCase()) || studentLookup.get(eno.toLowerCase()) || studentLookup.get(eno);
+      const stu = studentLookup.get(String(eno).trim().toUpperCase()) || studentLookup.get(String(eno));
 
-      if (!sess || !stu) continue;
+      if (!sess) {
+        skippedItems.push({ enrollmentNo: eno, sessionId: sid, reason: "session_not_found" });
+        continue;
+      }
+      if (!stu) {
+        skippedItems.push({ enrollmentNo: eno, sessionId: sid, reason: "student_not_found" });
+        continue;
+      }
 
       const isPres = item.status === "present" || item.status === "P";
       if (isPres) {
@@ -2019,21 +2033,25 @@ router.post("/matrix/batch-update", auth(["FACULTY", "ADMIN"]), async (req, res)
       if (upsertErr) throw upsertErr;
     }
 
-    // 4b. Delete absent records
+    // 4b. Delete absent records (Grouped batch DELETE with timestamp cutoff guard)
+    const absentBySession = new Map();
     for (const pair of absentPairs) {
+      if (!absentBySession.has(pair.sessionId)) absentBySession.set(pair.sessionId, []);
+      absentBySession.get(pair.sessionId).push(pair);
+    }
+
+    const batchCutoff = batchStartedAt
+      ? new Date(batchStartedAt).toISOString()
+      : new Date(Date.now() - 30_000).toISOString();
+
+    for (const [sid, pairs] of absentBySession) {
+      const studentIds = pairs.map((p) => p.studentId);
       await supabase
         .from("attendances")
         .delete()
-        .eq("session", pair.sessionId)
-        .eq("student", pair.studentId);
-
-      if (pair.enrollmentNo) {
-        await supabase
-          .from("attendances")
-          .delete()
-          .eq("session", pair.sessionId)
-          .ilike("enrollment_no", pair.enrollmentNo);
-      }
+        .eq("session", sid)
+        .in("student", studentIds)
+        .lt("timestamp", batchCutoff);
     }
 
     // 5. Invalidate caches for all affected sessions
@@ -2043,9 +2061,11 @@ router.post("/matrix/batch-update", auth(["FACULTY", "ADMIN"]), async (req, res)
 
     return res.json({
       ok: true,
-      modifiedCount: updates.length,
+      modifiedCount: presentPayloads.length + absentPairs.length,
       presentUpserted: presentPayloads.length,
       absentDeleted: absentPairs.length,
+      skippedCount: skippedItems.length,
+      skipped: skippedItems,
     });
   } catch (err) {
     console.error("Matrix batch update error:", err);
@@ -2075,12 +2095,14 @@ router.delete("/session/:id", auth(["FACULTY", "ADMIN"]), async (req, res) => {
     // Invalidate session cache
     invalidateCachedSession(sessionId);
 
-    // Clean dependent records in safe foreign-key order
-    try { await supabase.from("attendance_audits").delete().eq("session", sessionId); } catch {}
-    try { await supabase.from("scan_grants").delete().eq("session_id", sessionId); } catch {}
-    try { await supabase.from("qr_states").delete().eq("session_id", sessionId); } catch {}
-    try { await supabase.from("totp_secrets").delete().eq("session_id", sessionId); } catch {}
-    try { await supabase.from("attendances").delete().eq("session", sessionId); } catch {}
+    // Clean dependent records in parallel before deleting the parent session
+    await Promise.allSettled([
+      supabase.from("attendance_audits").delete().eq("session", sessionId),
+      supabase.from("scan_grants").delete().eq("session_id", sessionId),
+      supabase.from("qr_states").delete().eq("session_id", sessionId),
+      supabase.from("totp_secrets").delete().eq("session_id", sessionId),
+      supabase.from("attendances").delete().eq("session", sessionId),
+    ]);
 
     const { error: delErr } = await supabase.from("sessions").delete().eq("id", sessionId);
     if (delErr) {

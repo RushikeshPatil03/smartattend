@@ -102,6 +102,7 @@ interface IsolatedRotatingQrEngineProps {
   isActive: boolean;
   size?: number;
   isProjector?: boolean;
+  onSessionExpired?: () => void;
 }
 
 interface AttendanceProgressRingProps {
@@ -427,6 +428,7 @@ const IsolatedRotatingQrEngine: React.FC<IsolatedRotatingQrEngineProps> = React.
   isActive,
   size = 300,
   isProjector = false,
+  onSessionExpired,
 }) => {
   const [currentToken, setCurrentToken] = useState<string>("");
   const [timeLeft, setTimeLeft] = useState<number>(2);
@@ -513,6 +515,19 @@ const IsolatedRotatingQrEngine: React.FC<IsolatedRotatingQrEngineProps> = React.
     return () => clearInterval(interval);
   }, [isActive]);
 
+  useEffect(() => {
+    if (!isActive || !sessionId) return;
+    const interval = setInterval(async () => {
+      try {
+        const res: any = await apiClient.getSessionStatus(sessionId);
+        if (res?.ok && !res.isActive) {
+          onSessionExpired?.();
+        }
+      } catch {}
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, [sessionId, isActive, onSessionExpired]);
+
   if (!isActive) {
     return (
       <div className="flex flex-col items-center justify-center p-8 text-center text-slate-400">
@@ -588,7 +603,19 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [atRiskStudents, setAtRiskStudents] = useState<any[]>([]);
   const [atRiskLoading, setAtRiskLoading] = useState(false);
+  const [sessionAutoExpired, setSessionAutoExpired] = useState(false);
+  const [sessionSummary, setSessionSummary] = useState<{
+    presentCount: number;
+    totalStudents: number;
+    durationMinutes: number;
+    subjectName: string;
+  } | null>(null);
+  const [summaryCountdown, setSummaryCountdown] = useState<number>(4);
   const fullscreenContainerRef = useRef<HTMLDivElement | null>(null);
+
+  const handleSessionExpired = useCallback(() => {
+    setSessionAutoExpired(true);
+  }, []);
 
   const sessionId = String(activeSession?.id || activeSession?._id || "");
   const classCode = String(selectedSubject?.code || selectedSubject?.name || sessionId).slice(0, 12);
@@ -772,6 +799,43 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
       second: "2-digit",
     });
   }, [activeSession?.startTime]);
+
+  // Capture summary before returning to setup card (Fix S4)
+  const handleFinalizeAndStop = () => {
+    const pCount = liveAttendance?.filter((a: any) => (a.status || "").toLowerCase() === "present").length || presentCount || 0;
+    const tStudents = totalCount || liveAttendance?.length || effectiveTotalStudents || 0;
+    const rawStart = activeSession?.start_time || activeSession?.startTime;
+    const startMs = rawStart ? new Date(rawStart).getTime() : Date.now();
+    const durationMinutes = Math.max(1, Math.round((Date.now() - startMs) / 60000));
+    setSessionSummary({
+      presentCount: pCount,
+      totalStudents: tStudents,
+      durationMinutes,
+      subjectName: selectedSubject?.name || "Session",
+    });
+  };
+
+  const handleDismissSummary = () => {
+    setSessionSummary(null);
+    onStopSession();
+  };
+
+  useEffect(() => {
+    if (!sessionSummary) return;
+    setSummaryCountdown(4);
+    const interval = setInterval(() => {
+      setSummaryCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          setSessionSummary(null);
+          onStopSession();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [sessionSummary, onStopSession]);
 
   // Handle Stop Session -> Immediately stop session on server (stops QR generation and student scanning) and enter Review Mode with full roster
   const handleEnterReviewMode = async () => {
@@ -959,6 +1023,92 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
 
   return (
     <div className="space-y-6">
+      {/* ── Session Complete Summary Overlay (Fix S4) ─────────────────────────── */}
+      {sessionSummary && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-md p-4 animate-in fade-in duration-200">
+          <div className="w-full max-w-md rounded-[32px] border border-white/20 bg-gradient-to-b from-slate-900 via-slate-900/95 to-slate-950 p-6 sm:p-8 text-white shadow-2xl relative overflow-hidden animate-in zoom-in-95 duration-200">
+            {/* Ambient emerald blur */}
+            <div className="absolute -top-12 -right-12 h-44 w-44 rounded-full bg-emerald-500/20 blur-3xl pointer-events-none" />
+            <div className="absolute -bottom-12 -left-12 h-44 w-44 rounded-full bg-teal-500/15 blur-3xl pointer-events-none" />
+
+            <div className="relative z-10 flex flex-col items-center text-center">
+              {/* Emerald Success Icon */}
+              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 shadow-[0_0_30px_rgba(16,185,129,0.35)] mb-4">
+                <CheckCircle2 size={32} />
+              </div>
+
+              <span className="text-xs font-mono font-bold text-emerald-400 uppercase tracking-widest mb-1">
+                {sessionSummary.subjectName}
+              </span>
+              <h3 className="text-2xl font-black tracking-tight text-white mb-6">
+                Session Ended
+              </h3>
+
+              {/* 3 Stat Cards */}
+              <div className="grid grid-cols-3 gap-3 w-full mb-6">
+                <div className="rounded-2xl bg-white/5 border border-white/10 p-3 flex flex-col items-center">
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 mb-1">
+                    Present
+                  </span>
+                  <span className="text-xl font-mono font-black text-emerald-400">
+                    {sessionSummary.presentCount}
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-mono">
+                    / {sessionSummary.totalStudents}
+                  </span>
+                </div>
+
+                <div className="rounded-2xl bg-white/5 border border-white/10 p-3 flex flex-col items-center">
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 mb-1">
+                    Turnout
+                  </span>
+                  <span className="text-xl font-mono font-black text-teal-300">
+                    {sessionSummary.totalStudents > 0
+                      ? Math.round((sessionSummary.presentCount / sessionSummary.totalStudents) * 100)
+                      : 0}%
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-mono">
+                    Quorum
+                  </span>
+                </div>
+
+                <div className="rounded-2xl bg-white/5 border border-white/10 p-3 flex flex-col items-center">
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 mb-1">
+                    Duration
+                  </span>
+                  <span className="text-xl font-mono font-black text-indigo-300">
+                    {sessionSummary.durationMinutes}
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-mono">
+                    min
+                  </span>
+                </div>
+              </div>
+
+              {/* Countdown Progress & Close Button */}
+              <div className="w-full flex flex-col gap-3">
+                <button
+                  type="button"
+                  onClick={handleDismissSummary}
+                  className="w-full py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-500 active:scale-98 transition font-bold text-xs text-white shadow-lg cursor-pointer"
+                >
+                  Close & Continue
+                </button>
+                <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
+                  <span>Auto-closing in {summaryCountdown}s</span>
+                  <div className="w-24 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-emerald-400 transition-all duration-1000 ease-linear"
+                      style={{ width: `${(summaryCountdown / 4) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Fullscreen Ambient Projector HUD */}
       {isFullscreen && (
         <div
@@ -1055,9 +1205,10 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                 sessionId={sessionId}
                 sessionSecretKey={sessionSecretKey}
                 classCode={classCode}
-                isActive={!isReviewMode}
+                isActive={!isReviewMode && !sessionAutoExpired}
                 size={460}
                 isProjector={true}
+                onSessionExpired={handleSessionExpired}
               />
 
               <div className="mt-6 text-center">
@@ -1167,7 +1318,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                 <motion.button
                   whileTap={{ scale: 0.98 }}
                   type="button"
-                  onClick={onStopSession}
+                  onClick={handleFinalizeAndStop}
                   disabled={isCancelling}
                   className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 px-7 py-3 text-sm font-extrabold text-white shadow-[0_12px_28px_-6px_rgba(16,185,129,0.45)] hover:shadow-[0_16px_36px_-6px_rgba(16,185,129,0.55)] hover:brightness-105 active:scale-[0.98] transition duration-200 cursor-pointer disabled:opacity-50"
                 >
@@ -1680,13 +1831,30 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
 
                 {/* QR Studio Presentation with Enlarged High-Contrast QR */}
                 <div className="my-6 w-full flex flex-col items-center justify-center">
+                  {sessionAutoExpired && (
+                    <div className="mb-4 w-full max-w-[360px] rounded-2xl border border-rose-300 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-800 flex items-center justify-between gap-3 animate-in fade-in">
+                      <div className="flex items-center gap-2">
+                        <AlertTriangle size={16} className="text-rose-600 shrink-0" />
+                        <span>Session auto-ended due to inactivity. Students can no longer scan.</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleEnterReviewMode}
+                        className="px-3 py-1 text-xs font-bold text-white bg-rose-600 rounded-xl hover:bg-rose-500 transition cursor-pointer shrink-0"
+                      >
+                        Review
+                      </button>
+                    </div>
+                  )}
+
                   <IsolatedRotatingQrEngine
                     sessionId={sessionId}
                     sessionSecretKey={sessionSecretKey}
                     classCode={classCode}
-                    isActive={!isReviewMode}
+                    isActive={!isReviewMode && !sessionAutoExpired}
                     size={330}
                     isProjector={false}
+                    onSessionExpired={handleSessionExpired}
                   />
                 </div>
 

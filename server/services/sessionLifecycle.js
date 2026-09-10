@@ -3,7 +3,7 @@ const { getSupabaseClient } = require("../config/supabase");
 const INACTIVITY_SECONDS = Number(process.env.SESSION_INACTIVITY_SECONDS || 600);
 
 function isExpiredByInactivity(session) {
-  if (!session || !session.is_active && !session.isActive) return false;
+  if (!session || !(session.is_active || session.isActive)) return false;
   const lastTime =
     session.last_activity_at ||
     session.lastActivityAt ||
@@ -38,7 +38,7 @@ async function expireIfInactive(session) {
       })
       .eq("id", sessionId)
       .eq("is_active", true)
-      .select("*")
+      .select("id, is_active, end_time, last_activity_at, updated_at, start_time, faculty, subject, department, year, semester, section")
       .single();
 
     if (data) {

@@ -68,7 +68,7 @@ async function getRefreshRecord(jti) {
     try {
       const { data, error } = await supabase
         .from("refresh_tokens")
-        .select("*")
+        .select("jti, user_id, role, token_hash, expires_at, created_at")
         .eq("jti", String(jti))
         .single();
 
@@ -116,6 +116,9 @@ async function issueTokenPair(user, role) {
     _id: userId,
     role,
     email: user.email,
+    name: user.name || "",
+    enrollmentNo: user.enrollment_no || user.enrollmentNo || null,
+    createdByAdmin: user.created_by_admin || user.createdByAdmin || null,
     type: "refresh",
     jti,
   };

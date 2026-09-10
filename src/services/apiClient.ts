@@ -375,6 +375,9 @@ class ApiClient {
   cancelSession = (id: string) =>
     this.post(`/api/faculty/session/${id}/cancel`);
 
+  getSessionStatus = (id: string) =>
+    this.get(`/api/faculty/sessions/${encodeURIComponent(id)}/status`);
+
   getLiveQR = (sessionId: string) =>
     this.get(`/api/faculty/session/${sessionId}/qr`);
   getFacultySubjectAnalytics = (
@@ -471,6 +474,7 @@ class ApiClient {
       status: "present" | "absent";
     }>;
     subjectId?: string;
+    batchStartedAt?: string;
   }) => this.post("/api/attendance/matrix/batch-update", data);
 
   deleteAttendanceSession = (sessionId: string) =>

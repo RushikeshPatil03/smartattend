@@ -1,7 +1,47 @@
 const express = require("express");
 const router = express.Router();
 const jwt = require("jsonwebtoken");
-const bcrypt = require("bcryptjs");
+let bcrypt;
+try {
+  bcrypt = require("bcrypt");
+} catch {
+  bcrypt = require("bcryptjs");
+}
+
+const STUDENT_AUTH_SELECT =
+  "id, name, email, password_hash, device_fingerprint, device_lock_enabled, enrollment_no, college_name, profile_photo_url, created_by_admin";
+
+const FACULTY_AUTH_SELECT =
+  "id, name, email, password_hash, device_fingerprint, device_lock_enabled, college_name, profile_photo_url, created_by_admin";
+
+const ADMIN_AUTH_SELECT =
+  "id, name, email, password_hash, college_name, profile_photo_url";
+
+const adminCollegeCache = new Map();
+const ADMIN_COLLEGE_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+async function getAdminCollege(supabase, adminId) {
+  if (!adminId || !supabase) return null;
+  const key = String(adminId);
+  const cached = adminCollegeCache.get(key);
+  if (cached && Date.now() - cached.cachedAt < ADMIN_COLLEGE_CACHE_TTL_MS) {
+    return cached.data;
+  }
+  try {
+    const { data } = await supabase
+      .from("admins")
+      .select("college_name, profile_photo_url")
+      .eq("id", key)
+      .single();
+    if (data) {
+      adminCollegeCache.set(key, { data, cachedAt: Date.now() });
+      return data;
+    }
+  } catch (err) {
+    console.warn("Failed to fetch admin college profile:", err?.message || err);
+  }
+  return null;
+}
 
 const crypto = require("crypto");
 const { getSupabaseClient } = require("../config/supabase");
@@ -208,13 +248,13 @@ router.post(
       const normalizedEmail = String(email).trim().toLowerCase();
 
       if (roleUpper === "ADMIN") {
-        const { data } = await supabase.from("admins").select("*").eq("email", normalizedEmail).single();
+        const { data } = await supabase.from("admins").select(ADMIN_AUTH_SELECT).eq("email", normalizedEmail).single();
         user = data;
       } else if (roleUpper === "FACULTY") {
-        const { data } = await supabase.from("faculties").select("*").eq("email", normalizedEmail).single();
+        const { data } = await supabase.from("faculties").select(FACULTY_AUTH_SELECT).eq("email", normalizedEmail).single();
         user = data;
       } else if (roleUpper === "STUDENT") {
-        const { data } = await supabase.from("students").select("*").eq("email", normalizedEmail).single();
+        const { data } = await supabase.from("students").select(STUDENT_AUTH_SELECT).eq("email", normalizedEmail).single();
         user = data;
       } else {
         return res.status(400).json({ ok: false, error: "Invalid role" });
@@ -262,10 +302,9 @@ router.post(
 
         if (shouldEnforceDevice && storedFp && fingerprint) {
           const normalizedNew = normalizeFingerprint(fingerprint);
-          const normalizedLegacy = legacyFingerprintHash(fingerprint);
-
           const fingerprintMatch =
-            storedFp === normalizedNew || storedFp === normalizedLegacy;
+            storedFp === normalizedNew ||
+            storedFp === legacyFingerprintHash(fingerprint);
 
           if (!fingerprintMatch) {
             return res.status(401).json({
@@ -293,25 +332,22 @@ router.post(
 
       let collegeName = user.college_name || user.collegeName || null;
       let profilePhotoUrl = user.profile_photo_url || user.profilePhotoUrl || null;
-      const facultyProfilePhotoUrl =
-        roleUpper === "FACULTY" ? String(profilePhotoUrl || "") || null : null;
-      const studentProfilePhotoUrl =
-        roleUpper === "STUDENT" ? String(profilePhotoUrl || "") || null : null;
 
       // Faculty/Student should receive their admin's college profile details
       const adminId = user.created_by_admin || user.createdByAdmin;
       if (roleUpper !== "ADMIN" && adminId) {
-        const { data: adminProfile } = await supabase
-          .from("admins")
-          .select("college_name, profile_photo_url")
-          .eq("id", String(adminId))
-          .single();
-
+        const adminProfile = await getAdminCollege(supabase, adminId);
         if (adminProfile) {
           collegeName = adminProfile.college_name || collegeName || null;
           profilePhotoUrl = adminProfile.profile_photo_url || null;
         }
       }
+
+      const safeProfilePhotoUrl = isDataUrlImage(profilePhotoUrl) ? null : profilePhotoUrl;
+      const facultyProfilePhotoUrl =
+        roleUpper === "FACULTY" ? String(safeProfilePhotoUrl || "") || null : null;
+      const studentProfilePhotoUrl =
+        roleUpper === "STUDENT" ? String(safeProfilePhotoUrl || "") || null : null;
 
       return res.json({
         ok: true,
@@ -326,7 +362,7 @@ router.post(
           role: roleUpper,
           enrollmentNo: roleUpper === "STUDENT" ? user.enrollment_no || user.enrollmentNo || null : null,
           collegeName,
-          profilePhotoUrl,
+          profilePhotoUrl: safeProfilePhotoUrl,
           facultyProfilePhotoUrl,
           studentProfilePhotoUrl,
         },
@@ -357,47 +393,71 @@ router.post("/refresh", async (req, res) => {
 
     let user = null;
     const userId = String(rotation.decoded.id);
+    let collegeName = null;
+    let profilePhotoUrl = null;
 
-    if (role === "ADMIN") {
-      const { data } = await supabase.from("admins").select("*").eq("id", userId).single();
-      user = data;
-    } else if (role === "FACULTY") {
-      const { data } = await supabase.from("faculties").select("*").eq("id", userId).single();
-      user = data;
-    } else if (role === "STUDENT") {
-      const { data } = await supabase.from("students").select("*").eq("id", userId).single();
-      user = data;
+    // Fast path: Token payload contains user identity from issueTokenPair
+    if (rotation.decoded.name) {
+      const adminId = rotation.decoded.createdByAdmin;
+      const adminToFetch = role === "ADMIN" ? userId : adminId;
+      if (adminToFetch) {
+        const adminProfile = await getAdminCollege(supabase, adminToFetch);
+        if (adminProfile) {
+          collegeName = adminProfile.college_name || null;
+          profilePhotoUrl = adminProfile.profile_photo_url || null;
+        }
+      }
+
+      user = {
+        id: userId,
+        _id: userId,
+        name: rotation.decoded.name,
+        email: rotation.decoded.email,
+        enrollment_no: rotation.decoded.enrollmentNo || null,
+        created_by_admin: adminId || null,
+        college_name: collegeName,
+        profile_photo_url: profilePhotoUrl,
+      };
+    } else {
+      // Fallback path: Legacy tokens lacking embedded fields
+      if (role === "ADMIN") {
+        const { data } = await supabase.from("admins").select(ADMIN_AUTH_SELECT).eq("id", userId).single();
+        user = data;
+      } else if (role === "FACULTY") {
+        const { data } = await supabase.from("faculties").select(FACULTY_AUTH_SELECT).eq("id", userId).single();
+        user = data;
+      } else if (role === "STUDENT") {
+        const { data } = await supabase.from("students").select(STUDENT_AUTH_SELECT).eq("id", userId).single();
+        user = data;
+      }
+
+      if (!user) {
+        clearRefreshCookie(res);
+        return res.status(401).json({ ok: false, error: "User not found" });
+      }
+
+      user._id = user.id;
+      collegeName = user.college_name || user.collegeName || null;
+      profilePhotoUrl = user.profile_photo_url || user.profilePhotoUrl || null;
+
+      const adminId = user.created_by_admin || user.createdByAdmin;
+      if (role !== "ADMIN" && adminId) {
+        const adminProfile = await getAdminCollege(supabase, adminId);
+        if (adminProfile) {
+          collegeName = adminProfile.college_name || collegeName || null;
+          profilePhotoUrl = adminProfile.profile_photo_url || null;
+        }
+      }
     }
 
-    if (!user) {
-      clearRefreshCookie(res);
-      return res.status(401).json({ ok: false, error: "User not found" });
-    }
-
-    user._id = user.id;
     const tokens = await rotation.issueFor(user);
     res.cookie("refreshToken", tokens.refreshToken, cookieOptions());
 
-    let collegeName = user.college_name || user.collegeName || null;
-    let profilePhotoUrl = user.profile_photo_url || user.profilePhotoUrl || null;
+    const safeProfilePhotoUrl = isDataUrlImage(profilePhotoUrl) ? null : profilePhotoUrl;
     const facultyProfilePhotoUrl =
-      role === "FACULTY" ? String(profilePhotoUrl || "") || null : null;
+      role === "FACULTY" ? String(safeProfilePhotoUrl || "") || null : null;
     const studentProfilePhotoUrl =
-      role === "STUDENT" ? String(profilePhotoUrl || "") || null : null;
-
-    const adminId = user.created_by_admin || user.createdByAdmin;
-    if (role !== "ADMIN" && adminId) {
-      const { data: adminProfile } = await supabase
-        .from("admins")
-        .select("college_name, profile_photo_url")
-        .eq("id", String(adminId))
-        .single();
-
-      if (adminProfile) {
-        collegeName = adminProfile.college_name || collegeName || null;
-        profilePhotoUrl = adminProfile.profile_photo_url || null;
-      }
-    }
+      role === "STUDENT" ? String(safeProfilePhotoUrl || "") || null : null;
 
     return res.json({
       ok: true,
@@ -412,7 +472,7 @@ router.post("/refresh", async (req, res) => {
         role,
         enrollmentNo: role === "STUDENT" ? user.enrollment_no || user.enrollmentNo || null : null,
         collegeName,
-        profilePhotoUrl,
+        profilePhotoUrl: safeProfilePhotoUrl,
         facultyProfilePhotoUrl,
         studentProfilePhotoUrl,
       },
@@ -435,25 +495,28 @@ router.get("/me", authMiddleware, async (req, res) => {
 
     let collegeName = user.college_name || user.collegeName || null;
     let profilePhotoUrl = user.profile_photo_url || user.profilePhotoUrl || null;
-    const facultyProfilePhotoUrl =
-      roleUpper === "FACULTY" ? String(profilePhotoUrl || "") || null : null;
-    const studentProfilePhotoUrl =
-      roleUpper === "STUDENT" ? String(profilePhotoUrl || "") || null : null;
 
     // Faculty/Student should always receive their admin's latest college profile details
     const adminId = user.created_by_admin || user.createdByAdmin;
     if (roleUpper !== "ADMIN" && adminId) {
-      const { data: adminProfile } = await supabase
-        .from("admins")
-        .select("college_name, profile_photo_url")
-        .eq("id", String(adminId))
-        .single();
-
+      const adminProfile = await getAdminCollege(supabase, adminId);
+      if (adminProfile) {
+        collegeName = adminProfile.college_name || collegeName || null;
+        profilePhotoUrl = adminProfile.profile_photo_url || null;
+      }
+    } else if (roleUpper === "ADMIN") {
+      const adminProfile = await getAdminCollege(supabase, user.id);
       if (adminProfile) {
         collegeName = adminProfile.college_name || collegeName || null;
         profilePhotoUrl = adminProfile.profile_photo_url || null;
       }
     }
+
+    const safeProfilePhotoUrl = isDataUrlImage(profilePhotoUrl) ? null : profilePhotoUrl;
+    const facultyProfilePhotoUrl =
+      roleUpper === "FACULTY" ? String(safeProfilePhotoUrl || "") || null : null;
+    const studentProfilePhotoUrl =
+      roleUpper === "STUDENT" ? String(safeProfilePhotoUrl || "") || null : null;
 
     return res.json({
       ok: true,
@@ -465,7 +528,7 @@ router.get("/me", authMiddleware, async (req, res) => {
         role: roleUpper,
         enrollmentNo: roleUpper === "STUDENT" ? user.enrollment_no || user.enrollmentNo || null : null,
         collegeName,
-        profilePhotoUrl,
+        profilePhotoUrl: safeProfilePhotoUrl,
         facultyProfilePhotoUrl,
         studentProfilePhotoUrl,
         createdByAdmin: adminId || null,
