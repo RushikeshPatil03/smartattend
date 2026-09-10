@@ -24,16 +24,13 @@ import {
 import { Button } from "../../components/Common";
 import { RecentClassPreset } from "./types";
 
-interface SessionSetupCardProps {
-  departments: any[];
-  mySubjects: any[];
-  filteredSubjects: any[];
-  formDepartment: string;
-  formYear: string;
-  formSem: string;
-  formSection: string;
-  formSubject: string;
-  formRadius: string;
+export interface SessionFormState {
+  department: string;
+  year: string;
+  sem: string;
+  section: string;
+  subject: string;
+  radius: string;
   locationState: { lat: number; lng: number } | null;
   isLocationConfirmed: boolean;
   manualLat: string;
@@ -50,13 +47,15 @@ interface SessionSetupCardProps {
   mobileLocateUrl: string;
   capturedLocationLabel: string;
   capturedLocationMapUrl: string;
-  recentClassCards: RecentClassPreset[];
-  setFormDepartment: (val: string) => void;
-  setFormYear: (val: string) => void;
-  setFormSem: (val: string) => void;
-  setFormSection: (val: string) => void;
-  setFormSubject: (val: string) => void;
-  setFormRadius: (val: string) => void;
+}
+
+export interface SessionHandlers {
+  setDepartment: (val: string) => void;
+  setYear: (val: string) => void;
+  setSem: (val: string) => void;
+  setSection: (val: string) => void;
+  setSubject: (val: string) => void;
+  setRadius: (val: string) => void;
   setManualLat: (val: string) => void;
   setManualLng: (val: string) => void;
   onCaptureLocation: () => void;
@@ -65,10 +64,19 @@ interface SessionSetupCardProps {
   onSetManualLocation: () => void;
   onShowManualLocationEditor: () => void;
   onOpenCapturedLocationInMaps: () => void;
-  onApplyRecentClass: (preset: RecentClassPreset) => void;
-  onRemoveRecentClass: (presetKey: string) => void;
   onResetConfirmedLocation: () => void;
   onStartSession: () => Promise<void>;
+}
+
+export interface SessionSetupCardProps {
+  departments: any[];
+  mySubjects: any[];
+  filteredSubjects: any[];
+  form: SessionFormState;
+  handlers: SessionHandlers;
+  recentClassCards: RecentClassPreset[];
+  onApplyRecentClass: (preset: RecentClassPreset) => void;
+  onRemoveRecentClass: (presetKey: string) => void;
 }
 
 const YEAR_OPTIONS = ["1", "2", "3", "4"] as const;
@@ -78,53 +86,18 @@ const SECTION_OPTIONS = ["A", "B", "C", "D"] as const;
 export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
   departments,
   filteredSubjects,
-  formDepartment,
-  formYear,
-  formSem,
-  formSection,
-  formSubject,
-  formRadius,
-  locationState,
-  isLocationConfirmed,
-  manualLat,
-  manualLng,
-  showManualLocation,
-  locating,
-  locationError,
-  sessionError,
-  startLoading,
-  mobileLocateLoading,
-  mobileLocateToken,
-  mobileLocateStatus,
-  mobileLocateExpiresAt,
-  mobileLocateUrl,
-  capturedLocationLabel,
+  form,
+  handlers,
   recentClassCards,
-  setFormDepartment,
-  setFormYear,
-  setFormSem,
-  setFormSection,
-  setFormSubject,
-  setFormRadius,
-  setManualLat,
-  setManualLng,
-  onCaptureLocation,
-  onStartLocateViaMobile,
-  onCloseMobileLocate,
-  onSetManualLocation,
-  onShowManualLocationEditor,
-  onOpenCapturedLocationInMaps,
   onApplyRecentClass,
   onRemoveRecentClass,
-  onResetConfirmedLocation,
-  onStartSession,
 }) => {
   const isFormValid = Boolean(
-    formDepartment &&
-      formSubject &&
-      locationState &&
-      isLocationConfirmed &&
-      Number(formRadius) > 0
+    form.department &&
+      form.subject &&
+      form.locationState &&
+      form.isLocationConfirmed &&
+      Number(form.radius) > 0
   );
 
   return (
@@ -155,13 +128,13 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
           <div className="flex flex-wrap gap-2.5">
             {recentClassCards.map((preset) => {
               const isSelected =
-                Boolean(formDepartment && formSubject) &&
-                String(preset.departmentId) === String(formDepartment) &&
-                String(preset.year) === String(formYear) &&
-                String(preset.semester) === String(formSem) &&
+                Boolean(form.department && form.subject) &&
+                String(preset.departmentId) === String(form.department) &&
+                String(preset.year) === String(form.year) &&
+                String(preset.semester) === String(form.sem) &&
                 String(preset.section || "").trim().toUpperCase() ===
-                  String(formSection || "").trim().toUpperCase() &&
-                String(preset.subjectId) === String(formSubject);
+                  String(form.section || "").trim().toUpperCase() &&
+                String(preset.subjectId) === String(form.subject);
 
               // Formatted chip title, e.g., "CSE-4A • Advanced DB" or "CSE Sec A • DBMS"
               const deptCode = preset.departmentCode || preset.departmentName?.slice(0, 4)?.toUpperCase() || "CLS";
@@ -266,11 +239,11 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
             </label>
             <select
               className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300"
-              value={formDepartment}
+              value={form.department}
               onChange={(e) => {
-                setFormDepartment(e.target.value);
-                setFormSubject("");
-                onResetConfirmedLocation();
+                handlers.setDepartment(e.target.value);
+                handlers.setSubject("");
+                handlers.onResetConfirmedLocation();
               }}
             >
               <option value="">-- Choose Department --</option>
@@ -290,12 +263,12 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
             </label>
             <select
               className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
-              value={formYear}
+              value={form.year}
               onChange={(e) => {
-                setFormYear(e.target.value);
-                onResetConfirmedLocation();
+                handlers.setYear(e.target.value);
+                handlers.onResetConfirmedLocation();
               }}
-              disabled={!formDepartment}
+              disabled={!form.department}
             >
               {YEAR_OPTIONS.map((y) => (
                 <option key={y} value={y}>
@@ -313,12 +286,12 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
             </label>
             <select
               className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
-              value={formSem}
+              value={form.sem}
               onChange={(e) => {
-                setFormSem(e.target.value);
-                onResetConfirmedLocation();
+                handlers.setSem(e.target.value);
+                handlers.onResetConfirmedLocation();
               }}
-              disabled={!formDepartment}
+              disabled={!form.department}
             >
               {SEMESTER_OPTIONS.map((s) => (
                 <option key={s} value={s}>
@@ -336,12 +309,12 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
             </label>
             <select
               className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
-              value={formSection}
+              value={form.section}
               onChange={(e) => {
-                setFormSection(e.target.value);
-                onResetConfirmedLocation();
+                handlers.setSection(e.target.value);
+                handlers.onResetConfirmedLocation();
               }}
-              disabled={!formDepartment}
+              disabled={!form.department}
             >
               {SECTION_OPTIONS.map((sec) => (
                 <option key={sec} value={sec}>
@@ -359,12 +332,12 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
             </label>
             <select
               className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
-              value={formSubject}
+              value={form.subject}
               onChange={(e) => {
-                setFormSubject(e.target.value);
-                onResetConfirmedLocation();
+                handlers.setSubject(e.target.value);
+                handlers.onResetConfirmedLocation();
               }}
-              disabled={!formDepartment}
+              disabled={!form.department}
             >
               <option value="">-- Choose Subject --</option>
               {filteredSubjects.map((s: any) => (
@@ -384,13 +357,13 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
               </span>
               <select
                 className="text-[10px] font-bold text-emerald-700 bg-emerald-50/90 border border-emerald-200/80 rounded-md px-1.5 py-0.5 outline-none hover:bg-emerald-100/80 cursor-pointer disabled:opacity-50"
-                value={["50", "75", "150"].includes(String(formRadius)) ? String(formRadius) : ""}
+                value={["50", "75", "150"].includes(String(form.radius)) ? String(form.radius) : ""}
                 onChange={(e) => {
                   if (e.target.value) {
-                    setFormRadius(e.target.value);
+                    handlers.setRadius(e.target.value);
                   }
                 }}
-                disabled={!formDepartment}
+                disabled={!form.department}
                 title="Select preset range"
               >
                 <option value="" disabled>Presets</option>
@@ -405,9 +378,9 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
               min={5}
               max={1000}
               className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
-              value={formRadius}
-              onChange={(e) => setFormRadius(e.target.value)}
-              disabled={!formDepartment}
+              value={form.radius}
+              onChange={(e) => handlers.setRadius(e.target.value)}
+              disabled={!form.department}
               placeholder="50"
             />
           </div>
@@ -419,12 +392,12 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
             <div className="flex items-center gap-3.5">
               <div
                 className={`flex h-13 w-13 shrink-0 items-center justify-center rounded-2xl border shadow-sm transition-colors duration-300 ${
-                  isLocationConfirmed
+                  form.isLocationConfirmed
                     ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-600 shadow-[0_0_20px_rgba(16,185,129,0.2)]"
                     : "bg-slate-100 border-slate-200 text-slate-400"
                 }`}
               >
-                <Compass className={`h-6 w-6 ${isLocationConfirmed ? "text-emerald-600 animate-pulse" : ""}`} />
+                <Compass className={`h-6 w-6 ${form.isLocationConfirmed ? "text-emerald-600 animate-pulse" : ""}`} />
               </div>
               <div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -432,7 +405,7 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
                     Geofence Boundary & GPS Anchor
                   </h4>
                   {/* Visual Geofence Status Pill: Green badge: GPS Locked (±6m Accuracy) */}
-                  {isLocationConfirmed && locationState ? (
+                  {form.isLocationConfirmed && form.locationState ? (
                     <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 px-3 py-1 text-[10px] font-black text-emerald-800 shadow-2xs animate-in fade-in">
                       <span className="relative flex h-2 w-2">
                         <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
@@ -448,14 +421,14 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
                 </div>
                 <div className="flex flex-wrap items-center gap-2 mt-1">
                   <p className="font-mono text-xs text-slate-600">
-                    {locationState && isLocationConfirmed
-                      ? `Anchor: ${capturedLocationLabel} (±${formRadius}m Geofence)`
+                    {form.locationState && form.isLocationConfirmed
+                      ? `Anchor: ${form.capturedLocationLabel} (±${form.radius}m Geofence)`
                       : "Capture live GPS from laptop browser or beam high-accuracy position from phone."}
                   </p>
-                  {locationState && isLocationConfirmed && (
+                  {form.locationState && form.isLocationConfirmed && (
                     <button
                       type="button"
-                      onClick={onOpenCapturedLocationInMaps}
+                      onClick={handlers.onOpenCapturedLocationInMaps}
                       className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 hover:text-emerald-800 underline decoration-emerald-500/50 underline-offset-2 cursor-pointer ml-1"
                     >
                       <ExternalLink size={12} /> View on Map
@@ -469,11 +442,11 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
             <div className="flex flex-wrap items-center gap-2.5">
               <button
                 type="button"
-                onClick={onCaptureLocation}
-                disabled={locating}
+                onClick={handlers.onCaptureLocation}
+                disabled={form.locating}
                 className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 hover:border-emerald-400 hover:bg-emerald-50/60 transition duration-200 shadow-xs cursor-pointer disabled:opacity-50"
               >
-                {locating ? (
+                {form.locating ? (
                   <>
                     <RefreshCw size={14} className="animate-spin text-emerald-600" />
                     Locking GPS...
@@ -488,18 +461,18 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
 
               <button
                 type="button"
-                onClick={onStartLocateViaMobile}
-                disabled={mobileLocateLoading}
+                onClick={handlers.onStartLocateViaMobile}
+                disabled={form.mobileLocateLoading}
                 className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 hover:border-emerald-400 hover:bg-emerald-50/60 transition duration-200 shadow-xs cursor-pointer disabled:opacity-50"
               >
                 <Smartphone size={14} className="text-teal-600" />
                 Locate via Phone
               </button>
 
-              {locationState && isLocationConfirmed && (
+              {form.locationState && form.isLocationConfirmed && (
                 <button
                   type="button"
-                  onClick={onShowManualLocationEditor}
+                  onClick={handlers.onShowManualLocationEditor}
                   className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition cursor-pointer"
                 >
                   <MapPin size={13} /> Edit
@@ -509,7 +482,7 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
           </div>
 
           {/* Mobile QR Drawer */}
-          {mobileLocateToken && (
+          {form.mobileLocateToken && (
             <motion.div
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: "auto" }}
@@ -527,7 +500,7 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
                 </div>
                 <button
                   type="button"
-                  onClick={onCloseMobileLocate}
+                  onClick={handlers.onCloseMobileLocate}
                   className="text-xs font-bold text-slate-500 hover:text-slate-800 cursor-pointer"
                 >
                   Close
@@ -537,7 +510,7 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
               <div className="mt-3 flex flex-col items-center">
                 <div className="rounded-2xl border-4 border-white bg-white p-3 shadow-lg">
                   <QRCode
-                    value={mobileLocateUrl}
+                    value={form.mobileLocateUrl}
                     size={180}
                     level="M"
                     style={{ width: "100%", maxWidth: 180, height: "auto" }}
@@ -545,11 +518,11 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
                 </div>
                 <p className="mt-2.5 text-xs font-semibold text-emerald-700 text-center flex items-center gap-1.5">
                   <span className="h-2 w-2 rounded-full bg-emerald-500 animate-ping" />
-                  {mobileLocateStatus || "Awaiting GPS beam from phone..."}
+                  {form.mobileLocateStatus || "Awaiting GPS beam from phone..."}
                 </p>
-                {mobileLocateExpiresAt && (
+                {form.mobileLocateExpiresAt && (
                   <p className="text-[10px] text-slate-400 font-mono mt-0.5">
-                    QR expires at {new Date(mobileLocateExpiresAt).toLocaleTimeString()}
+                    QR expires at {new Date(form.mobileLocateExpiresAt).toLocaleTimeString()}
                   </p>
                 )}
               </div>
@@ -557,22 +530,22 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
           )}
 
           {/* Manual Location Inputs */}
-          {showManualLocation && (
+          {form.showManualLocation && (
             <div className="mt-4 pt-4 border-t border-slate-200/80 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
               <input
                 className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-mono"
                 placeholder="Latitude (e.g. 19.0760)"
-                value={manualLat}
-                onChange={(e) => setManualLat(e.target.value)}
+                value={form.manualLat}
+                onChange={(e) => handlers.setManualLat(e.target.value)}
               />
               <input
                 className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-mono"
                 placeholder="Longitude (e.g. 72.8777)"
-                value={manualLng}
-                onChange={(e) => setManualLng(e.target.value)}
+                value={form.manualLng}
+                onChange={(e) => handlers.setManualLng(e.target.value)}
               />
               <Button
-                onClick={onSetManualLocation}
+                onClick={handlers.onSetManualLocation}
                 variant="secondary"
                 className="text-xs rounded-xl"
               >
@@ -583,16 +556,16 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
         </div>
 
         {/* Error Alerts */}
-        {locationError && (
+        {form.locationError && (
           <div className="flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-medium text-rose-700 shadow-xs">
             <AlertCircle size={16} className="shrink-0" />
-            <span>{locationError}</span>
+            <span>{form.locationError}</span>
           </div>
         )}
-        {sessionError && (
+        {form.sessionError && (
           <div className="flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-medium text-rose-700 shadow-xs">
             <AlertCircle size={16} className="shrink-0" />
-            <span>{sessionError}</span>
+            <span>{form.sessionError}</span>
           </div>
         )}
 
@@ -611,11 +584,11 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
           <motion.button
             whileTap={{ scale: 0.98 }}
             type="button"
-            onClick={onStartSession}
-            disabled={!isFormValid || startLoading}
+            onClick={handlers.onStartSession}
+            disabled={!isFormValid || form.startLoading}
             className="w-full sm:w-auto inline-flex items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 px-9 py-3.5 text-sm font-extrabold text-white shadow-[0_12px_28px_-6px_rgba(16,185,129,0.45)] hover:shadow-[0_16px_36px_-6px_rgba(16,185,129,0.55)] hover:brightness-105 active:scale-[0.98] transition duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none cursor-pointer"
           >
-            {startLoading ? (
+            {form.startLoading ? (
               <>
                 <RefreshCw size={18} className="animate-spin" />
                 Initializing Session...

@@ -118,6 +118,7 @@ async function getStudentTodayAttendance(studentId) {
     `)
     .eq("year", Number(student.year))
     .eq("semester", Number(student.semester))
+    .or(`is_active.eq.true,start_time.gte.${start.toISOString()}`)
     .order("start_time", { ascending: true });
 
   const allSessions = Array.isArray(rawSessions) ? rawSessions : [];
@@ -126,10 +127,7 @@ async function getStudentTodayAttendance(studentId) {
     if (sSection && normalizedSection && sSection !== normalizedSection) {
       return false;
     }
-    const isActive = Boolean(s.is_active);
-    if (isActive) return true;
-    if (s.start_time && new Date(s.start_time) >= start) return true;
-    return false;
+    return true;
   });
 
   const eligibleSessions = sessions.filter((session) =>

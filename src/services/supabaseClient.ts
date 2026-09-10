@@ -19,7 +19,7 @@ export function getSupabase(): SupabaseClient {
     clientInstance = createClient(supabaseUrl, supabaseAnonKey, {
       realtime: {
         params: {
-          eventsPerSecond: 20,
+          eventsPerSecond: 2,
         },
       },
       global: {

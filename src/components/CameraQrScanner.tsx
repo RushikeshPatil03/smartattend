@@ -174,7 +174,7 @@ export default function CameraQrScanner({
   const [usingFallback, setUsingFallback] = useState(false);
   const [restartNonce, setRestartNonce] = useState(0);
   const [scanSuccessPulse, setScanSuccessPulse] = useState(false);
-  const [secondsRemaining, setSecondsRemaining] = useState<number | null>(null);
+  const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
 
   const isScanSuccess = scanSuccessPulse || statusTone === "success";
 
@@ -184,22 +184,17 @@ export default function CameraQrScanner({
 
   useEffect(() => {
     if (!faceVerifiedExpiresAt || faceVerifiedExpiresAt <= 0) {
-      setSecondsRemaining(null);
+      setSecondsLeft(null);
       return;
     }
 
-    const checkTimer = () => {
-      const remainingMs = faceVerifiedExpiresAt - Date.now();
-      const remainingSec = Math.max(0, Math.ceil(remainingMs / 1000));
-      setSecondsRemaining(remainingSec);
-
-      if (remainingMs <= 0) {
-        onSessionExpiredRef.current?.();
-      }
+    const updateTimer = () => {
+      const secondsLeft = Math.max(0, Math.ceil((faceVerifiedExpiresAt - Date.now()) / 1000));
+      setSecondsLeft(secondsLeft);
     };
 
-    checkTimer();
-    const interval = window.setInterval(checkTimer, 400);
+    updateTimer();
+    const interval = window.setInterval(updateTimer, 1000);
     return () => window.clearInterval(interval);
   }, [faceVerifiedExpiresAt]);
 
@@ -618,19 +613,6 @@ export default function CameraQrScanner({
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
             <p className="text-sm font-semibold text-white">{title}</p>
-            {secondsRemaining !== null ? (
-              <span
-                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold border transition-colors ${
-                  secondsRemaining <= 5
-                    ? "bg-rose-500/20 text-rose-300 border-rose-500/40 animate-pulse"
-                    : "bg-amber-500/20 text-amber-300 border-amber-500/40"
-                }`}
-                title="Face verification session time remaining"
-              >
-                <Clock size={11} />
-                {secondsRemaining}s
-              </span>
-            ) : null}
           </div>
           <Button variant="secondary" className="px-3 py-1.5 text-xs" onClick={onCancel}>
             Cancel
@@ -638,6 +620,19 @@ export default function CameraQrScanner({
         </div>
 
         <div className="relative rounded-xl overflow-hidden border border-slate-700/80 bg-black min-h-[320px] flex items-center justify-center">
+          {secondsLeft !== null && secondsLeft > 0 && faceVerifiedExpiresAt && faceVerifiedExpiresAt > 0 ? (
+            <div className="pointer-events-none absolute top-3 inset-x-0 z-20 flex justify-center px-3">
+              <span
+                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold backdrop-blur-md border shadow-lg transition-colors ${
+                  secondsLeft <= 5
+                    ? "bg-amber-500/25 text-amber-300 border-amber-500/50 animate-pulse"
+                    : "bg-slate-900/80 text-emerald-300 border-emerald-500/40"
+                }`}
+              >
+                <span>⏱</span> Face verified — {secondsLeft}s remaining
+              </span>
+            </div>
+          ) : null}
           {usingFallback ? (
             <div className="relative h-[320px] w-full">
               <div id={fallbackRegionIdRef.current} className="h-[320px] w-full" />

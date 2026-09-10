@@ -868,8 +868,8 @@ const StudentDashboard: React.FC = () => {
       setIsScannerActive(true);
       setScannerHint(
         autoArm
-          ? "Scanning the current Dynamic QR. Hold steady while the first code is captured."
-          : "Scanning the current Dynamic QR. Hold steady while the attendance code is captured."
+          ? "Point at the Dynamic QR — first code will capture automatically."
+          : "Point at the Dynamic QR — first code will capture automatically."
       );
       setScannerStatusTone("success");
       setScannerType("DYNAMIC_PAIR");
@@ -1064,6 +1064,7 @@ const StudentDashboard: React.FC = () => {
       setFaceVerifiedUntil(0);
       pendingQrPairRef.current = null;
       setScanStep("ERROR");
+      try { navigator.vibrate?.(400); } catch {}
       setStatusMsg("Biometric verification session expired while scanning. Please re-verify your face.");
       setBusy(false);
       return;
@@ -1075,14 +1076,16 @@ const StudentDashboard: React.FC = () => {
 
     pendingQrPairRef.current = pair;
     setScanStep("SUBMITTING");
-    setStatusMsg("Confirming attendance with QR and GPS...");
+    setStatusMsg("QR captured. Getting your GPS location...");
 
     let coords: any = null;
     try {
       coords = await resolveLiveLocation();
+      setStatusMsg("GPS locked ✓  Sending to server...");
     } catch (locErr: any) {
       pendingQrPairRef.current = null;
       setScanStep("ERROR");
+      try { navigator.vibrate?.(400); } catch {}
       setStatusMsg(
         locErr?.message || "GPS location is required to verify your presence in class."
       );
@@ -1146,6 +1149,7 @@ const StudentDashboard: React.FC = () => {
     let result: any = null;
 
     try {
+      setStatusMsg("Verifying your identity on server...");
       result = await executeSubmit();
     } catch (err: any) {
       result = { ok: false, error: err?.message || "Failed to submit attendance" };
@@ -1178,6 +1182,7 @@ const StudentDashboard: React.FC = () => {
 
       pendingQrPairRef.current = null;
       setScanStep("SUCCESS");
+      try { navigator.vibrate?.([150, 80, 150, 80, 200]); } catch {}
       setStatusMsg(result.already || result.alreadyMarked ? "Attendance already marked." : "Attendance confirmed.");
 
       // 1. Optimistic Local State Update (Instant 0ms UI Feedback)
@@ -1242,7 +1247,7 @@ const StudentDashboard: React.FC = () => {
         if (!mountedRef.current) return;
         setScanStep("IDLE");
         setStatusMsg("");
-      }, 1600);
+      }, 5000);
       return;
     }
 
@@ -1253,6 +1258,7 @@ const StudentDashboard: React.FC = () => {
         : rawError || "Attendance failed.";
 
     setScanStep("ERROR");
+    try { navigator.vibrate?.(400); } catch {}
     setStatusMsg(cleanError);
   }, [
     loadStudentData,
@@ -1455,6 +1461,8 @@ const StudentDashboard: React.FC = () => {
             isScannerActive={isScannerActive}
             faceVerifiedExpiresAt={faceVerifiedUntil}
             onSessionExpired={handleFaceSessionExpired}
+            actionLabel="Capture First QR"
+            onAction={armFirstDynamicCapture}
             onCancel={() => closeScanner(null)}
             onDetected={(decodedText) => {
               if (dynamicPairLockedRef.current) return true;
@@ -1467,8 +1475,16 @@ const StudentDashboard: React.FC = () => {
                 if (totpPayload) {
                   const bufferedCount = sequentialQrBufferRef.current.getPayloads().length;
                   if (bufferedCount === 0 && !firstDynamicArmActive) {
-                    setScannerStatusTone("neutral");
-                    setScannerHint("Tap 'Capture First QR' when you are ready to lock the first code.");
+                    armFirstDynamicCapture();
+                    sequentialQrBufferRef.current.addBlock(totpPayload);
+                    setFirstDynamicArmActive(false);
+                    if (firstDynamicArmTimeoutRef.current) {
+                      window.clearTimeout(firstDynamicArmTimeoutRef.current);
+                      firstDynamicArmTimeoutRef.current = null;
+                    }
+                    try { navigator.vibrate?.(50); } catch {}
+                    setScannerStatusTone("success");
+                    setScannerHint("First QR captured! Hold steady for the next rotation...");
                     return false;
                   }
 
@@ -1483,12 +1499,14 @@ const StudentDashboard: React.FC = () => {
                   if (status === "ready") {
                     const sequence = sequentialQrBufferRef.current.getPayloads();
                     dynamicPairLockedRef.current = true;
+                    try { navigator.vibrate?.([50, 30, 50]); } catch {}
                     setScannerStatusTone("success");
                     setScannerHint("Second QR block captured. Submitting attendance...");
                     closeScanner({ sequence });
                     return true;
                   }
 
+                  try { navigator.vibrate?.(50); } catch {}
                   setScannerStatusTone("success");
                   setFirstDynamicArmActive(false);
                   setScannerHint("First QR block captured. Keep the camera steady for the next rotation.");
@@ -1497,17 +1515,15 @@ const StudentDashboard: React.FC = () => {
 
                 const first = dynamicPairFirstTokenRef.current;
                 if (!first) {
-                  if (!firstDynamicArmActive) {
-                    setScannerStatusTone("neutral");
-                    setScannerHint("Tap 'Capture First QR' when you are ready to lock the first code.");
-                    return false;
-                  }
-
                   const firstPayload = decodeDynamicQrPayload(raw);
                   if (!firstPayload) {
                     setScannerStatusTone("error");
                     setScannerHint("This is not a valid Dynamic QR. Point at the attendance QR.");
                     return false;
+                  }
+
+                  if (!firstDynamicArmActive) {
+                    armFirstDynamicCapture();
                   }
 
                   resetDynamicPairFirst(
@@ -1572,6 +1588,7 @@ const StudentDashboard: React.FC = () => {
                 }
 
                 dynamicPairLockedRef.current = true;
+                try { navigator.vibrate?.([50, 30, 50]); } catch {}
                 setScannerStatusTone("success");
                 setScannerHint("Second QR captured. Submitting attendance...");
                 closeScanner({ first, second: raw });
@@ -1745,7 +1762,19 @@ const StudentDashboard: React.FC = () => {
             </div>
             <h2 className="text-2xl font-bold tracking-tight text-white">Present</h2>
             <p className="text-emerald-300 bg-emerald-950/60 border border-emerald-500/30 rounded-lg px-3 py-2 mt-3 text-sm">{statusMsg}</p>
-            <Button onClick={resetScan} variant="secondary" className="mt-6 bg-white text-slate-900 border-none hover:bg-slate-100 font-bold cursor-pointer">Done</Button>
+            <Button
+              onClick={() => {
+                if (resetTimerRef.current) {
+                  window.clearTimeout(resetTimerRef.current);
+                  resetTimerRef.current = null;
+                }
+                resetScan();
+              }}
+              variant="secondary"
+              className="mt-6 bg-white text-slate-900 border-none hover:bg-slate-100 font-bold cursor-pointer"
+            >
+              Done
+            </Button>
           </div>
         )}
 

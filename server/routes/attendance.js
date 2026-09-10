@@ -824,22 +824,18 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
           department_code,
           semester,
           section,
-          year
+          year,
+          profile:students(id, name, enrollment_no, email, profile_photo_url)
         `)
         .eq("session", String(sessionId))
         .order("timestamp", { ascending: false });
 
       const rawList = rawAttendances || [];
-      const distinctStudentIds = Array.from(new Set(rawList.map((a) => a.student).filter(Boolean)));
-      const { data: studentProfiles } = distinctStudentIds.length > 0
-        ? await supabase.from("students").select("id, name, enrollment_no, email, profile_photo_url").in("id", distinctStudentIds)
-        : { data: [] };
-      const studentProfileMap = new Map((studentProfiles || []).map((s) => [String(s.id), s]));
 
       const presentStudentIds = new Set();
       const presentEnrollmentNos = new Set();
       const presentRecords = rawList.map((att) => {
-        const studentObj = studentProfileMap.get(String(att.student)) || {};
+        const studentObj = (Array.isArray(att.profile) ? att.profile[0] : att.profile) || {};
         const effectiveEnrollmentNo = studentObj.enrollment_no || att.enrollment_no || "";
         const effectiveName = studentObj.name || att.student_name || "Student (Archived)";
         const effectiveEmail = studentObj.email || att.student_email || "";
@@ -933,23 +929,9 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
         }
       }
 
-      // Query exact total enrolled students for this class
-      let countQuery = supabase
-        .from("students")
-        .select("id", { count: "exact", head: true })
-        .eq("year", Number(rawSession.year))
-        .eq("semester", Number(rawSession.semester));
-
-      if (rawSession.department) {
-        countQuery = countQuery.eq("department", String(rawSession.department));
-      }
-      const normalizedSec = String(rawSession.section || "").trim().toUpperCase();
-      if (normalizedSec) {
-        countQuery = countQuery.eq("section", normalizedSec);
-      }
-      const { count: classTotal } = await countQuery;
+      const classTotal = allRegisteredStudents.length;
       const fullRoster = [...presentRecords, ...absentRecords];
-      const totalStudentsCount = classTotal || allRegisteredStudents.length || fullRoster.length || 0;
+      const totalStudentsCount = classTotal || fullRoster.length || 0;
 
       return res.json({
         ok: true,
@@ -1107,10 +1089,7 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
             section,
             year,
             timestamp,
-            status,
-            device_fingerprint,
-            location,
-            face_verification
+            status
           `)
           .in("session", sessionIds)
           .order("timestamp", { ascending: false });
@@ -1129,10 +1108,7 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
               faculty,
               subject,
               timestamp,
-              status,
-              device_fingerprint,
-              location,
-              face_verification
+              status
             `)
             .in("session", sessionIds)
             .order("timestamp", { ascending: false });

@@ -1648,47 +1648,51 @@ const FacultyDashboard: React.FC = () => {
                   departments={departments}
                   mySubjects={mySubjects}
                   filteredSubjects={filteredSubjects}
-                  formDepartment={formDepartment}
-                  formYear={formYear}
-                  formSem={formSem}
-                  formSection={formSection}
-                  formSubject={formSubject}
-                  formRadius={formRadius}
-                  locationState={locationState}
-                  isLocationConfirmed={isLocationConfirmed}
-                  manualLat={manualLat}
-                  manualLng={manualLng}
-                  showManualLocation={showManualLocation}
-                  locating={locating}
-                  locationError={locationError}
-                  sessionError={sessionError}
-                  startLoading={startLoading}
-                  mobileLocateLoading={mobileLocateLoading}
-                  mobileLocateToken={mobileLocateToken}
-                  mobileLocateStatus={mobileLocateStatus}
-                  mobileLocateExpiresAt={mobileLocateExpiresAt}
-                  mobileLocateUrl={mobileLocateUrl}
-                  capturedLocationLabel={capturedLocationLabel}
-                  capturedLocationMapUrl={capturedLocationMapUrl}
+                  form={{
+                    department: formDepartment,
+                    year: formYear,
+                    sem: formSem,
+                    section: formSection,
+                    subject: formSubject,
+                    radius: formRadius,
+                    locationState,
+                    isLocationConfirmed,
+                    manualLat,
+                    manualLng,
+                    showManualLocation,
+                    locating,
+                    locationError,
+                    sessionError,
+                    startLoading,
+                    mobileLocateLoading,
+                    mobileLocateToken,
+                    mobileLocateStatus,
+                    mobileLocateExpiresAt,
+                    mobileLocateUrl,
+                    capturedLocationLabel,
+                    capturedLocationMapUrl,
+                  }}
+                  handlers={{
+                    setDepartment: setFormDepartment,
+                    setYear: setFormYear,
+                    setSem: setFormSem,
+                    setSection: setFormSection,
+                    setSubject: setFormSubject,
+                    setRadius: setFormRadius,
+                    setManualLat,
+                    setManualLng,
+                    onCaptureLocation: captureLocation,
+                    onStartLocateViaMobile: startLocateViaMobile,
+                    onCloseMobileLocate: closeMobileLocate,
+                    onSetManualLocation: setManualLocation,
+                    onShowManualLocationEditor: showManualLocationEditor,
+                    onOpenCapturedLocationInMaps: openCapturedLocationInMaps,
+                    onResetConfirmedLocation: resetConfirmedLocation,
+                    onStartSession: start,
+                  }}
                   recentClassCards={recentClassCards}
-                  setFormDepartment={setFormDepartment}
-                  setFormYear={setFormYear}
-                  setFormSem={setFormSem}
-                  setFormSection={setFormSection}
-                  setFormSubject={setFormSubject}
-                  setFormRadius={setFormRadius}
-                  setManualLat={setManualLat}
-                  setManualLng={setManualLng}
-                  onCaptureLocation={captureLocation}
-                  onStartLocateViaMobile={startLocateViaMobile}
-                  onCloseMobileLocate={closeMobileLocate}
-                  onSetManualLocation={setManualLocation}
-                  onShowManualLocationEditor={showManualLocationEditor}
-                  onOpenCapturedLocationInMaps={openCapturedLocationInMaps}
                   onApplyRecentClass={applyRecentClass}
                   onRemoveRecentClass={removeRecentClass}
-                  onResetConfirmedLocation={resetConfirmedLocation}
-                  onStartSession={start}
                 />
               )}
             </>

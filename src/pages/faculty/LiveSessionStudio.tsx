@@ -32,8 +32,44 @@ import {
 } from "../../utils/totpQrGenerator";
 import apiClient from "../../services/apiClient";
 
+export interface ActiveSession {
+  id: string;
+  _id?: string;
+  faculty: string;
+  subject: string;
+  department: string;
+  year: number;
+  semester: number;
+  section: string;
+  location: { lat: number; lng: number; radiusMeters: number } | null;
+  is_active: boolean;
+  isActive?: boolean;
+  start_time: string;
+  startTime?: string | number | Date;
+  last_activity_at?: string;
+  subj?: { id: string; name: string; code: string };
+  totalStudents?: number;
+  totalStrength?: number;
+  classCode?: string;
+}
+
+export interface SessionSubject {
+  id: string;
+  _id?: string;
+  name: string;
+  code: string;
+  departments?: string[];
+}
+
+export interface SessionDepartment {
+  id: string;
+  _id?: string;
+  name: string;
+  code?: string;
+}
+
 interface LiveSessionStudioProps {
-  activeSession: any;
+  activeSession: ActiveSession;
   sessionSecretKey?: string | null;
   totalClassStrength?: number;
   liveAttendance: LiveAttendanceItem[];
@@ -49,8 +85,8 @@ interface LiveSessionStudioProps {
   onStopSession: () => Promise<void>;
   onCancelSession: () => Promise<void>;
   onDisconnectRealtime?: () => void;
-  selectedSubject?: any;
-  selectedDepartment?: any;
+  selectedSubject?: SessionSubject;
+  selectedDepartment?: SessionDepartment;
 }
 
 // ---------------------------------------------------------------------------
