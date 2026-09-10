@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import QRCode from "react-qr-code";
 import {
@@ -82,8 +82,8 @@ interface LiveSessionStudioProps {
   onLoadAttendees: (includeDerived?: boolean) => Promise<void>;
   onManualAttendance: (status: "present" | "absent", enrollmentNo?: string) => Promise<void>;
   onToggleAttendanceItem?: (item: any) => Promise<void>;
-  onStopSession: () => Promise<void>;
-  onCancelSession: () => Promise<void>;
+  onStopSession: () => void | Promise<any>;
+  onCancelSession: () => void | Promise<any>;
   onDisconnectRealtime?: () => void;
   selectedSubject?: SessionSubject;
   selectedDepartment?: SessionDepartment;

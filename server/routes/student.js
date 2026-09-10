@@ -159,7 +159,7 @@ router.post("/register", async (req, res) => {
 
     const { data: reg } = await supabase
       .from("registration_tokens")
-      .select("id, admin_id, type, is_active, uses_count, max_uses, expires_at")
+      .select("id, admin_id, token, college_name, type, is_active, uses_count, max_uses, expires_at")
       .eq("token", String(token))
       .single();
 
@@ -233,7 +233,7 @@ router.post("/register", async (req, res) => {
           face_embedding: Array.isArray(faceEmbedding) ? faceEmbedding : null,
           face_embedding_model: String(faceEmbeddingModel || ""),
           face_embedding_version: String(faceEmbeddingVersion || ""),
-          registered_via_token: reg.token,
+          registered_via_token: reg.token || String(token),
         })
         .select("id")
         .single();
@@ -249,7 +249,7 @@ router.post("/register", async (req, res) => {
     }
   } catch (err) {
     console.error("Student registration error:", err);
-    return res.status(500).json({ ok: false, error: "Server error" });
+    return res.status(500).json({ ok: false, error: err?.message || "Server error" });
   }
 });
 

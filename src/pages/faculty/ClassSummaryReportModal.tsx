@@ -230,7 +230,7 @@ export const ClassSummaryReportModal: React.FC<ClassSummaryReportModalProps> = R
                 <span>Attendance</span>
               </div>
               <p className="mt-2 font-mono text-2xl font-black text-teal-700">
-                <CountUp value={summary.attendancePercentage} suffix="%" />
+                <CountUp value={pctNumber} suffix="%" />
               </p>
               {/* Progress bar indicator */}
               <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">

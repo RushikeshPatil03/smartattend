@@ -11,6 +11,7 @@ export type CachedLiveLocation = LiveLocation & {
 type LiveLocationOptions = {
   preferCached?: boolean;
   maxAgeMs?: number;
+  timeoutMs?: number;
 };
 
 export const MAX_ACCEPTABLE_ACCURACY_METERS = 120;

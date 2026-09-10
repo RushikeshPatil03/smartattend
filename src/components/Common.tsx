@@ -147,7 +147,7 @@ Button.displayName = 'Button';
 // ==========================================
 export type CardVariant = 'flat' | 'glass';
 
-export interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
+export interface CardProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'title'> {
   children?: React.ReactNode;
   className?: string;
   title?: React.ReactNode;
