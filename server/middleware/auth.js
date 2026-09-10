@@ -31,35 +31,47 @@ function auth(allowedRoles = []) {
 
       let user = null;
       if (role === "ADMIN") {
-        const { data } = await supabase
+        let { data, error } = await supabase
           .from("admins")
           .select("id, name, email, college_name, created_at")
           .eq("id", String(id))
           .single();
+        if (error || !data) {
+          const fallback = await supabase.from("admins").select("*").eq("id", String(id)).single();
+          data = fallback.data;
+        }
         user = data;
       } else if (role === "FACULTY") {
-        const { data } = await supabase
+        let { data, error } = await supabase
           .from("faculties")
           .select(
             "id, name, email, department, device_fingerprint, device_lock_enabled, " +
-            "college_name, profile_photo_url, created_by_admin, " +
+            "profile_photo_url, created_by_admin, " +
             "credential_id, public_key, counter"
           )
           .eq("id", String(id))
           .single();
+        if (error || !data) {
+          const fallback = await supabase.from("faculties").select("*").eq("id", String(id)).single();
+          data = fallback.data;
+        }
         user = data;
       } else if (role === "STUDENT") {
-        const { data } = await supabase
+        let { data, error } = await supabase
           .from("students")
           .select(
             "id, name, email, enrollment_no, year, semester, section, department, " +
-            "device_fingerprint, device_lock_enabled, college_name, profile_photo_url, " +
+            "device_fingerprint, college_name, profile_photo_url, " +
             "created_by_admin, credential_id, public_key, counter, " +
             "face_signature, face_signature_mirror, face_signature_version, " +
             "face_embedding, face_embedding_model, face_embedding_version"
           )
           .eq("id", String(id))
           .single();
+        if (error || !data) {
+          const fallback = await supabase.from("students").select("*").eq("id", String(id)).single();
+          data = fallback.data;
+        }
         user = data;
       }
 
