@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Button } from "./Common";
-import { Clock, RefreshCw, Search, ShieldAlert, ZoomIn } from "lucide-react";
+import { Clock, RefreshCw, Search, ShieldAlert, ZoomIn, ZoomOut, Minus, Plus, Sparkles } from "lucide-react";
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 
 type DetectorResult = { rawValue?: string };
@@ -99,44 +99,32 @@ function isInsecureMobileCameraContext() {
   return !window.isSecureContext && !isLocalHost;
 }
 
-function getCameraErrorMessage(err: any) {
+function getCameraErrorMessage(err: any): string {
   if (isInsecureMobileCameraContext()) {
-    return "Camera on mobile requires HTTPS. Open this app over https:// and try again.";
+    return "Camera requires HTTPS or localhost when opened on a mobile device.";
   }
-
-  const name = String(err?.name || "");
-  const message = String(err?.message || "").toLowerCase();
-
-  if (name === "NotAllowedError" || message.includes("permission")) {
-    return "Camera permission denied. Allow camera access in browser settings and reload the page.";
+  const errName = String(err?.name || "");
+  const errMsg = String(err?.message || "").toLowerCase();
+  if (errName === "NotAllowedError" || errMsg.includes("permission")) {
+    return "Camera permission was denied. Allow camera access in browser settings to scan QR.";
   }
-
-  if (name === "NotFoundError" || name === "DevicesNotFoundError") {
-    return "No camera was found on this device.";
+  if (errName === "NotFoundError" || errMsg.includes("not found")) {
+    return "No suitable camera found on this device.";
   }
-
-  if (name === "NotReadableError" || message.includes("could not start video source")) {
-    return "Camera is busy or unavailable. Close other apps using the camera and try again.";
+  if (errName === "NotReadableError" || errMsg.includes("in use")) {
+    return "Camera is busy in another app. Close other camera apps and retry.";
   }
-
-  if (name === "OverconstrainedError" || name === "ConstraintNotSatisfiedError") {
-    return "This browser could not start the requested camera. Try another browser or device.";
-  }
-
-  if (name === "AbortError") {
-    return "Camera startup was interrupted. Please try scanning again.";
-  }
-
-  return err?.message || "Unable to open the camera. Allow camera permission and try again.";
+  return "Unable to start camera scanner. Check camera permissions.";
 }
 
+/** Haptic feedback on successful scan */
 function triggerScanHaptic() {
-  if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
-    try {
-      navigator.vibrate(80);
-    } catch {
-      // Ignore vibration error on unsupported platforms
+  try {
+    if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+      navigator.vibrate([40, 60, 40]);
     }
+  } catch {
+    // Haptics unavailable on this device/browser
   }
 }
 
@@ -167,14 +155,27 @@ export default function CameraQrScanner({
   const lastDetectedAtRef = useRef(0);
   const mountedRef = useRef(true);
 
+  // Zoom control state & refs
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-  const [zoomRange, setZoomRange] = useState<{ min: number; max: number; step: number } | null>(null);
-  const [zoomValue, setZoomValue] = useState<number | null>(null);
+  const [zoomRange, setZoomRange] = useState<{ min: number; max: number; step: number }>({ min: 1.0, max: 3.5, step: 0.1 });
+  const [zoomValue, setZoomValue] = useState<number>(1.0);
+  const [isHardwareZoom, setIsHardwareZoom] = useState(false);
   const [usingFallback, setUsingFallback] = useState(false);
   const [restartNonce, setRestartNonce] = useState(0);
   const [scanSuccessPulse, setScanSuccessPulse] = useState(false);
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
+
+  // Non-blocking concurrency refs for smooth zoom & scanning loop
+  const zoomLevelRef = useRef<number>(1.0);
+  const isHardwareZoomRef = useRef(false);
+  const pendingHardwareZoomRef = useRef<number | null>(null);
+  const isApplyingHardwareZoomRef = useRef(false);
+
+  // Pinch-to-zoom touch gesture refs
+  const pinchStartDistRef = useRef<number | null>(null);
+  const pinchStartZoomRef = useRef<number>(1.0);
+  const [isPinching, setIsPinching] = useState(false);
 
   const isScanSuccess = scanSuccessPulse || statusTone === "success";
 
@@ -189,8 +190,11 @@ export default function CameraQrScanner({
     }
 
     const updateTimer = () => {
-      const secondsLeft = Math.max(0, Math.ceil((faceVerifiedExpiresAt - Date.now()) / 1000));
-      setSecondsLeft(secondsLeft);
+      const remaining = Math.max(0, Math.ceil((faceVerifiedExpiresAt - Date.now()) / 1000));
+      setSecondsLeft(remaining);
+      if (remaining <= 0) {
+        onSessionExpiredRef.current?.();
+      }
     };
 
     updateTimer();
@@ -213,6 +217,79 @@ export default function CameraQrScanner({
       mountedRef.current = false;
     };
   }, []);
+
+  // Concurrency-safe hardware zoom scheduler: drops intermediate stale values and queues latest
+  const scheduleHardwareZoom = useCallback((targetZoom: number) => {
+    pendingHardwareZoomRef.current = targetZoom;
+    if (isApplyingHardwareZoomRef.current) return;
+
+    const runQueue = async () => {
+      isApplyingHardwareZoomRef.current = true;
+      while (pendingHardwareZoomRef.current !== null && mountedRef.current) {
+        const zoomToApply = pendingHardwareZoomRef.current;
+        pendingHardwareZoomRef.current = null;
+        const track = streamRef.current?.getVideoTracks?.()[0];
+        if (track && track.readyState === "live") {
+          try {
+            await track.applyConstraints({
+              advanced: [{ zoom: zoomToApply } as MediaTrackConstraintSet],
+            });
+          } catch {
+            // Hardware constraint failed; smoothly fallback to software digital zoom
+            isHardwareZoomRef.current = false;
+            if (mountedRef.current) {
+              setIsHardwareZoom(false);
+            }
+            break;
+          }
+        }
+      }
+      isApplyingHardwareZoomRef.current = false;
+    };
+
+    void runQueue();
+  }, []);
+
+  const handleZoomChange = useCallback((nextValue: number) => {
+    const clamped = Math.min(Math.max(nextValue, zoomRange.min), zoomRange.max);
+    const rounded = Math.round(clamped * 10) / 10;
+    setZoomValue(rounded);
+    zoomLevelRef.current = rounded;
+
+    if (isHardwareZoomRef.current) {
+      scheduleHardwareZoom(rounded);
+    }
+  }, [zoomRange, scheduleHardwareZoom]);
+
+  // Touch Pinch-to-Zoom handlers
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      pinchStartDistRef.current = dist;
+      pinchStartZoomRef.current = zoomLevelRef.current;
+      setIsPinching(true);
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 2 && pinchStartDistRef.current !== null) {
+      const currentDist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      const scale = currentDist / pinchStartDistRef.current;
+      const nextZoom = pinchStartZoomRef.current * scale;
+      handleZoomChange(nextZoom);
+    }
+  };
+
+  const handleTouchEnd = () => {
+    pinchStartDistRef.current = null;
+    setIsPinching(false);
+  };
 
   useEffect(() => {
     const stopCamera = () => {
@@ -312,7 +389,18 @@ export default function CameraQrScanner({
       }
 
       ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.drawImage(video, 0, 0, width, height);
+
+      // High-precision digital zoom crop on canvas for instant distant QR recognition
+      const currentZoom = zoomLevelRef.current;
+      if (currentZoom > 1.01 && !isHardwareZoomRef.current) {
+        const cropW = width / currentZoom;
+        const cropH = height / currentZoom;
+        const cropX = (width - cropW) / 2;
+        const cropY = (height - cropH) / 2;
+        ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, width, height);
+      } else {
+        ctx.drawImage(video, 0, 0, width, height);
+      }
 
       try {
         const results = await detector.detect(canvas);
@@ -360,23 +448,10 @@ export default function CameraQrScanner({
       });
     };
 
-    const applyZoom = async (track: MediaStreamTrack, nextZoom: number) => {
-      try {
-        await track.applyConstraints({
-          advanced: [{ zoom: nextZoom } as MediaTrackConstraintSet],
-        });
-        if (mountedRef.current) {
-          setZoomValue(nextZoom);
-        }
-      } catch {
-        // Ignore unsupported zoom updates.
-      }
-    };
-
     const startFallbackScanner = async () => {
       setUsingFallback(true);
-      setZoomRange(null);
-      setZoomValue(null);
+      setIsHardwareZoom(false);
+      isHardwareZoomRef.current = false;
 
       const scanner = new Html5Qrcode(fallbackRegionIdRef.current, {
         formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
@@ -532,7 +607,7 @@ export default function CameraQrScanner({
 
         const [track] = stream.getVideoTracks();
         const capabilities =
-          typeof track.getCapabilities === "function"
+          typeof track?.getCapabilities === "function"
             ? (track.getCapabilities() as MediaTrackCapabilities & {
                 zoom?: { min?: number; max?: number; step?: number };
               })
@@ -548,7 +623,18 @@ export default function CameraQrScanner({
           const step = typeof zoomCaps.step === "number" && zoomCaps.step > 0 ? zoomCaps.step : 0.1;
           setZoomRange({ min: zoomCaps.min, max: zoomCaps.max, step });
           const initialZoom = Math.min(Math.max(zoomCaps.min, 1), zoomCaps.max);
-          await applyZoom(track, initialZoom);
+          setZoomValue(initialZoom);
+          zoomLevelRef.current = initialZoom;
+          isHardwareZoomRef.current = true;
+          setIsHardwareZoom(true);
+          scheduleHardwareZoom(initialZoom);
+        } else {
+          // Universal high-precision digital zoom fallback for iOS Safari / desktops / non-hardware devices
+          setZoomRange({ min: 1.0, max: 3.5, step: 0.1 });
+          setZoomValue(1.0);
+          zoomLevelRef.current = 1.0;
+          isHardwareZoomRef.current = false;
+          setIsHardwareZoom(false);
         }
 
         rafRef.current = window.requestAnimationFrame(() => {
@@ -579,24 +665,39 @@ export default function CameraQrScanner({
       stopCamera();
       void stopFallbackScanner();
     };
-  }, [detectorSupported, isScannerActive, restartNonce]);
+  }, [detectorSupported, isScannerActive, restartNonce, scheduleHardwareZoom]);
 
-  const handleZoomChange = async (nextValue: number) => {
-    setZoomValue(nextValue);
-    const track = streamRef.current?.getVideoTracks?.()[0];
-    if (!track) return;
-    try {
-      await track.applyConstraints({
-        advanced: [{ zoom: nextValue } as MediaTrackConstraintSet],
-      });
-    } catch {
-      setError("Zoom control is not available on this device.");
+  // Compute preset zoom options based on available zoom range
+  const presetButtons = useMemo(() => {
+    const min = zoomRange.min;
+    const max = zoomRange.max;
+    if (max <= 2.2) {
+      return [
+        { label: "1x", value: Math.max(min, 1.0) },
+        { label: "1.5x", value: Math.min(max, 1.5) },
+        { label: "2x", value: max },
+      ];
     }
-  };
+    return [
+      { label: "1x", value: Math.max(min, 1.0) },
+      { label: "1.5x", value: 1.5 },
+      { label: "2x", value: 2.0 },
+      { label: "3x", value: Math.min(max, 3.0) },
+    ];
+  }, [zoomRange]);
+
+  // Slider background fill percentage
+  const zoomPercent = useMemo(() => {
+    if (!zoomRange || zoomRange.max <= zoomRange.min) return 0;
+    return Math.min(
+      100,
+      Math.max(0, ((zoomValue - zoomRange.min) / (zoomRange.max - zoomRange.min)) * 100)
+    );
+  }, [zoomRange, zoomValue]);
 
   return (
     <div className="fixed inset-0 z-[70] bg-black/85 backdrop-blur-[2px] flex items-center justify-center p-4">
-      {/* Scoped CSS for laser scan line animation */}
+      {/* Scoped CSS for laser scan line animation & custom slider */}
       <style>{`
         @keyframes scanline {
           0% { top: 8%; opacity: 0.85; }
@@ -606,6 +707,30 @@ export default function CameraQrScanner({
         .qr-laser-line {
           animation: scanline 2.4s ease-in-out infinite;
           will-change: top, opacity;
+        }
+        .zoom-slider-track::-webkit-slider-thumb {
+          -webkit-appearance: none;
+          appearance: none;
+          width: 18px;
+          height: 18px;
+          border-radius: 50%;
+          background: #14b8a6;
+          border: 2px solid #ffffff;
+          box-shadow: 0 0 8px rgba(20, 184, 166, 0.8);
+          cursor: pointer;
+          transition: transform 0.1s ease;
+        }
+        .zoom-slider-track::-webkit-slider-thumb:active {
+          transform: scale(1.25);
+        }
+        .zoom-slider-track::-moz-range-thumb {
+          width: 18px;
+          height: 18px;
+          border-radius: 50%;
+          background: #14b8a6;
+          border: 2px solid #ffffff;
+          box-shadow: 0 0 8px rgba(20, 184, 166, 0.8);
+          cursor: pointer;
         }
       `}</style>
 
@@ -619,7 +744,14 @@ export default function CameraQrScanner({
           </Button>
         </div>
 
-        <div className="relative rounded-xl overflow-hidden border border-slate-700/80 bg-black min-h-[320px] flex items-center justify-center">
+        {/* Camera Viewport with Pinch-to-Zoom Gesture Container */}
+        <div
+          className="relative rounded-xl overflow-hidden border border-slate-700/80 bg-black min-h-[320px] flex items-center justify-center select-none"
+          style={{ touchAction: "none" }}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+        >
           {secondsLeft !== null && secondsLeft > 0 && faceVerifiedExpiresAt && faceVerifiedExpiresAt > 0 ? (
             <div className="pointer-events-none absolute top-3 inset-x-0 z-20 flex justify-center px-3">
               <span
@@ -633,6 +765,15 @@ export default function CameraQrScanner({
               </span>
             </div>
           ) : null}
+
+          {/* Floating Zoom Indicator Pill during Pinch / Active Zoom */}
+          {zoomValue > 1.01 && (
+            <div className="pointer-events-none absolute bottom-3 right-3 z-20 flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-950/80 backdrop-blur-md border border-teal-500/40 text-[11px] font-bold text-teal-300 shadow-lg">
+              <ZoomIn size={12} className="text-teal-400" />
+              {zoomValue.toFixed(1)}x
+            </div>
+          )}
+
           {usingFallback ? (
             <div className="relative h-[320px] w-full">
               <div id={fallbackRegionIdRef.current} className="h-[320px] w-full" />
@@ -645,7 +786,11 @@ export default function CameraQrScanner({
               muted
               playsInline
               onLoadedMetadata={() => setLoading(false)}
-              style={{ transform: "none" }}
+              style={{
+                transform: !isHardwareZoom && zoomValue > 1.01 ? `scale(${zoomValue})` : "none",
+                transformOrigin: "center center",
+                transition: isPinching ? "none" : "transform 0.12s ease-out",
+              }}
             />
           )}
 
@@ -719,35 +864,85 @@ export default function CameraQrScanner({
 
         <canvas ref={canvasRef} className="hidden" />
 
-        {zoomRange ? (
-          <div className="mt-4 rounded-xl border border-slate-700/80 bg-slate-900/80 p-3">
-            <div className="flex items-center gap-2 text-slate-200 text-xs font-medium mb-2">
-              <ZoomIn size={14} />
-              Camera Zoom
+        {/* ── Advanced Lightweight Universal Zoom Control Bar ──────────────── */}
+        <div className="mt-3 rounded-xl border border-slate-700/80 bg-slate-900/90 p-3 shadow-inner">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-1.5 text-slate-200 text-xs font-semibold">
+              <ZoomIn size={14} className="text-teal-400" />
+              <span>Camera Zoom</span>
+              <span className="text-[10px] font-normal px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700/60 ml-1">
+                {isHardwareZoom ? "Optical Lens" : "Enhanced Digital"}
+              </span>
             </div>
-            <input
-              type="range"
-              min={zoomRange.min}
-              max={zoomRange.max}
-              step={zoomRange.step}
-              value={zoomValue ?? zoomRange.min}
-              onChange={(event) => void handleZoomChange(Number(event.target.value))}
-              className="w-full accent-teal-500"
-            />
-            <p className="mt-1 text-[11px] text-slate-400">
-              Move right to zoom in when your phone camera supports it.
-            </p>
-          </div>
-        ) : (
-          <div className="mt-4 rounded-xl border border-slate-700/80 bg-slate-900/80 p-3">
-            <div className="flex items-center gap-2 text-slate-200 text-xs font-medium">
-              <Search size={14} />
-              {usingFallback
-                ? "Using compatibility scanner for this browser."
-                : "Zoom is not exposed by this browser/device camera."}
+            <div className="flex items-center gap-1 text-xs font-bold text-teal-300 bg-teal-950/70 px-2 py-0.5 rounded-lg border border-teal-500/30">
+              {zoomValue.toFixed(1)}x
             </div>
           </div>
-        )}
+
+          {/* Quick Preset Buttons */}
+          <div className="flex items-center gap-1.5 mb-2.5">
+            {presetButtons.map((preset) => {
+              const isActive = Math.abs(zoomValue - preset.value) < 0.08;
+              return (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => handleZoomChange(preset.value)}
+                  className={`flex-1 py-1 text-xs rounded-lg font-semibold transition-all duration-150 cursor-pointer ${
+                    isActive
+                      ? "bg-teal-600 text-white shadow-md shadow-teal-950/60 border border-teal-400/80 scale-[1.02]"
+                      : "bg-slate-800/90 text-slate-300 hover:text-white hover:bg-slate-700/80 border border-slate-700/60"
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Smooth Range Slider with Steppers */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => handleZoomChange(zoomValue - 0.2)}
+              disabled={zoomValue <= zoomRange.min}
+              className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/60 disabled:opacity-30 disabled:cursor-not-allowed transition cursor-pointer"
+              title="Zoom out"
+            >
+              <Minus size={14} />
+            </button>
+
+            <div className="relative flex-1 flex items-center">
+              <input
+                type="range"
+                min={zoomRange.min}
+                max={zoomRange.max}
+                step={zoomRange.step}
+                value={zoomValue}
+                onChange={(event) => handleZoomChange(Number(event.target.value))}
+                className="zoom-slider-track w-full h-2 rounded-lg appearance-none cursor-pointer"
+                style={{
+                  background: `linear-gradient(to right, #0d9488 0%, #14b8a6 ${zoomPercent}%, #334155 ${zoomPercent}%, #334155 100%)`,
+                }}
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={() => handleZoomChange(zoomValue + 0.2)}
+              disabled={zoomValue >= zoomRange.max}
+              className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/60 disabled:opacity-30 disabled:cursor-not-allowed transition cursor-pointer"
+              title="Zoom in"
+            >
+              <Plus size={14} />
+            </button>
+          </div>
+
+          <p className="mt-2 text-[10px] text-slate-400 flex items-center justify-between">
+            <span>Pinch screen or drag slider to zoom</span>
+            <span className="text-slate-400 font-mono">Max {zoomRange.max.toFixed(1)}x</span>
+          </p>
+        </div>
 
         <div
           className={`mt-3 rounded-xl border px-3 py-2 transition-colors duration-300 ${
@@ -794,4 +989,3 @@ export default function CameraQrScanner({
     </div>
   );
 }
-

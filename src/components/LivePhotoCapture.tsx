@@ -616,6 +616,7 @@ const LivePhotoCapture: React.FC<{
         imageDataUrl = captureVideoFrame(videoRef.current, DEFAULT_CAPTURE_OPTIONS);
       }
 
+      stopCamera();
       onChange(imageDataUrl);
       onCaptured?.({
         dataUrl: imageDataUrl,
@@ -630,7 +631,6 @@ const LivePhotoCapture: React.FC<{
           gamma: orientation.gamma,
         },
       });
-      stopCamera();
       setCaptureError("");
     } catch (error: any) {
       setVerificationMessage("");

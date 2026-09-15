@@ -22,20 +22,12 @@ import { parseQrPayload, RotatingQrPayload } from "../utils/totpQrGenerator";
 
 import { preloadForStudent } from "../utils/faceApiLoader";
 import { prewarmMediaPipe } from "../utils/mediaPipeFaceQuality";
-import {
-  IntegratedAttendanceScanner,
-  IntegratedScannerSuccessResult,
-} from "../components/IntegratedAttendanceScanner";
 
-const preloadCameraQrScanner = () => import("../components/CameraQrScanner");
-const preloadLivePhotoCapture = () => import("../components/LivePhotoCapture");
+const CameraQrScanner = React.lazy(() => import("../components/CameraQrScanner"));
+const LivePhotoCapture = React.lazy(() => import("../components/LivePhotoCapture"));
 
-const prewarmFrontCamera = () => {
-  preloadLivePhotoCapture().then((m) => m.prewarmFrontCamera?.()).catch(() => {});
-};
-const prewarmQrCamera = () => {
-  preloadCameraQrScanner().then((m) => m.prewarmQrCamera?.()).catch(() => {});
-};
+const prewarmQrCamera = () => import("../components/CameraQrScanner").then((m) => m.prewarmQrCamera());
+const prewarmFrontCamera = () => import("../components/LivePhotoCapture").then((m) => m.prewarmFrontCamera());
 
 type IdleCapableWindow = Window &
   typeof globalThis & {
@@ -611,6 +603,10 @@ const StudentDashboard: React.FC = () => {
   const pendingQrPairRef = useRef<DynamicPairScanResult | null>(null);
   const faceGateTimerRef = useRef<number | null>(null);
   const faceVerifiedUntilRef = useRef(0);
+  const faceVerificationPayloadRef = useRef<{
+    dataUrl: string;
+    faceVerification?: any;
+  } | null>(null);
 
   const faceVerified = faceVerifiedUntil > Date.now();
   const registeredFacePhoto = String(currentUser?.studentProfilePhotoUrl || "").trim();
@@ -724,34 +720,6 @@ const StudentDashboard: React.FC = () => {
     };
   }, [registeredFacePhoto]);
 
-  const handleLiveFaceCaptured = useCallback((capture: {
-    faceVerification?: { matched?: boolean; liveness?: string };
-  }) => {
-    if (!capture.faceVerification?.matched || capture.faceVerification.liveness !== "movement") {
-      faceVerifiedUntilRef.current = 0;
-      setFaceVerifiedUntil(0);
-      setFaceGateStatus("FAILED");
-      setFaceGateMessage("Live face verification is required.");
-      return;
-    }
-
-    const verifiedUntil = Date.now() + FACE_VERIFICATION_WINDOW_MS;
-    faceVerifiedUntilRef.current = verifiedUntil;
-    if (faceGateTimerRef.current) window.clearTimeout(faceGateTimerRef.current);
-    setFaceVerifiedUntil(verifiedUntil);
-    setFaceGateOpen(false);
-    setLiveFacePhoto("");
-    setFaceGateStatus("VERIFYING");
-    setFaceGateMessage("");
-    // Prewarm environment camera immediately while modal transitions
-    void prewarmQrCamera();
-    faceGateTimerRef.current = window.setTimeout(() => {
-      if (!mountedRef.current) return;
-      faceVerifiedUntilRef.current = 0;
-      setFaceVerifiedUntil(0);
-    }, FACE_VERIFICATION_WINDOW_MS);
-  }, []);
-
   const closeScanner = useCallback((value: ScannerResult) => {
     dynamicPairLockedRef.current = true;
     if (dynamicPairTimeoutRef.current) {
@@ -775,21 +743,24 @@ const StudentDashboard: React.FC = () => {
   }, []);
 
   const handleFaceSessionExpired = useCallback(() => {
-    // 1. Immediately clear the verification token — no grace period
     faceVerifiedUntilRef.current = 0;
     setFaceVerifiedUntil(0);
-    // 2. Close QR scanner if it is open (returns student to main dashboard view)
+    faceVerificationPayloadRef.current = null;
+    if (faceGateTimerRef.current) {
+      window.clearTimeout(faceGateTimerRef.current);
+      faceGateTimerRef.current = null;
+    }
+
     if (scannerOpen) {
       closeScanner(null);
     }
-    // 3. Reset scan step fully back to IDLE — not ERROR — so Mark Attendance is
-    //    immediately re-tappable without the student needing to do anything extra
+    setFaceGateOpen(false);
+
     setScanStep("IDLE");
     setStatusMsg("");
     setBusy(false);
     submitLockRef.current = false;
-    // 4. Show a brief, non-blocking expiry notice as a floating toast
-    //    that auto-clears after 3.5 seconds (non-intrusive)
+
     if (sessionExpiredToastTimerRef.current) {
       window.clearTimeout(sessionExpiredToastTimerRef.current);
     }
@@ -799,6 +770,47 @@ const StudentDashboard: React.FC = () => {
       sessionExpiredToastTimerRef.current = null;
     }, 3500);
   }, [scannerOpen, closeScanner]);
+
+  const handleLiveFaceCaptured = useCallback((capture: {
+    dataUrl: string;
+    capturedAt: string;
+    faceVerification?: { matched?: boolean; liveness?: string; score?: number; distance?: number };
+    realityChecks?: any;
+  }) => {
+    if (!capture.faceVerification?.matched || capture.faceVerification.liveness !== "movement") {
+      faceVerifiedUntilRef.current = 0;
+      setFaceVerifiedUntil(0);
+      faceVerificationPayloadRef.current = null;
+      setFaceGateStatus("FAILED");
+      setFaceGateMessage("Live face verification is required.");
+      return;
+    }
+
+    const verifiedUntil = Date.now() + FACE_VERIFICATION_WINDOW_MS;
+    faceVerifiedUntilRef.current = verifiedUntil;
+    faceVerificationPayloadRef.current = {
+      dataUrl: capture.dataUrl,
+      faceVerification: capture.faceVerification,
+    };
+    if (faceGateTimerRef.current) window.clearTimeout(faceGateTimerRef.current);
+    setFaceVerifiedUntil(verifiedUntil);
+    setFaceGateOpen(false);
+    setLiveFacePhoto("");
+    setFaceGateStatus("VERIFYING");
+    setFaceGateMessage("");
+
+    faceGateTimerRef.current = window.setTimeout(() => {
+      if (!mountedRef.current) return;
+      handleFaceSessionExpired();
+    }, FACE_VERIFICATION_WINDOW_MS);
+
+    // Prewarm environment camera immediately while modal transitions
+    void prewarmQrCamera();
+
+    // Transition directly into QR Scanner
+    setStatusMsg("Step 2 of 2: Scan Classroom QR");
+    void submitQrAttendance();
+  }, [handleFaceSessionExpired]);
 
   useEffect(() => {
     const handleSecurityState = () => {
@@ -1013,19 +1025,20 @@ const StudentDashboard: React.FC = () => {
 
     // Double-check biometric window before finalizing network submission
     if (!faceVerifiedUntilRef.current || Date.now() > faceVerifiedUntilRef.current) {
-      faceVerifiedUntilRef.current = 0;
-      setFaceVerifiedUntil(0);
-      pendingQrPairRef.current = null;
-      setScanStep("ERROR");
-      try { navigator.vibrate?.(400); } catch {}
-      setStatusMsg("Biometric verification session expired while scanning. Please re-verify your face.");
-      setBusy(false);
+      handleFaceSessionExpired();
       return;
     }
+
+    const facePayload = faceVerificationPayloadRef.current;
 
     // Invalidate biometric session immediately upon single attendance mark attempt (anti-proxy protection)
     faceVerifiedUntilRef.current = 0;
     setFaceVerifiedUntil(0);
+    faceVerificationPayloadRef.current = null;
+    if (faceGateTimerRef.current) {
+      window.clearTimeout(faceGateTimerRef.current);
+      faceGateTimerRef.current = null;
+    }
 
     pendingQrPairRef.current = pair;
     setScanStep("SUBMITTING");
@@ -1084,6 +1097,8 @@ const StudentDashboard: React.FC = () => {
             lng: coords.lng,
             accuracy: coords.accuracy,
           },
+          facePhotoWebp: facePayload?.dataUrl,
+          faceVerification: facePayload?.faceVerification,
         });
       } else {
         return await markAttendanceTwoStep(
@@ -1092,9 +1107,9 @@ const StudentDashboard: React.FC = () => {
           fingerprint,
           coords.lat,
           coords.lng,
-          null,
+          facePayload?.dataUrl || null,
           coords.accuracy,
-          null
+          facePayload?.faceVerification || null
         );
       }
     };
@@ -1219,10 +1234,31 @@ const StudentDashboard: React.FC = () => {
     resolveLiveLocation,
   ]);
 
-  const simulateScan = useCallback(() => {
+  const handleStartAttendance = useCallback(() => {
     if (busy) return;
-    setScannerOpen(true);
-  }, [busy]);
+
+    // If biometric verification is already valid within the 15s window, jump straight to QR
+    if (faceVerifiedUntilRef.current && Date.now() < faceVerifiedUntilRef.current) {
+      void submitQrAttendance();
+      return;
+    }
+
+    // Step 1: Open Face Gate Modal first
+    setFaceGateStatus("VERIFYING");
+    setFaceGateMessage("Looking for your face...");
+    setLiveFacePhoto("");
+    setFaceGateOpen(true);
+    setScanStep("SCANNING");
+    setStatusMsg("Step 1 of 2: Face Verification");
+
+    // Pre-warm rear camera in background so it's ready when face verification completes
+    void prewarmQrCamera();
+    void warmLocation();
+  }, [busy, submitQrAttendance, warmLocation]);
+
+  const simulateScan = useCallback(() => {
+    handleStartAttendance();
+  }, [handleStartAttendance]);
 
   useEffect(() => {
     autoLaunchHandledRef.current = true;
@@ -1285,113 +1321,113 @@ const StudentDashboard: React.FC = () => {
         </div>
       )}
 
-      <IntegratedAttendanceScanner
-        isOpen={scannerOpen}
-        onClose={() => setScannerOpen(false)}
-        registeredProfilePhotoUrl={registeredFacePhoto}
-        fingerprint={getFingerprint()}
-        resolveLocation={resolveLiveLocation}
-        submitAttendancePayload={async (payload) => {
-          if (payload.sequence && payload.sequence.length > 0) {
-            const targetSessionId = payload.sessionId || payload.sequence[0]?.classId;
-            return await apiClient.post("/api/attendance/submit", {
-              sessionId: targetSessionId,
-              sequence: payload.sequence,
-              fingerprint: payload.fingerprint,
-              lat: payload.lat,
-              lng: payload.lng,
-              accuracy: payload.accuracy,
-              location: {
-                lat: payload.lat,
-                lng: payload.lng,
-                accuracy: payload.accuracy,
-              },
-              facePhotoWebp: payload.facePhotoWebp,
-              faceVerification: payload.faceVerification,
-            });
-          } else {
-            return await markAttendanceTwoStep(
-              payload.firstToken || "",
-              payload.secondToken || payload.firstToken || "",
-              payload.fingerprint,
-              payload.lat || 0,
-              payload.lng || 0,
-              null,
-              payload.accuracy,
-              null
-            );
+      {/* Step 1: Face Verification Gate Modal (Directional Liveness + Face Matching) */}
+      {faceGateOpen && (
+        <div className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/85 p-3 backdrop-blur-sm sm:p-4 animate-in fade-in duration-200">
+          <div className="w-full max-w-md overflow-hidden rounded-[24px] border border-slate-700/80 bg-slate-950 p-4 shadow-2xl text-white">
+            <div className="flex items-center justify-between mb-3 border-b border-slate-800 pb-2.5">
+              <div className="flex items-center gap-2">
+                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-teal-500/20 text-teal-400">
+                  <Camera size={18} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">Step 1: Face Verification</h3>
+                  <p className="text-[11px] text-slate-400">Follow the directional head movement</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setFaceGateOpen(false);
+                  setScanStep("IDLE");
+                  setStatusMsg("");
+                  setBusy(false);
+                }}
+                className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-800 text-slate-400 hover:text-white transition cursor-pointer"
+                title="Cancel"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <React.Suspense
+              fallback={
+                <div className="flex h-64 items-center justify-center text-slate-400 text-sm">
+                  <LoaderCircle size={24} className="animate-spin text-teal-500 mr-2" />
+                  Loading camera & models...
+                </div>
+              }
+            >
+              <LivePhotoCapture
+                value={liveFacePhoto}
+                onChange={setLiveFacePhoto}
+                onCaptured={handleLiveFaceCaptured}
+                autoStart={true}
+                autoCapture={true}
+                hideLauncher={true}
+                compactMode={true}
+                title="Live Liveness & Identity Check"
+                description="Hold camera at eye level and follow the directional prompt"
+                faceVerificationReferenceUrl={registeredFacePhoto}
+              />
+            </React.Suspense>
+          </div>
+        </div>
+      )}
+
+      {/* Step 2: Camera QR Scanner with 15s Countdown Overlay */}
+      {scannerOpen && (
+        <React.Suspense
+          fallback={
+            <div className="fixed inset-0 z-[70] bg-black/85 backdrop-blur-[2px] flex items-center justify-center text-white text-sm">
+              <LoaderCircle size={28} className="animate-spin text-cyan-400 mr-2" />
+              Opening camera scanner...
+            </div>
           }
-        }}
-        onSuccess={(result) => {
-          setScanStep("SUCCESS");
-          setStatusMsg(
-            result.already || result.alreadyMarked
-              ? "Attendance already marked."
-              : "Attendance confirmed."
-          );
-
-          const markedSessionId = String(
-            result?.session?.id ||
-            result?.session?._id ||
-            result?.sessionId ||
-            ""
-          );
-
-          if (markedSessionId) {
-            setRecentSessions((prev) => {
-              const nowIso = new Date().toISOString();
-              const existingIndex = prev.findIndex((item) => {
-                const sid = String(
-                  item?.sessionId ||
-                  item?.session?.id ||
-                  item?.session?._id ||
-                  item?.session ||
-                  item?._id ||
-                  item?.id ||
-                  ""
-                );
-                return sid === markedSessionId;
-              });
-
-              if (existingIndex >= 0) {
-                const updated = [...prev];
-                updated[existingIndex] = {
-                  ...updated[existingIndex],
-                  status: "present",
-                  attendanceCode: "P",
-                  markedAt: result?.markedAt || updated[existingIndex]?.markedAt || nowIso,
-                };
-                return updated;
+        >
+          <CameraQrScanner
+            title="Step 2: Scan Classroom QR"
+            hint={scannerHint}
+            statusTone={scannerStatusTone}
+            isScannerActive={scannerOpen}
+            faceVerifiedExpiresAt={faceVerifiedUntil}
+            onSessionExpired={handleFaceSessionExpired}
+            onDetected={(rawValue) => {
+              const totpPayload = parseQrPayload(rawValue);
+              if (totpPayload) {
+                const status = sequentialQrBufferRef.current.addBlock(totpPayload);
+                if (status === "duplicate") {
+                  setScannerStatusTone("neutral");
+                  setScannerHint("Block captured ✓ Hold steady for next rotation...");
+                  return false;
+                }
+                if (status === "ready") {
+                  const sequence = sequentialQrBufferRef.current.getPayloads();
+                  closeScanner({ sequence });
+                  return true;
+                }
+                setScannerStatusTone("success");
+                setScannerHint("Block 1 of 2 captured ✓ Keep camera focused...");
+                return false;
               }
 
-              return [
-                {
-                  sessionId: markedSessionId,
-                  subjectName: result?.session?.subjectName || "Subject",
-                  subjectCode: result?.session?.subjectCode || "SUB",
-                  facultyName: "Faculty",
-                  startTime: nowIso,
-                  markedAt: result?.markedAt || nowIso,
-                  isActive: true,
-                  status: "present",
-                  attendanceCode: "P",
-                },
-                ...prev,
-              ];
-            });
-          }
+              // Single QR fallback
+              if (rawValue && rawValue.length > 20) {
+                closeScanner(rawValue);
+                return true;
+              }
 
-          lastStudentDataFetchMs.current = 0;
-          void loadStudentData().catch(() => {});
-
-          if (resetTimerRef.current) window.clearTimeout(resetTimerRef.current);
-          resetTimerRef.current = window.setTimeout(() => {
-            if (!mountedRef.current) return;
-            setScanStep("IDLE");
-            setStatusMsg("");
-          }, 5000);
-        }}
-      />
+              return false;
+            }}
+            onCancel={() => {
+              closeScanner(null);
+              setScanStep("IDLE");
+              setStatusMsg("");
+              setBusy(false);
+            }}
+          />
+        </React.Suspense>
+      )}
       {todayPanelOpen && (
         <div className="fixed inset-0 z-[65] flex items-end justify-center bg-slate-950/55 p-3 backdrop-blur-sm sm:items-center sm:p-4">
           <div className="max-h-[86vh] w-full max-w-lg overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_28px_90px_-36px_rgba(15,23,42,0.65)]">
@@ -1495,7 +1531,7 @@ const StudentDashboard: React.FC = () => {
               <Scan size={36} />
             </div>
             <h2 className="text-2xl font-bold mb-2 tracking-tight text-white">Mark Attendance</h2>
-            <p className="text-slate-300 text-sm mb-5 leading-relaxed">Scan the Dynamic QR directly for a faster demo flow.</p>
+            <p className="text-slate-300 text-sm mb-5 leading-relaxed">Step 1: Face Liveness Check &rarr; Step 2: Scan QR within 15s.</p>
             <div className="mb-6 flex flex-wrap items-center justify-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em]">
               <span className="rounded-full border border-slate-700 bg-slate-800/80 px-3.5 py-1 text-slate-300">
                 Camera On Tap
@@ -1505,7 +1541,7 @@ const StudentDashboard: React.FC = () => {
               </span>
             </div>
             <Button
-              onClick={() => void simulateScan()}
+              onClick={() => void handleStartAttendance()}
               className="bg-teal-600 hover:bg-teal-500 active:bg-teal-700 w-full py-4 text-base sm:text-lg font-bold text-white shadow-lg shadow-teal-950/50 rounded-xl cursor-pointer flex items-center justify-center gap-2"
               disabled={busy}
             >
