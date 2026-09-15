@@ -18,8 +18,8 @@ export const CHALLENGES: readonly LivenessChallenge[] = [
 ] as const;
 
 export const DEFAULT_MOVEMENT_MAX_TIME_MS = Math.max(
-  3000,
-  Number(import.meta.env.VITE_FACEAPI_MOVEMENT_MAX_TIME_MS || 5500)
+  2500,
+  Number(import.meta.env.VITE_FACEAPI_MOVEMENT_MAX_TIME_MS || 4000)
 );
 export const DEFAULT_MOVEMENT_SAMPLE_FPS = Math.max(
   10,
@@ -32,9 +32,9 @@ export const DEFAULT_MOVEMENT_ROTATION_THRESHOLD = Number(
   import.meta.env.VITE_FACEAPI_MOVEMENT_ROTATION_THRESHOLD || 0.045
 );
 
-export const RELATIVE_PITCH_DELTA_THRESHOLD = 0.062;
-export const RELATIVE_YAW_DELTA_THRESHOLD = 0.078;
-export const MIN_LIVENESS_DURATION_MS = 220;
+export const RELATIVE_PITCH_DELTA_THRESHOLD = 0.048;
+export const RELATIVE_YAW_DELTA_THRESHOLD = 0.058;
+export const MIN_LIVENESS_DURATION_MS = 180;
 export const CONSECUTIVE_FRAMES_REQUIRED = 1;
 
 export type ChallengeDirection = "UP" | "DOWN" | "LEFT" | "RIGHT";

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { motion } from "framer-motion";
 import { useApp } from "../store";
 import { Button, Card, Badge, CountUp } from "../components/Common";
 import CollegeHeader from "../components/CollegeHeader";
@@ -25,6 +26,9 @@ import { prewarmMediaPipe } from "../utils/mediaPipeFaceQuality";
 
 const CameraQrScanner = React.lazy(() => import("../components/CameraQrScanner"));
 const LivePhotoCapture = React.lazy(() => import("../components/LivePhotoCapture"));
+
+const preloadCameraQrScanner = () => import("../components/CameraQrScanner");
+const preloadLivePhotoCapture = () => import("../components/LivePhotoCapture");
 
 const prewarmQrCamera = () => import("../components/CameraQrScanner").then((m) => m.prewarmQrCamera());
 const prewarmFrontCamera = () => import("../components/LivePhotoCapture").then((m) => m.prewarmFrontCamera());
@@ -209,6 +213,55 @@ function canSkipClasses(attended: number, total: number): number | null {
   return canSkip > 0 ? canSkip : 0;
 }
 
+/**
+ * 3-note success chime via Web Audio API:
+ * Notes: C5 (523Hz) -> E5 (659Hz) -> G5 (784Hz), each 80ms long
+ * with exponential gain decay from 0.18 to 0 over 300ms for a clean tone.
+ */
+function playSuccessChime(): void {
+  try {
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const ctx = new AudioContextClass();
+    if (ctx.state === "suspended") {
+      void ctx.resume();
+    }
+
+    const notes = [523, 659, 784]; // C5, E5, G5
+    const noteInterval = 0.08; // 80ms spacing
+    const rampDuration = 0.30; // 300ms fade out
+    const now = ctx.currentTime;
+
+    notes.forEach((freq, idx) => {
+      const startTime = now + idx * noteInterval;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq, startTime);
+
+      // Clean exponential decay: 0.18 -> 0.0001 (Web Audio requires positive target for exponential decay)
+      gain.gain.setValueAtTime(0.18, startTime);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startTime + rampDuration);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(startTime);
+      osc.stop(startTime + rampDuration);
+    });
+
+    // Clean up AudioContext hardware instance after chime concludes
+    setTimeout(() => {
+      try {
+        void ctx.close();
+      } catch {}
+    }, 650);
+  } catch {
+    // Non-blocking fallback if browser policy restricts audio
+  }
+}
+
 const OverallRingGauge: React.FC<{ pct: number }> = ({ pct }) => {
   const radius = 30;
   const circ = 2 * Math.PI * radius;
@@ -253,7 +306,7 @@ const SubjectProgressBar: React.FC<{ subject: SubjectAttendanceRow; animDelay: n
   const needed = classesNeededToReach75(subject.classesAttended, subject.totalClassesConducted);
   const canSkip = canSkipClasses(subject.classesAttended, subject.totalClassesConducted);
 
-  // Tooltip-style contextual hint
+  // Actionable contextual hint
   const hint =
     pct >= 75
       ? canSkip !== null && canSkip > 0
@@ -261,7 +314,7 @@ const SubjectProgressBar: React.FC<{ subject: SubjectAttendanceRow; animDelay: n
         : "At safe threshold"
       : needed !== null && needed > 0
         ? `Attend ${needed} more to reach 75%`
-        : "";
+        : "Below 75% threshold";
 
   return (
     <div
@@ -306,18 +359,120 @@ const SubjectProgressBar: React.FC<{ subject: SubjectAttendanceRow; animDelay: n
         />
       </div>
 
-      {/* Stats row */}
-      <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400">
-        <span>
+      {/* Stats row & Always-visible contextual actionable hint */}
+      <div className="mt-1 flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[11px]">
+        <span className="text-slate-400 font-medium">
           {subject.classesAttended}/{subject.totalClassesConducted} classes
         </span>
-        {hint && (
-          <span className={`font-medium ${tier.textColor} opacity-80`}>{hint}</span>
-        )}
+        <span
+          className={
+            tier.color === "emerald"
+              ? "text-slate-500 font-normal"
+              : `${tier.textColor} font-bold`
+          }
+        >
+          {hint}
+        </span>
       </div>
     </div>
   );
 };
+
+// ---------------------------------------------------------------------------
+// FaceVerificationProgressBar — 60fps RAF-driven 4px countdown timer overlay
+// Starts full (100%) and drains linearly toward faceVerifiedUntil.
+// Color transitions: Emerald (≥50%) -> Amber (<50%) -> Rose (<20%).
+// Pure CSS + RAF with zero React state re-rendering overhead on frame ticks.
+// ---------------------------------------------------------------------------
+interface FaceVerificationProgressBarProps {
+  expiresAt: number;
+  totalDurationMs?: number;
+  onExpire?: () => void;
+}
+
+const FaceVerificationProgressBar: React.FC<FaceVerificationProgressBarProps> = React.memo(({
+  expiresAt,
+  totalDurationMs = FACE_VERIFICATION_WINDOW_MS,
+  onExpire,
+}) => {
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const textRef = useRef<HTMLSpanElement | null>(null);
+  const rafIdRef = useRef<number>(0);
+  const onExpireRef = useRef(onExpire);
+  onExpireRef.current = onExpire;
+
+  useEffect(() => {
+    if (!expiresAt || expiresAt <= Date.now()) return;
+
+    const duration = Math.max(1000, totalDurationMs);
+    let isRunning = true;
+
+    const tick = () => {
+      if (!isRunning) return;
+      const now = Date.now();
+      const remainingMs = Math.max(0, expiresAt - now);
+      const ratio = Math.min(1, Math.max(0, remainingMs / duration));
+      const pct = ratio * 100;
+      const sec = Math.max(0, Math.ceil(remainingMs / 1000));
+
+      if (barRef.current) {
+        barRef.current.style.width = `${pct}%`;
+        if (pct < 20) {
+          barRef.current.style.backgroundColor = "#f43f5e"; // rose-500
+        } else if (pct < 50) {
+          barRef.current.style.backgroundColor = "#f59e0b"; // amber-500
+        } else {
+          barRef.current.style.backgroundColor = "#10b981"; // emerald-500
+        }
+      }
+
+      if (textRef.current) {
+        textRef.current.textContent = `Face verified · ${sec}s remaining`;
+      }
+
+      if (remainingMs <= 0) {
+        isRunning = false;
+        onExpireRef.current?.();
+        return;
+      }
+
+      rafIdRef.current = requestAnimationFrame(tick);
+    };
+
+    rafIdRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      isRunning = false;
+      if (rafIdRef.current) {
+        cancelAnimationFrame(rafIdRef.current);
+      }
+    };
+  }, [expiresAt, totalDurationMs]);
+
+  const initialSec = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
+
+  return (
+    <div className="fixed top-0 left-0 right-0 z-[80] flex flex-col items-center pointer-events-none select-none animate-in fade-in duration-200">
+      {/* Slim 4px Progress Track and Draining Bar */}
+      <div className="w-full h-1 bg-black/50 backdrop-blur-xs overflow-hidden shadow-xs">
+        <div
+          ref={barRef}
+          className="h-full bg-emerald-500 transition-none will-change-[width,background-color]"
+          style={{ width: "100%" }}
+        />
+      </div>
+
+      {/* Floating Pill Below the Bar */}
+      <div className="mt-2.5 inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full bg-slate-900/90 border border-white/15 text-white backdrop-blur-md shadow-lg">
+        <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+        <span ref={textRef} className="font-mono text-xs font-bold text-slate-100">
+          Face verified · {initialSec}s remaining
+        </span>
+      </div>
+    </div>
+  );
+});
+FaceVerificationProgressBar.displayName = "FaceVerificationProgressBar";
 
 const MyAttendanceCard: React.FC = () => {
   const [overviewData, setOverviewData] = useState<AttendanceOverviewData | null>(null);
@@ -635,6 +790,16 @@ const StudentDashboard: React.FC = () => {
     const absent = todaysClasses.filter((record) => record.attendanceCode === "A").length;
     return { present, absent, total: todaysClasses.length };
   }, [todaysClasses]);
+
+  // Derived live session status from already-loaded recentSessions
+  const hasActiveLiveSession = useMemo(() => {
+    return (recentSessions || []).some((s: any) => {
+      const isActive = s?.isActive === true || s?.is_active === true;
+      if (!isActive) return false;
+      const isPresent = String(s?.status || "").toLowerCase() === "present" || s?.attendanceCode === "P";
+      return !isPresent;
+    });
+  }, [recentSessions]);
   /**
    * Schedule a callback during browser idle time with a deadline fallback.
    * Uses requestIdleCallback when available (Chrome/Android), falls back
@@ -917,14 +1082,11 @@ const StudentDashboard: React.FC = () => {
       const recentRes: any = await apiClient.getStudentTodayLiveAttendance();
       if (!mountedRef.current) return;
 
-      if (recentRes?.ok) {
-        setRecentSessions(Array.isArray(recentRes.classes) ? recentRes.classes : []);
-      } else {
-        setRecentSessions([]);
+      if (recentRes?.ok && Array.isArray(recentRes.classes)) {
+        setRecentSessions(recentRes.classes);
       }
     } catch {
-      if (!mountedRef.current) return;
-      setRecentSessions([]);
+      // Retain optimistic local state on background network error
     } finally {
       loadingRecentRef.current = false;
     }
@@ -1150,7 +1312,8 @@ const StudentDashboard: React.FC = () => {
 
       pendingQrPairRef.current = null;
       setScanStep("SUCCESS");
-      try { navigator.vibrate?.([150, 80, 150, 80, 200]); } catch {}
+      try { navigator.vibrate?.([80, 40, 160]); } catch {}
+      playSuccessChime();
       setStatusMsg(result.already || result.alreadyMarked ? "Attendance already marked." : "Attendance confirmed.");
 
       // 1. Optimistic Local State Update (Instant 0ms UI Feedback)
@@ -1377,15 +1540,23 @@ const StudentDashboard: React.FC = () => {
 
       {/* Step 2: Camera QR Scanner with 15s Countdown Overlay */}
       {scannerOpen && (
-        <React.Suspense
-          fallback={
-            <div className="fixed inset-0 z-[70] bg-black/85 backdrop-blur-[2px] flex items-center justify-center text-white text-sm">
-              <LoaderCircle size={28} className="animate-spin text-cyan-400 mr-2" />
-              Opening camera scanner...
-            </div>
-          }
-        >
-          <CameraQrScanner
+        <>
+          {faceVerified && faceVerifiedUntil > Date.now() && (
+            <FaceVerificationProgressBar
+              expiresAt={faceVerifiedUntil}
+              totalDurationMs={FACE_VERIFICATION_WINDOW_MS}
+              onExpire={handleFaceSessionExpired}
+            />
+          )}
+          <React.Suspense
+            fallback={
+              <div className="fixed inset-0 z-[70] bg-black/85 backdrop-blur-[2px] flex items-center justify-center text-white text-sm">
+                <LoaderCircle size={28} className="animate-spin text-cyan-400 mr-2" />
+                Opening camera scanner...
+              </div>
+            }
+          >
+            <CameraQrScanner
             title="Step 2: Scan Classroom QR"
             hint={scannerHint}
             statusTone={scannerStatusTone}
@@ -1427,6 +1598,7 @@ const StudentDashboard: React.FC = () => {
             }}
           />
         </React.Suspense>
+        </>
       )}
       {todayPanelOpen && (
         <div className="fixed inset-0 z-[65] flex items-end justify-center bg-slate-950/55 p-3 backdrop-blur-sm sm:items-center sm:p-4">
@@ -1524,13 +1696,31 @@ const StudentDashboard: React.FC = () => {
         onLogout={logout}
       />
 
-      <div className="mx-auto mb-4 flex min-h-[310px] w-full max-w-lg items-center justify-center rounded-[24px] border border-slate-800 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-900 p-6 sm:p-8 text-white shadow-[0_24px_50px_-20px_rgba(15,23,42,0.85)]">
+      <div className="mx-auto mb-4 relative flex min-h-[310px] w-full max-w-lg items-center justify-center rounded-[24px] border border-slate-800 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-900 p-6 sm:p-8 text-white shadow-[0_24px_50px_-20px_rgba(15,23,42,0.85)]">
         {scanStep === "IDLE" && (
           <div className="w-full text-center">
+            {hasActiveLiveSession && (
+              <div className="absolute top-4 right-4 sm:top-5 sm:right-5 z-10">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-950/80 border border-rose-500/50 px-3 py-1 text-xs font-mono font-extrabold text-rose-400 shadow-[0_0_15px_rgba(244,63,94,0.35)] animate-pulse">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500" />
+                  </span>
+                  ● LIVE
+                </span>
+              </div>
+            )}
             <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-800/80 text-cyan-400 border border-slate-700/60 shadow-inner">
               <Scan size={36} />
             </div>
-            <h2 className="text-2xl font-bold mb-2 tracking-tight text-white">Mark Attendance</h2>
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <h2 className="text-2xl font-bold tracking-tight text-white">Mark Attendance</h2>
+              {hasActiveLiveSession && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-rose-500/20 border border-rose-500/40 px-2 py-0.5 text-[10px] font-black text-rose-400 animate-pulse">
+                  ● LIVE
+                </span>
+              )}
+            </div>
             <p className="text-slate-300 text-sm mb-5 leading-relaxed">Step 1: Face Liveness Check &rarr; Step 2: Scan QR within 15s.</p>
             <div className="mb-6 flex flex-wrap items-center justify-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em]">
               <span className="rounded-full border border-slate-700 bg-slate-800/80 px-3.5 py-1 text-slate-300">
@@ -1546,6 +1736,11 @@ const StudentDashboard: React.FC = () => {
               disabled={busy}
             >
               <Camera size={20} /> Mark Attendance
+              {hasActiveLiveSession && (
+                <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-rose-500 px-2 py-0.5 text-[10px] font-black uppercase text-white shadow-xs animate-pulse">
+                  ● LIVE
+                </span>
+              )}
             </Button>
           </div>
         )}
@@ -1585,9 +1780,14 @@ const StudentDashboard: React.FC = () => {
 
         {scanStep === "SUCCESS" && (
           <div className="w-full text-center">
-            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-950/60 text-emerald-400 border border-emerald-500/40">
+            <motion.div
+              initial={{ scale: 0.5, opacity: 0 }}
+              animate={{ scale: [1.3, 1.0], opacity: 1 }}
+              transition={{ type: "spring", duration: 0.5 }}
+              className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-950/60 text-emerald-400 border border-emerald-500/40 shadow-[0_0_25px_rgba(16,185,129,0.35)]"
+            >
               <CheckCircle size={36} />
-            </div>
+            </motion.div>
             <h2 className="text-2xl font-bold tracking-tight text-white">Present</h2>
             <p className="text-emerald-300 bg-emerald-950/60 border border-emerald-500/30 rounded-lg px-3 py-2 mt-3 text-sm">{statusMsg}</p>
             <Button

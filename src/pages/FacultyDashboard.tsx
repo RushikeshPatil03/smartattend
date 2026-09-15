@@ -617,13 +617,18 @@ const FacultyDashboard: React.FC = () => {
         stopMobileLocatePolling();
         return;
       }
+      const loc = capture.location || capture.coords;
       if (
-        capture.status === "captured" &&
-        capture.coords?.lat != null &&
-        capture.coords?.lng != null
+        (capture.status === "captured" || (capture?.ok && loc)) &&
+        loc?.lat != null &&
+        loc?.lng != null
       ) {
-        const nextLat = Number(capture.coords.lat);
-        const nextLng = Number(capture.coords.lng);
+        if (mobileLocatePollRef.current) {
+          window.clearInterval(mobileLocatePollRef.current);
+          mobileLocatePollRef.current = null;
+        }
+        const nextLat = Number(loc.lat);
+        const nextLng = Number(loc.lng);
         setLocationState({ lat: nextLat, lng: nextLng });
         setIsLocationConfirmed(true);
         setManualLat(nextLat.toFixed(6));
@@ -633,8 +638,8 @@ const FacultyDashboard: React.FC = () => {
         setLocationError("");
         setMobileLocateStatus(
           `Mobile location captured${
-            capture.accuracy
-              ? ` (~${Math.round(Number(capture.accuracy))}m accuracy)`
+            capture.accuracy || loc.accuracy
+              ? ` (~${Math.round(Number(capture.accuracy || loc.accuracy))}m accuracy)`
               : ""
           }.`
         );
@@ -643,7 +648,7 @@ const FacultyDashboard: React.FC = () => {
     };
 
     await poll();
-    mobileLocatePollRef.current = window.setInterval(poll, 2500);
+    mobileLocatePollRef.current = window.setInterval(poll, 6000);
   }, [facultyId, stopMobileLocatePolling]);
 
   // Launch Session Handler

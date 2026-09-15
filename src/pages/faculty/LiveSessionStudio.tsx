@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence, useAnimation } from "framer-motion";
 import QRCode from "react-qr-code";
 import {
   Users,
@@ -87,6 +87,8 @@ interface LiveSessionStudioProps {
   onDisconnectRealtime?: () => void;
   selectedSubject?: SessionSubject;
   selectedDepartment?: SessionDepartment;
+  /** Expected class length in minutes. Used only for the SessionDurationRing. Default 60. */
+  expectedDurationMinutes?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +162,94 @@ export const AttendanceProgressRing: React.FC<AttendanceProgressRingProps> = Rea
   );
 });
 AttendanceProgressRing.displayName = "AttendanceProgressRing";
+
+// ---------------------------------------------------------------------------
+// SessionDurationRing — SVG arc showing elapsed vs expected class duration.
+// Consistent with OverallRingGauge in StudentDashboard.tsx (same geometry).
+// Pure leaf: no hooks, no side effects — memoised on progressPercent + size.
+// ---------------------------------------------------------------------------
+interface SessionDurationRingProps {
+  progressPercent: number; // 0–100+; >100 = overtime (clamped visually to 100)
+  size?: number;           // outer diameter in px (default 48)
+  strokeWidth?: number;    // arc thickness      (default 4)
+  label?: string;          // centre label override (default derived from pct)
+  isProjector?: boolean;   // swap label colour for dark backgrounds
+}
+
+export const SessionDurationRing: React.FC<SessionDurationRingProps> = React.memo(({
+  progressPercent,
+  size = 48,
+  strokeWidth = 4,
+  label,
+  isProjector = false,
+}) => {
+  const pct = isNaN(progressPercent) ? 0 : progressPercent;
+  const filled = Math.min(pct, 100); // clamp arc to full circle at overtime
+
+  const radius = (size - strokeWidth * 2) / 2;
+  const circ   = 2 * Math.PI * radius;
+  const arc    = (filled / 100) * circ;
+
+  // Colour tiers: emerald → amber → red
+  const stroke =
+    pct < 80  ? "#10b981" :   // emerald-500
+    pct < 100 ? "#f59e0b" :   // amber-400
+                "#ef4444";    // red-500 (overtime)
+
+  const trackStroke = isProjector ? "rgba(255,255,255,0.10)" : "#e2e8f0";
+
+  const cx = size / 2;
+  const cy = size / 2;
+
+  // Centre label: show "OT" at overtime, otherwise percentage
+  const centreLabel = label ?? (pct >= 100 ? "OT" : `${Math.round(pct)}%`);
+  const labelSize   = size <= 48 ? 10 : 12;
+
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox={`0 0 ${size} ${size}`}
+      className="shrink-0"
+      aria-label={`Session progress ${Math.round(pct)}%`}
+      role="img"
+    >
+      {/* Background track */}
+      <circle
+        cx={cx} cy={cy} r={radius}
+        fill="none"
+        stroke={trackStroke}
+        strokeWidth={strokeWidth}
+      />
+      {/* Filled arc — rotated so 0% starts at 12-o'clock */}
+      <circle
+        cx={cx} cy={cy} r={radius}
+        fill="none"
+        stroke={stroke}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeDasharray={`${arc} ${circ}`}
+        strokeDashoffset={0}
+        transform={`rotate(-90 ${cx} ${cy})`}
+        style={{ transition: "stroke-dasharray 0.8s cubic-bezier(0.4,0,0.2,1), stroke 0.4s ease" }}
+      />
+      {/* Centre label */}
+      <text
+        x={cx}
+        y={cy + labelSize * 0.38}
+        textAnchor="middle"
+        fontSize={labelSize}
+        fontWeight="700"
+        fontFamily="ui-monospace,SFMono-Regular,monospace"
+        fill={isProjector ? "#d1fae5" : stroke}
+      >
+        {centreLabel}
+      </text>
+    </svg>
+  );
+});
+SessionDurationRing.displayName = "SessionDurationRing";
+
 
 interface AttendanceDonutChartProps {
   presentCount: number;
@@ -592,6 +682,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
   onDisconnectRealtime,
   selectedSubject,
   selectedDepartment,
+  expectedDurationMinutes = 60,
 }) => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isReviewMode, setIsReviewMode] = useState(false);
@@ -612,6 +703,18 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
   } | null>(null);
   const [summaryCountdown, setSummaryCountdown] = useState<number>(4);
   const fullscreenContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // ── Live-count pulse ring + 100% confetti ──────────────────────────────────
+  const badgePulseControls = useAnimation();
+  const [showConfetti, setShowConfetti] = useState(false);
+  const prevPresentCountRef = useRef<number>(-1);
+
+  // ── Scan Rate badge ────────────────────────────────────────────────────────
+  // Purely derived from existing in-memory liveAttendance — zero extra API calls.
+  const [scanRate, setScanRate] = useState<number>(0);
+  const [scanStatus, setScanStatus] = useState<"active" | "idle" | "inactive">("idle");
+  // Wall-clock timestamp of the most recent scan we have observed (ms, 0 = never)
+  const lastScanAtRef = useRef<number>(0);
 
   const handleSessionExpired = useCallback(() => {
     setSessionAutoExpired(true);
@@ -685,6 +788,12 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
     const secs = elapsedSeconds % 60;
     return `${String(hrs).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
   }, [elapsedSeconds]);
+
+  // Session duration ring progress: 0–100 (clamped), >100 means overtime
+  const durationProgressPct = useMemo(() => {
+    const totalSec = Math.max(1, expectedDurationMinutes * 60);
+    return Math.min(100, (elapsedSeconds / totalSec) * 100);
+  }, [elapsedSeconds, expectedDurationMinutes]);
 
   const openFullscreen = async () => {
     setIsFullscreen(true);
@@ -847,6 +956,75 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
     return () => clearInterval(interval);
   }, [sessionSummary, onStopSession]);
 
+  // ── Badge pulse + 100% confetti on each new check-in ──────────────────────
+  useEffect(() => {
+    const prev = prevPresentCountRef.current;
+    prevPresentCountRef.current = presentCount;
+
+    // Skip the initial synchronous mount render (prev === -1)
+    if (prev < 0 || presentCount <= prev) return;
+
+    // Green scale + ring pulse — 600ms, GPU-composited (only transform/opacity)
+    badgePulseControls.start({
+      scale: [1, 1.06, 1],
+      transition: { duration: 0.6, ease: [0.22, 1, 0.36, 1] },
+    });
+
+    // Confetti burst exactly at 100% attendance (totalCount must be > 0)
+    if (totalCount > 0 && presentCount >= totalCount) {
+      setShowConfetti(true);
+      const t = window.setTimeout(() => setShowConfetti(false), 1400);
+      return () => window.clearTimeout(t);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presentCount]);
+
+  // ── Scan Rate interval (10s cadence, in-memory only) ──────────────────────
+  // Keep a ref that always points to the latest liveAttendance array so the
+  // setInterval closure never captures a stale snapshot.
+  const liveAttendanceRef = useRef(liveAttendance);
+  liveAttendanceRef.current = liveAttendance; // sync every render (no effect needed)
+
+  useEffect(() => {
+    if (isReviewMode) return; // stop counting after session ends
+
+    const computeScanRate = () => {
+      const now = Date.now();
+      const window60 = now - 60_000;
+
+      let newestTs = 0;
+      let recentCount = 0;
+
+      (liveAttendanceRef.current || []).forEach((item: any) => {
+        // Accept either camelCase or snake_case timestamp field
+        const raw = item?.markedAt ?? item?.timestamp ?? item?.marked_at ?? null;
+        if (!raw) return;
+        const ms = typeof raw === "number" ? raw : new Date(raw).getTime();
+        if (isNaN(ms)) return;
+        if (ms > newestTs) newestTs = ms;
+        if (ms >= window60) recentCount += 1;
+      });
+
+      // scans-per-minute = count inside rolling 60s window / 1 min
+      const rate = recentCount; // window IS 60s → count === rate/min
+      setScanRate(rate);
+
+      if (rate > 0) {
+        setScanStatus("active");
+        lastScanAtRef.current = newestTs || now;
+      } else {
+        const idleSec = lastScanAtRef.current > 0
+          ? (now - lastScanAtRef.current) / 1000
+          : Infinity;
+        setScanStatus(idleSec < 60 ? "idle" : "inactive");
+      }
+    };
+
+    computeScanRate(); // immediate first tick
+    const id = window.setInterval(computeScanRate, 10_000);
+    return () => window.clearInterval(id);
+  }, [isReviewMode]);
+
   // Handle Stop Session -> Immediately stop session on server (stops QR generation and student scanning) and enter Review Mode with full roster
   const handleEnterReviewMode = async () => {
     if (stoppingSession) return;
@@ -996,28 +1174,32 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
     }
   };
 
-  // CSV Export Handler for Review Screen
+  // CSV Export Handler for Review Screen (100% Client-side, Zero Egress)
   const handleExportCsv = () => {
     const lines: string[] = [];
-    lines.push("Enrollment No,Student Name,Status,Verified At");
+    lines.push("Roll No,Name,Status,Marked At");
 
     presentList.forEach((s) => {
-      const timeStr = s.timestamp ? new Date(s.timestamp).toLocaleTimeString() : "Verified";
-      lines.push(`"${s.enrollmentNo}","${s.name.replace(/"/g, '""')}","Present","${timeStr}"`);
+      const rawTs = s.timestamp || s.rawItem?.markedAt || s.rawItem?.marked_at || s.rawItem?.timestamp;
+      const timeStr = rawTs
+        ? new Date(rawTs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+        : "Present";
+      lines.push(`"${String(s.enrollmentNo).replace(/"/g, '""')}","${String(s.name).replace(/"/g, '""')}","Present","${timeStr}"`);
     });
 
     absentList.forEach((s) => {
-      lines.push(`"${s.enrollmentNo}","${s.name.replace(/"/g, '""')}","Absent","-"`);
+      lines.push(`"${String(s.enrollmentNo).replace(/"/g, '""')}","${String(s.name).replace(/"/g, '""')}","Absent","-"`);
     });
 
-    const csvContent = lines.join("\n");
+    const csvContent = "\uFEFF" + lines.join("\r\n"); // Add UTF-8 BOM for Excel compatibility
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
-    const safeCode = (selectedSubject?.code || "Session").replace(/[^a-zA-Z0-9_-]/g, "_");
-    const dateStr = new Date().toISOString().slice(0, 10);
+    const subjectCode = (selectedSubject?.code || activeSession?.subj?.code || activeSession?.subject || "Subject").replace(/[^a-zA-Z0-9_-]/g, "_");
+    const rawDate = activeSession?.start_time || activeSession?.startTime;
+    const sessionDate = rawDate ? new Date(rawDate).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
     link.setAttribute("href", url);
-    link.setAttribute("download", `Attendance_${safeCode}_${dateStr}.csv`);
+    link.setAttribute("download", `Attendance_${subjectCode}_${sessionDate}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -1158,7 +1340,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
               </div>
             </div>
 
-            {/* Middle: Live Beacon Pill with Elapsed HH:MM:SS */}
+            {/* Middle: Live Beacon Pill with Elapsed HH:MM:SS + Duration Ring */}
             <div className="flex items-center gap-3">
               <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/40 bg-emerald-950/60 px-4 py-1.5 shadow-[0_0_15px_rgba(16,185,129,0.2)]">
                 <span className="relative flex h-2.5 w-2.5">
@@ -1173,6 +1355,13 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                   {formattedElapsed}
                 </span>
               </div>
+              {/* Session Duration Ring — shows elapsed vs expected class time */}
+              <SessionDurationRing
+                progressPercent={durationProgressPct}
+                size={40}
+                strokeWidth={4}
+                isProjector
+              />
             </div>
 
             {/* Right: Circular Progress Ring, Counter & Exit Button */}
@@ -1324,6 +1513,16 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                     Cancel Session
                   </button>
                 )}
+
+                <button
+                  type="button"
+                  onClick={handleExportCsv}
+                  className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-slate-100/90 hover:bg-slate-200/90 px-4.5 py-3 text-xs font-bold text-slate-700 hover:text-slate-900 transition cursor-pointer shadow-2xs active:scale-95"
+                  title="Export local attendance CSV (Roll No, Name, Status, Marked At)"
+                >
+                  <Download size={15} className="text-slate-600" />
+                  <span>Export CSV</span>
+                </button>
 
                 <motion.button
                   whileTap={{ scale: 0.98 }}
@@ -1755,7 +1954,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                 </div>
               </div>
 
-              {/* Middle: Progress Ring */}
+              {/* Middle: Attendance Progress Ring + Session Duration Ring */}
               <div className="hidden xl:flex items-center gap-3.5 rounded-2xl border border-slate-700/60 bg-slate-800/50 px-4 py-2.5 backdrop-blur-xl">
                 <AttendanceProgressRing
                   percentage={Number(attendancePercentage) || 0}
@@ -1766,6 +1965,22 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                   <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400">Class Attendance</div>
                   <div className="text-sm font-bold text-emerald-400">
                     {presentCount} / {totalCount} Enrolled
+                  </div>
+                </div>
+
+                {/* Thin divider */}
+                <div className="h-10 w-px bg-slate-700/60 mx-0.5 shrink-0" aria-hidden />
+
+                {/* Session duration ring */}
+                <SessionDurationRing
+                  progressPercent={durationProgressPct}
+                  size={48}
+                  strokeWidth={4}
+                />
+                <div className="text-left font-mono">
+                  <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400">Duration</div>
+                  <div className="text-sm font-bold text-slate-300">
+                    {formattedElapsed}
                   </div>
                 </div>
               </div>
@@ -1896,17 +2111,59 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                       Real-time student check-ins
                     </p>
                   </div>
-                  <div className="text-right">
-                    <div className="font-mono text-xl font-black text-emerald-600 flex items-center gap-1.5 justify-end">
-                      <Users size={17} />
-                      <span>
-                        <CountUp value={presentCount} />
-                        {effectiveTotalStudents > 0 ? ` / ${effectiveTotalStudents}` : ""}
+                  {/* ── Live Present-Count Badge with Pulse Ring ────────────── */}
+                  <div className="relative text-right">
+                    {/* Pulse ring: scale 1→1.06→1, opacity ring 0.8→0, 600ms */}
+                    <motion.div
+                      animate={badgePulseControls}
+                      className="inline-flex flex-col items-end"
+                      style={{ transformOrigin: "center" }}
+                    >
+                      {/* Green ripple ring — rendered as a sibling overlay */}
+                      <motion.span
+                        key={presentCount}
+                        initial={{ scale: 1, opacity: 0.8 }}
+                        animate={{ scale: 1.6, opacity: 0 }}
+                        transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+                        className="pointer-events-none absolute inset-0 rounded-full border-2 border-emerald-400"
+                        aria-hidden
+                      />
+
+                      <div className="font-mono text-xl font-black text-emerald-600 flex items-center gap-1.5 justify-end">
+                        <Users size={17} />
+                        <span>
+                          <CountUp value={presentCount} />
+                          {effectiveTotalStudents > 0 ? ` / ${effectiveTotalStudents}` : ""}
+                        </span>
+                      </div>
+                      <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                        Checked In
                       </span>
-                    </div>
-                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
-                      Checked In
-                    </span>
+                    </motion.div>
+
+                    {/* ── 100% Confetti Burst (3 dots) ───────────────────────── */}
+                    <AnimatePresence>
+                      {showConfetti && (
+                        <>
+                          {([
+                            { x: -18, y: -22, color: "#10b981", delay: 0 },
+                            { x: 4,   y: -28, color: "#34d399", delay: 0.07 },
+                            { x: 20,  y: -18, color: "#6ee7b7", delay: 0.14 },
+                          ] as const).map(({ x, y, color, delay }, i) => (
+                            <motion.span
+                              key={i}
+                              initial={{ x: 0, y: 0, scale: 0, opacity: 1 }}
+                              animate={{ x, y, scale: 1, opacity: 0 }}
+                              exit={{ opacity: 0 }}
+                              transition={{ duration: 0.65, delay, ease: "easeOut" }}
+                              className="pointer-events-none absolute top-1/2 left-1/2 h-2 w-2 rounded-full"
+                              style={{ background: color, translateX: "-50%", translateY: "-50%" }}
+                              aria-hidden
+                            />
+                          ))}
+                        </>
+                      )}
+                    </AnimatePresence>
                   </div>
                 </div>
 
@@ -1921,6 +2178,32 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                     {effectiveTotalStudents > 0 ? ` / ${effectiveTotalStudents}` : ""} Present
                   </span>
                 </div>
+
+                {/* ── Scan Rate Badge ──────────────────────────────────────── */}
+                {(() => {
+                  const cfg = {
+                    active:   { dot: "bg-emerald-500", label: "Active 🟢",   text: "text-emerald-700", bg: "bg-emerald-50/80  border-emerald-200/80" },
+                    idle:     { dot: "bg-amber-400",   label: "Idle 🟡",     text: "text-amber-700",   bg: "bg-amber-50/80    border-amber-200/80"   },
+                    inactive: { dot: "bg-rose-400",    label: "Inactive 🔴", text: "text-rose-700",    bg: "bg-rose-50/80     border-rose-200/80"     },
+                  }[scanStatus];
+                  return (
+                    <div className={`mt-2 flex items-center justify-between rounded-xl border px-3.5 py-1.5 text-[11px] shadow-2xs ${cfg.bg}`}>
+                      <span className={`flex items-center gap-1.5 font-bold ${cfg.text}`}>
+                        <span className={`h-1.5 w-1.5 rounded-full ${cfg.dot}`} />
+                        Scan Rate
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className={`font-mono font-black ${cfg.text}`}>
+                          {scanRate}/min
+                        </span>
+                        <span className={`font-semibold ${cfg.text} opacity-70`}>
+                          {cfg.label}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })()}
+
 
                 {/* High-Performance Compact Student Search Bar */}
                 <div className="mt-3 relative">
