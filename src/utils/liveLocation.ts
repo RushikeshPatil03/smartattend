@@ -12,13 +12,14 @@ type LiveLocationOptions = {
   preferCached?: boolean;
   maxAgeMs?: number;
   timeoutMs?: number;
+  maxAccuracyMeters?: number;
 };
 
-export const MAX_ACCEPTABLE_ACCURACY_METERS = 120;
-export const ATTENDANCE_GPS_MAX_AGE_MS = 90_000; // 90 seconds rolling window for attendance mark submission
-export const DISPLAY_GPS_MAX_AGE_MS = 300_000; // 5 minutes window for pre-warming / display purposes
+export const MAX_ACCEPTABLE_ACCURACY_METERS = 30; // Strict < 30m accuracy threshold for geo-fence security
+export const ATTENDANCE_GPS_MAX_AGE_MS = 10_000; // 10 seconds fresh cache window
+export const DISPLAY_GPS_MAX_AGE_MS = 60_000; // 1 minute window for initial dashboard display / pre-warming
 export const ROLLING_CACHE_MAX_AGE_MS = ATTENDANCE_GPS_MAX_AGE_MS;
-const LOCATION_WARMUP_WINDOW_MS = 6000;
+const GPS_FALLBACK_TIMEOUT_MS = 4000; // 4-second timeout fallback for getCurrentPosition
 
 // In-memory rolling GPS cache
 let lastResolvedLocation: CachedLiveLocation | null = null;
@@ -29,6 +30,7 @@ const activeListeners = new Set<(location: LiveLocation) => void>();
 let inFlightLocationPromise: Promise<LiveLocation> | null = null;
 
 function isInsecureMobileContext() {
+  if (typeof window === "undefined") return false;
   const host = window.location.hostname;
   const isLocalHost = host === "localhost" || host === "127.0.0.1";
   return !window.isSecureContext && !isLocalHost;
@@ -51,9 +53,9 @@ function locationErrorMessage(err?: GeolocationPositionError, deniedByPermission
 }
 
 function precisionError(accuracy?: number) {
-  return `Precise GPS required. Current accuracy is ~${Math.round(
+  return `Precise GPS required (< ${MAX_ACCEPTABLE_ACCURACY_METERS}m). Current accuracy is ~${Math.round(
     Number(accuracy || 0)
-  )}m. Move outdoors and enable high-accuracy location.`;
+  )}m. Move outdoors or near a window for better satellite fix.`;
 }
 
 async function getPermissionState(): Promise<PermissionState | null> {
@@ -92,7 +94,7 @@ function handleIncomingPosition(pos: GeolocationPosition) {
   if (
     !bestRecentLocation ||
     now - bestRecentLocation.capturedAt > DISPLAY_GPS_MAX_AGE_MS ||
-    accuracy < bestRecentLocation.accuracy
+    accuracy <= bestRecentLocation.accuracy
   ) {
     bestRecentLocation = cached;
   }
@@ -109,6 +111,7 @@ function handleIncomingPosition(pos: GeolocationPosition) {
 
 /**
  * Start the continuous background rolling GPS watcher with watchPosition
+ * Uses enableHighAccuracy: true and maximumAge: 10000 (10s cache)
  * Keeps rolling cache hot with 0ms latency on student submission
  */
 export function startRollingGpsWatcher(
@@ -121,10 +124,11 @@ export function startRollingGpsWatcher(
 
   if (onUpdate) {
     activeListeners.add(onUpdate);
-    // If we already have a warm cache (< maxAgeMs), trigger callback immediately
+    // If we already have a warm cache (< maxAgeMs) with good accuracy, trigger callback immediately
     if (
       lastResolvedLocation &&
-      Date.now() - lastResolvedLocation.capturedAt <= maxAgeMs
+      Date.now() - lastResolvedLocation.capturedAt <= maxAgeMs &&
+      lastResolvedLocation.accuracy <= MAX_ACCEPTABLE_ACCURACY_METERS
     ) {
       try {
         onUpdate({
@@ -140,32 +144,16 @@ export function startRollingGpsWatcher(
 
   if (activeWatchId === null) {
     try {
-      // Phase 1: Low accuracy first — fast chip wake, no CPU spike
       activeWatchId = navigator.geolocation.watchPosition(
         (pos) => {
           handleIncomingPosition(pos);
-          // Phase 2: After first fix arrives, upgrade to high accuracy
-          if (activeWatchId !== null && watcherRefCount > 0) {
-            try {
-              navigator.geolocation.clearWatch(activeWatchId);
-              activeWatchId = navigator.geolocation.watchPosition(
-                (pos2) => handleIncomingPosition(pos2),
-                (err2) => {
-                  if (err2?.code === 1) stopInternalWatcher();
-                },
-                { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
-              );
-            } catch (e) {
-              console.warn("Failed to upgrade GPS watcher to high accuracy:", e);
-            }
-          }
         },
         (err) => {
           if (err.code === 1) stopInternalWatcher();
         },
         {
-          enableHighAccuracy: false,
-          maximumAge: 30000,
+          enableHighAccuracy: true,
+          maximumAge: 10000,
           timeout: 10000,
         }
       );
@@ -196,10 +184,11 @@ function stopInternalWatcher() {
 
 /**
  * Synchronous 0ms getter for rolling cached location
- * Defaults to 90-second attendance submission window
+ * Defaults to 10-second attendance submission window and < 30m accuracy
  */
 export function getInstantCachedLocation(
-  maxAgeMs: number = ATTENDANCE_GPS_MAX_AGE_MS
+  maxAgeMs: number = ATTENDANCE_GPS_MAX_AGE_MS,
+  maxAccuracy: number = MAX_ACCEPTABLE_ACCURACY_METERS
 ): LiveLocation | null {
   const now = Date.now();
 
@@ -207,7 +196,7 @@ export function getInstantCachedLocation(
   if (
     bestRecentLocation &&
     now - bestRecentLocation.capturedAt <= maxAgeMs &&
-    bestRecentLocation.accuracy <= MAX_ACCEPTABLE_ACCURACY_METERS
+    bestRecentLocation.accuracy <= maxAccuracy
   ) {
     return {
       lat: bestRecentLocation.lat,
@@ -220,7 +209,7 @@ export function getInstantCachedLocation(
   if (
     lastResolvedLocation &&
     now - lastResolvedLocation.capturedAt <= maxAgeMs &&
-    lastResolvedLocation.accuracy <= MAX_ACCEPTABLE_ACCURACY_METERS
+    lastResolvedLocation.accuracy <= maxAccuracy
   ) {
     return {
       lat: lastResolvedLocation.lat,
@@ -238,8 +227,9 @@ export async function getLiveLocation(): Promise<LiveLocation> {
 
 /**
  * Primary location resolver
- * Checks 90s rolling cache first for INSTANT 0ms resolution.
- * If cache is cold, acquires high-accuracy GPS with active watcher.
+ * 1. Checks 10s rolling cache first for INSTANT 0ms resolution.
+ * 2. If cache is pending or cold, concurrently runs watchPosition listener and
+ *    getCurrentPosition with a 4-second timeout.
  */
 export async function getLiveLocationWithOptions(
   options: LiveLocationOptions = {}
@@ -249,8 +239,18 @@ export async function getLiveLocationWithOptions(
       ? options.maxAgeMs
       : ATTENDANCE_GPS_MAX_AGE_MS;
 
-  // 1. Instant 0ms Path: Check rolling cache
-  const cached = getInstantCachedLocation(maxAgeMs);
+  const maxAccuracy =
+    typeof options.maxAccuracyMeters === "number" && options.maxAccuracyMeters > 0
+      ? options.maxAccuracyMeters
+      : MAX_ACCEPTABLE_ACCURACY_METERS;
+
+  const timeoutMs =
+    typeof options.timeoutMs === "number" && options.timeoutMs > 0
+      ? options.timeoutMs
+      : GPS_FALLBACK_TIMEOUT_MS;
+
+  // 1. Instant 0ms Fast Path: Check rolling cache
+  const cached = getInstantCachedLocation(maxAgeMs, maxAccuracy);
   if (cached) {
     return cached;
   }
@@ -273,7 +273,7 @@ export async function getLiveLocationWithOptions(
     throw new Error(locationErrorMessage(undefined, true));
   }
 
-  // Ensure rolling watcher is spinning
+  // Ensure rolling watcher is running with high accuracy & 10s cache
   startRollingGpsWatcher(undefined, maxAgeMs);
 
   inFlightLocationPromise = new Promise<LiveLocation>((resolve, reject) => {
@@ -290,7 +290,7 @@ export async function getLiveLocationWithOptions(
 
     const onLocationArrived = (loc: LiveLocation) => {
       if (done) return;
-      if (loc.accuracy <= MAX_ACCEPTABLE_ACCURACY_METERS) {
+      if (loc.accuracy <= maxAccuracy) {
         done = true;
         cleanup();
         resolve(loc);
@@ -300,14 +300,14 @@ export async function getLiveLocationWithOptions(
     activeListeners.add(onLocationArrived);
     unsubscribeListener = () => activeListeners.delete(onLocationArrived);
 
-    // Also trigger single one-shot query to kick GPS chip
+    // Fallback: trigger single getCurrentPosition with 4-second timeout
     try {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           handleIncomingPosition(pos);
           if (done) return;
           const acc = Number(pos.coords.accuracy || 0);
-          if (acc > 0 && acc <= MAX_ACCEPTABLE_ACCURACY_METERS) {
+          if (acc > 0 && acc <= maxAccuracy) {
             done = true;
             cleanup();
             resolve({
@@ -325,7 +325,7 @@ export async function getLiveLocationWithOptions(
             reject(new Error(locationErrorMessage(err)));
           }
         },
-        { enableHighAccuracy: true, timeout: 6000, maximumAge: 10000 }
+        { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 10000 }
       );
     } catch {}
 
@@ -334,10 +334,16 @@ export async function getLiveLocationWithOptions(
       done = true;
       cleanup();
 
-      const lastCached = getInstantCachedLocation(maxAgeMs) || getInstantCachedLocation(DISPLAY_GPS_MAX_AGE_MS);
+      const lastCached =
+        getInstantCachedLocation(maxAgeMs, maxAccuracy) ||
+        getInstantCachedLocation(DISPLAY_GPS_MAX_AGE_MS, maxAccuracy);
+
       if (lastCached) {
         resolve(lastCached);
-      } else if (lastResolvedLocation && lastResolvedLocation.accuracy <= MAX_ACCEPTABLE_ACCURACY_METERS) {
+      } else if (
+        lastResolvedLocation &&
+        lastResolvedLocation.accuracy <= maxAccuracy
+      ) {
         resolve({
           lat: lastResolvedLocation.lat,
           lng: lastResolvedLocation.lng,
@@ -346,9 +352,13 @@ export async function getLiveLocationWithOptions(
       } else if (lastResolvedLocation) {
         reject(new Error(precisionError(lastResolvedLocation.accuracy)));
       } else {
-        reject(new Error("Unable to obtain GPS fix within timeout. Please move near a window or outdoors."));
+        reject(
+          new Error(
+            "GPS location acquisition timed out (4s). Please move near a window or check location settings."
+          )
+        );
       }
-    }, LOCATION_WARMUP_WINDOW_MS);
+    }, timeoutMs);
   });
 
   try {
@@ -359,7 +369,7 @@ export async function getLiveLocationWithOptions(
 }
 
 /**
- * Prewarms the GPS engine ahead of scan (accepts up to 5-minute display cache)
+ * Prewarms the GPS engine ahead of scan (accepts up to 1-minute display cache)
  */
 export async function prewarmLiveLocation(
   options: LiveLocationOptions = {}
@@ -369,6 +379,7 @@ export async function prewarmLiveLocation(
     return await getLiveLocationWithOptions({
       preferCached: true,
       maxAgeMs: DISPLAY_GPS_MAX_AGE_MS,
+      timeoutMs: 4000,
       ...options,
     });
   } catch {

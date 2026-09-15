@@ -15,7 +15,7 @@ const { validateStudentLocation } = require("../services/locationValidation");
 const { verifyFaceAgainstStudent } = require("../services/faceVerification");
 const { normalizeFingerprint } = require("../services/deviceFingerprint");
 const { expireIfInactive, touchSession } = require("../services/sessionLifecycle");
-const { broadcastAttendance } = require("../services/realtimeService");
+const { broadcastAttendance, removeSessionChannel } = require("../services/realtimeService");
 const auth = require("../middleware/auth");
 const rateLimit = require("../middleware/rateLimit");
 const env = require("../config/env");
@@ -427,9 +427,16 @@ router.post(
         return res.status(403).json({ ok: false, error: eligibility.error });
       }
 
-      const locationCheck = validateStudentLocation(location, session.location);
+      const locationCheck = validateStudentLocation(location, session.location, sessionId);
       if (!locationCheck.ok) {
-        return res.status(403).json({ ok: false, error: locationCheck.error });
+        return res.status(403).json({
+          ok: false,
+          code: locationCheck.code || "LOCATION_ERROR",
+          error: locationCheck.error,
+          distanceMeters: locationCheck.distanceMeters,
+          allowedMeters: locationCheck.allowedMeters,
+          accuracy: locationCheck.accuracy,
+        });
       }
 
       // Check if attendance already marked
@@ -564,9 +571,16 @@ const handleMarkAttendance = async (req, res) => {
         return res.status(403).json({ ok: false, error: eligibility.error });
       }
 
-      const locationCheck = validateStudentLocation(location, session.location);
+      const locationCheck = validateStudentLocation(location, session.location, sessionId);
       if (!locationCheck.ok) {
-        return res.status(403).json({ ok: false, error: locationCheck.error });
+        return res.status(403).json({
+          ok: false,
+          code: locationCheck.code || "LOCATION_ERROR",
+          error: locationCheck.error,
+          distanceMeters: locationCheck.distanceMeters,
+          allowedMeters: locationCheck.allowedMeters,
+          accuracy: locationCheck.accuracy,
+        });
       }
 
       // Check face verification if enabled
@@ -1465,9 +1479,16 @@ async function handleTotpAttendanceSubmission(req, res) {
 
     let locationCheck = { ok: true, distanceMeters: null };
     if (session.location) {
-      locationCheck = validateStudentLocation(location, session.location);
+      locationCheck = validateStudentLocation(location, session.location, sessionId);
       if (!locationCheck.ok) {
-        return res.status(403).json({ ok: false, error: locationCheck.error });
+        return res.status(403).json({
+          ok: false,
+          code: locationCheck.code || "LOCATION_ERROR",
+          error: locationCheck.error,
+          distanceMeters: locationCheck.distanceMeters,
+          allowedMeters: locationCheck.allowedMeters,
+          accuracy: locationCheck.accuracy,
+        });
       }
     }
 
@@ -2092,8 +2113,9 @@ router.delete("/session/:id", auth(["FACULTY", "ADMIN"]), async (req, res) => {
       return res.status(404).json({ ok: false, error: "Session not found or unauthorized" });
     }
 
-    // Invalidate session cache
+    // Invalidate session cache and cleanup realtime batch & channel
     invalidateCachedSession(sessionId);
+    await removeSessionChannel(sessionId).catch(() => {});
 
     // Clean dependent records in parallel before deleting the parent session
     await Promise.allSettled([

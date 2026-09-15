@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback, startTransition } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useApp } from "../store";
 import {
@@ -819,36 +819,45 @@ const FacultyDashboard: React.FC = () => {
     setAttendeesLoading(true);
     setAttendanceDataLoaded(false);
     try {
-      const res: any = await apiClient.fetchAttendance({
-        sessionId: activeSessionId,
-        includeDerivedAbsences: includeDerived,
-      });
+      // 1. Fetch initial atomic roster snapshot
+      let res: any = await apiClient.getSessionRosterSnapshot(activeSessionId);
+
+      // Graceful fallback to general fetchAttendance if snapshot endpoint fails
+      if (!res?.ok) {
+        res = await apiClient.fetchAttendance({
+          sessionId: activeSessionId,
+          includeDerivedAbsences: includeDerived,
+        });
+      }
+
       if (res?.ok) {
         const nextAttendance = Array.isArray(res.attendance) ? res.attendance : [];
-        setLiveAttendance(nextAttendance);
-        const total = Number(
-          res.totalStudents || res.totalStrength || nextAttendance.length || 0
-        );
-        if (total > 0) {
-          setTotalClassStrength(total);
-        }
-        setAttendanceStatusMap((prev) => {
-          const next = { ...prev };
-          nextAttendance.forEach((item: any) => {
-            const enrollmentNo = String(
-              item?.student?.enrollmentNo || item?.enrollmentNo || ""
-            ).trim();
-            if (!enrollmentNo) return;
-            if (!next[enrollmentNo]) {
-              next[enrollmentNo] =
-                String(item?.status || "").toLowerCase() === "present"
-                  ? "present"
-                  : "absent";
-            }
+        startTransition(() => {
+          setLiveAttendance(nextAttendance);
+          const total = Number(
+            res.totalStudents || res.totalStrength || nextAttendance.length || 0
+          );
+          if (total > 0) {
+            setTotalClassStrength(total);
+          }
+          setAttendanceStatusMap((prev) => {
+            const next = { ...prev };
+            nextAttendance.forEach((item: any) => {
+              const enrollmentNo = String(
+                item?.student?.enrollmentNo || item?.enrollmentNo || ""
+              ).trim().toUpperCase();
+              if (!enrollmentNo) return;
+              if (!next[enrollmentNo]) {
+                next[enrollmentNo] =
+                  String(item?.status || "").toLowerCase() === "present"
+                    ? "present"
+                    : "absent";
+              }
+            });
+            return next;
           });
-          return next;
+          setAttendanceDataLoaded(true);
         });
-        setAttendanceDataLoaded(true);
       }
     } catch (err) {
       console.warn("Failed to load attendees:", err);
@@ -1024,7 +1033,7 @@ const FacultyDashboard: React.FC = () => {
     [activeSessionId, manual]
   );
 
-  // Flush Throttled Realtime Events to State in a Single Atomic Batch
+  // Flush Throttled Realtime Events to State in a Single Atomic Batch with startTransition
   const flushRealtimeQueue = useCallback(() => {
     if (rafTimerRef.current !== null) {
       window.clearTimeout(rafTimerRef.current);
@@ -1039,83 +1048,113 @@ const FacultyDashboard: React.FC = () => {
     const rawEvents = [...queueRef.current];
     queueRef.current = [];
 
-    // Deduplicate items in buffer by studentId or enrollmentNo (preserving latest state)
+    // Deduplicate items in buffer by enrollmentNo or studentId (preserving latest state)
     const dedupedMap = new Map<string, any>();
     rawEvents.forEach((att) => {
-      const studentId = String(
-        att?.studentId || att?.student?._id || att?.student?.id || ""
-      ).trim();
       const enrollmentNo = String(
-        att?.enrollmentNo || att?.student?.enrollmentNo || ""
+        att?.enrollmentNo || att?.student?.enrollmentNo || att?.roll || ""
+      ).trim().toUpperCase();
+      const studentId = String(
+        att?.studentId || att?.student?._id || att?.student?.id || att?.sId || ""
       ).trim();
-      const key = studentId || enrollmentNo || String(att?.id || att?._id || Math.random());
+      const key = enrollmentNo || studentId || String(att?.id || att?._id || Math.random());
       dedupedMap.set(key, att);
     });
     const events = Array.from(dedupedMap.values());
+    if (events.length === 0) return;
 
-    setLiveAttendance((prev) => {
-      let nextList = [...prev];
-      events.forEach((att) => {
-        const enrollmentNo = String(
-          att.enrollmentNo || att.student?.enrollmentNo || ""
-        ).trim();
-        const studentId = String(
-          att.studentId || att.student?._id || att.student?.id || ""
-        ).trim();
+    startTransition(() => {
+      setLiveAttendance((prev) => {
+        const nextList = [...prev];
 
-        const existingIdx = nextList.findIndex((item: any) => {
-          const itemEnrollment = String(
-            item?.student?.enrollmentNo || item?.enrollmentNo || ""
-          ).trim();
-          const itemStudentId = String(
-            item?.student?.id || item?.student?._id || item?.studentId || ""
-          ).trim();
-          return (
-            (enrollmentNo && itemEnrollment === enrollmentNo) ||
-            (studentId && itemStudentId === studentId)
-          );
+        // O(1) Index maps for instant lookup
+        const enrollmentIndexMap = new Map<string, number>();
+        const studentIdIndexMap = new Map<string, number>();
+
+        nextList.forEach((item: any, idx: number) => {
+          const eno = String(item?.student?.enrollmentNo || item?.enrollmentNo || "").trim().toUpperCase();
+          const sId = String(item?.student?.id || item?.student?._id || item?.studentId || "").trim();
+          if (eno) enrollmentIndexMap.set(eno, idx);
+          if (sId) studentIdIndexMap.set(sId, idx);
         });
 
-        const newRecord: LiveAttendanceItem = {
-          _id: att.id || att._id,
-          id: att.id || att._id,
-          timestamp: att.timestamp || new Date().toISOString(),
-          status: att.status === "absent" ? "absent" : "present",
-          student: {
-            name: att.studentName || att.student?.name || enrollmentNo || "Student",
-            enrollmentNo: enrollmentNo,
-            profilePhotoUrl: att.profilePhotoUrl || att.student?.profilePhotoUrl,
-            email: att.studentEmail || att.student?.email,
-          },
-          enrollmentNo: enrollmentNo,
-          distanceMeters: att.distanceMeters ?? att.location?.distanceMeters,
-          isFaceVerified: att.isFaceVerified ?? att.face_verification?.verified,
-        };
+        const newItemsToPrepend: LiveAttendanceItem[] = [];
 
-        if (existingIdx >= 0) {
-          nextList[existingIdx] = { ...nextList[existingIdx], ...newRecord };
-        } else {
-          nextList = [newRecord, ...nextList];
-        }
-      });
-      return nextList;
-    });
+        events.forEach((att) => {
+          const enrollmentNo = String(
+            att.enrollmentNo || att.student?.enrollmentNo || att.roll || ""
+          ).trim().toUpperCase();
+          const studentId = String(
+            att.studentId || att.student?._id || att.student?.id || att.sId || ""
+          ).trim();
 
-    setAttendanceStatusMap((prev) => {
-      const nextMap = { ...prev };
-      events.forEach((att) => {
-        const enrollmentNo = String(
-          att.enrollmentNo || att.student?.enrollmentNo || ""
-        ).trim();
-        if (enrollmentNo) {
-          nextMap[enrollmentNo] = att.status === "absent" ? "absent" : "present";
-        }
+          let targetIdx = -1;
+          if (enrollmentNo && enrollmentIndexMap.has(enrollmentNo)) {
+            targetIdx = enrollmentIndexMap.get(enrollmentNo)!;
+          } else if (studentId && studentIdIndexMap.has(studentId)) {
+            targetIdx = studentIdIndexMap.get(studentId)!;
+          }
+
+          const isoTime = att.timestamp || (att.t ? new Date(att.t * 1000).toISOString() : new Date().toISOString());
+
+          if (targetIdx >= 0) {
+            const existing = nextList[targetIdx];
+            nextList[targetIdx] = {
+              ...existing,
+              status: att.status === "absent" ? "absent" : "present",
+              timestamp: isoTime,
+              student: {
+                ...existing.student,
+                name: att.studentName || att.name || existing.student?.name || enrollmentNo || "Student",
+                enrollmentNo: enrollmentNo || existing.student?.enrollmentNo || "",
+                profilePhotoUrl: att.profilePhotoUrl || existing.student?.profilePhotoUrl,
+                email: att.studentEmail || existing.student?.email,
+              },
+              distanceMeters: att.distanceMeters ?? att.location?.distanceMeters ?? existing.distanceMeters,
+              isFaceVerified: att.isFaceVerified ?? att.face_verification?.verified ?? existing.isFaceVerified,
+            };
+          } else {
+            const newRecord: LiveAttendanceItem = {
+              _id: att.id || att._id || `att-${enrollmentNo || studentId}-${Date.now()}`,
+              id: att.id || att._id || `att-${enrollmentNo || studentId}-${Date.now()}`,
+              timestamp: isoTime,
+              status: att.status === "absent" ? "absent" : "present",
+              student: {
+                name: att.studentName || att.name || att.student?.name || enrollmentNo || "Student",
+                enrollmentNo: enrollmentNo,
+                profilePhotoUrl: att.profilePhotoUrl || att.student?.profilePhotoUrl,
+                email: att.studentEmail || att.student?.email,
+              },
+              enrollmentNo: enrollmentNo,
+              distanceMeters: att.distanceMeters ?? att.location?.distanceMeters,
+              isFaceVerified: att.isFaceVerified ?? att.face_verification?.verified,
+            };
+            newItemsToPrepend.push(newRecord);
+            const newIdx = 0;
+            if (enrollmentNo) enrollmentIndexMap.set(enrollmentNo, newIdx);
+            if (studentId) studentIdIndexMap.set(studentId, newIdx);
+          }
+        });
+
+        return newItemsToPrepend.length > 0 ? [...newItemsToPrepend, ...nextList] : nextList;
       });
-      return nextMap;
+
+      setAttendanceStatusMap((prev) => {
+        const nextMap = { ...prev };
+        events.forEach((att) => {
+          const enrollmentNo = String(
+            att.enrollmentNo || att.student?.enrollmentNo || att.roll || ""
+          ).trim().toUpperCase();
+          if (enrollmentNo) {
+            nextMap[enrollmentNo] = att.status === "absent" ? "absent" : "present";
+          }
+        });
+        return nextMap;
+      });
     });
   }, []);
 
-  // Schedule batch flush using 300ms window synchronized with next browser animation frame
+  // Schedule batch flush using 200ms window synchronized with next browser animation frame
   const scheduleQueueFlush = useCallback(() => {
     if (rafTimerRef.current !== null || rafIdRef.current !== null) {
       return;
@@ -1127,10 +1166,10 @@ const FacultyDashboard: React.FC = () => {
         rafIdRef.current = null;
         flushRealtimeQueue();
       });
-    }, 300);
+    }, 200);
   }, [flushRealtimeQueue]);
 
-  // Supabase Realtime Attendance Subscription with Concurrency-Safe 300ms RAF Buffer
+  // Supabase Realtime Attendance Subscription with Concurrency-Safe RAF Buffer
   useEffect(() => {
     if (!activeSessionId) {
       disconnectRealtime();
@@ -1141,11 +1180,31 @@ const FacultyDashboard: React.FC = () => {
 
     const unsubscribe = subscribeToSessionAttendance(
       activeSessionId,
-      (payload) => {
-        const attendanceData = payload?.attendance || payload;
-        if (!attendanceData) return;
+      (payload: any) => {
+        if (!payload) return;
 
-        queueRef.current.push(attendanceData);
+        // Support micro-batched records array or single record payload
+        if (Array.isArray(payload.records) && payload.records.length > 0) {
+          queueRef.current.push(...payload.records);
+        } else if (Array.isArray(payload.items) && payload.items.length > 0) {
+          payload.items.forEach((item: any) => {
+            if (!item) return;
+            queueRef.current.push({
+              id: item.id,
+              studentId: item.sId,
+              studentName: item.name,
+              enrollmentNo: item.roll,
+              timestamp: item.t ? new Date(item.t * 1000).toISOString() : new Date().toISOString(),
+              status: "present",
+            });
+          });
+        } else {
+          const attendanceData = payload?.attendance || payload;
+          if (attendanceData) {
+            queueRef.current.push(attendanceData);
+          }
+        }
+
         scheduleQueueFlush();
       }
     );

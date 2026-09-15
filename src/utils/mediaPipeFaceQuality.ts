@@ -71,6 +71,18 @@ async function getDetector() {
   return detectorPromise;
 }
 
+/**
+ * Prewarms the MediaPipe FaceDetector model and WebAssembly backend
+ * Call during idle time when student dashboard loads.
+ */
+export async function prewarmMediaPipe(): Promise<void> {
+  try {
+    await getDetector();
+  } catch {
+    // Non-blocking warmup
+  }
+}
+
 function getDetectionScore(detection: Detection) {
   return Number(detection.categories?.[0]?.score || 0);
 }

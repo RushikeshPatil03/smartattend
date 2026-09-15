@@ -21,11 +21,14 @@ import { createSequentialBuffer } from "../services/sequentialQrBuffer";
 import { parseQrPayload, RotatingQrPayload } from "../utils/totpQrGenerator";
 
 import { preloadForStudent } from "../utils/faceApiLoader";
+import { prewarmMediaPipe } from "../utils/mediaPipeFaceQuality";
+import {
+  IntegratedAttendanceScanner,
+  IntegratedScannerSuccessResult,
+} from "../components/IntegratedAttendanceScanner";
 
 const preloadCameraQrScanner = () => import("../components/CameraQrScanner");
-const CameraQrScanner = React.lazy(preloadCameraQrScanner);
 const preloadLivePhotoCapture = () => import("../components/LivePhotoCapture");
-const LivePhotoCapture = React.lazy(preloadLivePhotoCapture);
 
 const prewarmFrontCamera = () => {
   preloadLivePhotoCapture().then((m) => m.prewarmFrontCamera?.()).catch(() => {});
@@ -688,6 +691,7 @@ const StudentDashboard: React.FC = () => {
     // MediaPipe WASM init is the heaviest, starts after face-api has GPU context.
     scheduleIdle(() => {
       if (!mountedRef.current) return;
+      void prewarmMediaPipe();
       void prewarmFrontCamera();
       void prewarmQrCamera();
     }, 1300);
@@ -1215,48 +1219,10 @@ const StudentDashboard: React.FC = () => {
     resolveLiveLocation,
   ]);
 
-  const simulateScan = useCallback(async (forcedVerifiedUntil?: number) => {
-    if (submitLockRef.current || busy) return;
-    const currentVerifiedUntil = forcedVerifiedUntil ?? faceVerifiedUntilRef.current;
-    if (currentVerifiedUntil <= Date.now()) {
-      faceVerifiedUntilRef.current = 0;
-      setFaceVerifiedUntil(0);
-      setFaceGateStatus("VERIFYING");
-      setFaceGateMessage("");
-      setLiveFacePhoto("");
-      setFaceGateOpen(true);
-      return;
-    }
-
-    submitLockRef.current = true;
-    setBusy(true);
-    setScannerError("");
-    setScanStep("PREPARING");
-    setStatusMsg("Opening QR scanner...");
-
-    try {
-      pendingQrPairRef.current = null;
-      void preloadCameraQrScanner();
-      setScanStep("SCANNING");
-      setStatusMsg("Scan the rotating Dynamic QR pair to mark attendance.");
-      await submitQrAttendance();
-    } catch (err: any) {
-      const message = err?.message || "Attendance failed.";
-      if (message.toLowerCase().includes("location")) {
-        setLocationReady(false);
-      }
-      setScanStep("ERROR");
-      setStatusMsg(message);
-    } finally {
-      setBusy(false);
-      submitLockRef.current = false;
-      void warmLocation();
-    }
-  }, [
-    busy,
-    submitQrAttendance,
-    warmLocation,
-  ]);
+  const simulateScan = useCallback(() => {
+    if (busy) return;
+    setScannerOpen(true);
+  }, [busy]);
 
   useEffect(() => {
     autoLaunchHandledRef.current = true;
@@ -1319,214 +1285,113 @@ const StudentDashboard: React.FC = () => {
         </div>
       )}
 
-      {faceGateOpen && (
-        <div className="fixed inset-0 z-[75] flex items-end sm:items-center justify-center bg-black/85 backdrop-blur-sm">
-          <div className="
-            relative w-full h-[92dvh] sm:h-auto sm:max-w-lg
-            overflow-hidden
-            rounded-t-[32px] sm:rounded-[28px]
-            bg-slate-900 border border-slate-800
-            shadow-[0_-24px_80px_-12px_rgba(0,0,0,0.7)]
-            flex flex-col
-          ">
-            {/* Close button */}
-            <button
-              type="button"
-              onClick={() => {
-                setFaceGateOpen(false);
-                setFaceGateStatus("VERIFYING");
-                setLiveFacePhoto("");
-                setBusy(false);
-                submitLockRef.current = false;
-                setScanStep("IDLE");
-                setStatusMsg("");
-              }}
-              className="absolute top-4 right-4 z-30 p-2 text-slate-400 hover:text-white rounded-full bg-slate-800/80 hover:bg-slate-700 transition-colors cursor-pointer"
-              title="Close face verification"
-            >
-              <X size={18} />
-            </button>
-
-            {/* Drag handle pill on mobile */}
-            <div className="flex justify-center pt-3 pb-1 sm:hidden">
-              <div className="h-1 w-10 rounded-full bg-slate-700" />
-            </div>
-
-            {/* LivePhotoCapture fills remaining space */}
-            <div className="flex-1 overflow-y-auto px-4 pb-4 pt-2">
-              <React.Suspense
-                fallback={
-                  <div className="flex h-full items-center justify-center py-12 text-sm text-slate-400">
-                    Opening camera...
-                  </div>
-                }
-              >
-                <LivePhotoCapture
-                  value={liveFacePhoto}
-                  onChange={setLiveFacePhoto}
-                  onCaptured={(capture) => {
-                    handleLiveFaceCaptured(capture);
-                    if (
-                      capture.faceVerification?.matched &&
-                      capture.faceVerification.liveness === "movement"
-                    ) {
-                      const freshExpiry = Date.now() + FACE_VERIFICATION_WINDOW_MS;
-                      window.setTimeout(() => {
-                        void simulateScan(freshExpiry);
-                      }, 60);
-                    }
-                  }}
-                  disabled={faceGateStatus === "MATCHING" || !registeredFacePhoto}
-                  autoStart
-                  autoCapture
-                  hideLauncher
-                  compactMode
-                  showCapturedPreview={false}
-                  faceVerificationReferenceUrl={registeredFacePhoto}
-                  title="Face Verification"
-                  description={
-                    !registeredFacePhoto
-                      ? "No registered student profile photo found."
-                      : "Verify your live face to mark attendance."
-                  }
-                />
-              </React.Suspense>
-            </div>
-          </div>
-        </div>
-      )}
-      {scannerOpen && (
-        <React.Suspense
-          fallback={
-            <div className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-black/85 p-4 text-sm text-white">
-              Opening scanner...
-            </div>
+      <IntegratedAttendanceScanner
+        isOpen={scannerOpen}
+        onClose={() => setScannerOpen(false)}
+        registeredProfilePhotoUrl={registeredFacePhoto}
+        fingerprint={getFingerprint()}
+        resolveLocation={resolveLiveLocation}
+        submitAttendancePayload={async (payload) => {
+          if (payload.sequence && payload.sequence.length > 0) {
+            const targetSessionId = payload.sessionId || payload.sequence[0]?.classId;
+            return await apiClient.post("/api/attendance/submit", {
+              sessionId: targetSessionId,
+              sequence: payload.sequence,
+              fingerprint: payload.fingerprint,
+              lat: payload.lat,
+              lng: payload.lng,
+              accuracy: payload.accuracy,
+              location: {
+                lat: payload.lat,
+                lng: payload.lng,
+                accuracy: payload.accuracy,
+              },
+              facePhotoWebp: payload.facePhotoWebp,
+              faceVerification: payload.faceVerification,
+            });
+          } else {
+            return await markAttendanceTwoStep(
+              payload.firstToken || "",
+              payload.secondToken || payload.firstToken || "",
+              payload.fingerprint,
+              payload.lat || 0,
+              payload.lng || 0,
+              null,
+              payload.accuracy,
+              null
+            );
           }
-        >
-          <CameraQrScanner
-            title="Scan Dynamic QR"
-            hint={scannerError || scannerHint}
-            statusTone={scannerError ? "error" : scannerStatusTone}
-            isScannerActive={isScannerActive}
-            faceVerifiedExpiresAt={faceVerifiedUntil}
-            onSessionExpired={handleFaceSessionExpired}
-            onCancel={() => closeScanner(null)}
-            onDetected={(decodedText) => {
-              if (dynamicPairLockedRef.current) return true;
+        }}
+        onSuccess={(result) => {
+          setScanStep("SUCCESS");
+          setStatusMsg(
+            result.already || result.alreadyMarked
+              ? "Attendance already marked."
+              : "Attendance confirmed."
+          );
 
-              const raw = String(decodedText || "").trim();
-              if (!raw) return false;
+          const markedSessionId = String(
+            result?.session?.id ||
+            result?.session?._id ||
+            result?.sessionId ||
+            ""
+          );
 
-              if (scannerType === "DYNAMIC_PAIR") {
-                const totpPayload = parseQrPayload(raw);
-                if (totpPayload) {
-                  const status = sequentialQrBufferRef.current.addBlock(totpPayload);
+          if (markedSessionId) {
+            setRecentSessions((prev) => {
+              const nowIso = new Date().toISOString();
+              const existingIndex = prev.findIndex((item) => {
+                const sid = String(
+                  item?.sessionId ||
+                  item?.session?.id ||
+                  item?.session?._id ||
+                  item?.session ||
+                  item?._id ||
+                  item?.id ||
+                  ""
+                );
+                return sid === markedSessionId;
+              });
 
-                  if (status === "duplicate") {
-                    setScannerStatusTone("success");
-                    setScannerHint("Same QR block detected. Waiting for the next rotation.");
-                    return false;
-                  }
-
-                  if (status === "ready") {
-                    const sequence = sequentialQrBufferRef.current.getPayloads();
-                    dynamicPairLockedRef.current = true;
-                    try { navigator.vibrate?.([50, 30, 50]); } catch {}
-                    setScannerStatusTone("success");
-                    setScannerHint("Second QR block captured. Submitting attendance...");
-                    closeScanner({ sequence });
-                    return true;
-                  }
-
-                  try { navigator.vibrate?.(50); } catch {}
-                  setScannerStatusTone("success");
-                  setScannerHint("First QR block captured. Keep the camera steady for the next rotation.");
-                  return false;
-                }
-
-                const first = dynamicPairFirstTokenRef.current;
-                if (!first) {
-                  const firstPayload = decodeDynamicQrPayload(raw);
-                  if (!firstPayload) {
-                    setScannerStatusTone("error");
-                    setScannerHint("This is not a valid Dynamic QR. Point at the attendance QR.");
-                    return false;
-                  }
-
-                  resetDynamicPairFirst(
-                    raw,
-                    firstPayload,
-                    `First QR captured. Hold steady and wait ${Math.ceil(
-                      MIN_DYNAMIC_ROTATION_WAIT_MS / 1000
-                    )}s for the next Dynamic QR.`
-                  );
-                  return false;
-                }
-
-                const firstPayload = dynamicPairFirstPayloadRef.current;
-                const secondPayload = decodeDynamicQrPayload(raw);
-                if (!firstPayload || !secondPayload) {
-                  setScannerStatusTone("error");
-                  setScannerHint("This is not a valid Dynamic QR. Keep the camera on the attendance QR.");
-                  return false;
-                }
-
-                if (secondPayload.sessionId !== firstPayload.sessionId) {
-                  resetDynamicPairFirst(
-                    raw,
-                    secondPayload,
-                    "New session QR captured as the first scan. Keep the camera steady for the next QR."
-                  );
-                  return false;
-                }
-
-                if (raw === first) {
-                  setScannerStatusTone("success");
-                  setScannerHint("Same QR detected again. Waiting for the next rotated Dynamic QR.");
-                  return false;
-                }
-
-                if (Number(secondPayload.iat || 0) <= Number(firstPayload.iat || 0)) {
-                  setScannerStatusTone("success");
-                  setScannerHint("Waiting for the next rotated Dynamic QR.");
-                  return false;
-                }
-
-                if (
-                  Number(secondPayload.iat || 0) - Number(firstPayload.iat || 0) >
-                  MAX_DYNAMIC_SEQUENCE_GAP_SECONDS
-                ) {
-                  resetDynamicPairFirst(
-                    raw,
-                    secondPayload,
-                    "Latest QR captured as the first scan. Keep holding steady for the next QR."
-                  );
-                  return false;
-                }
-
-                const firstCapturedAt = dynamicPairFirstCapturedAtRef.current;
-                if (
-                  firstCapturedAt &&
-                  Date.now() - firstCapturedAt < MIN_DYNAMIC_ROTATION_WAIT_MS
-                ) {
-                  setScannerStatusTone("success");
-                  setScannerHint("First QR captured. Waiting for QR rotation. Keep the phone steady.");
-                  return false;
-                }
-
-                dynamicPairLockedRef.current = true;
-                try { navigator.vibrate?.([50, 30, 50]); } catch {}
-                setScannerStatusTone("success");
-                setScannerHint("Second QR captured. Submitting attendance...");
-                closeScanner({ first, second: raw });
-                return true;
+              if (existingIndex >= 0) {
+                const updated = [...prev];
+                updated[existingIndex] = {
+                  ...updated[existingIndex],
+                  status: "present",
+                  attendanceCode: "P",
+                  markedAt: result?.markedAt || updated[existingIndex]?.markedAt || nowIso,
+                };
+                return updated;
               }
 
-              return false;
-            }}
-          />
-        </React.Suspense>
-      )}
+              return [
+                {
+                  sessionId: markedSessionId,
+                  subjectName: result?.session?.subjectName || "Subject",
+                  subjectCode: result?.session?.subjectCode || "SUB",
+                  facultyName: "Faculty",
+                  startTime: nowIso,
+                  markedAt: result?.markedAt || nowIso,
+                  isActive: true,
+                  status: "present",
+                  attendanceCode: "P",
+                },
+                ...prev,
+              ];
+            });
+          }
+
+          lastStudentDataFetchMs.current = 0;
+          void loadStudentData().catch(() => {});
+
+          if (resetTimerRef.current) window.clearTimeout(resetTimerRef.current);
+          resetTimerRef.current = window.setTimeout(() => {
+            if (!mountedRef.current) return;
+            setScanStep("IDLE");
+            setStatusMsg("");
+          }, 5000);
+        }}
+      />
       {todayPanelOpen && (
         <div className="fixed inset-0 z-[65] flex items-end justify-center bg-slate-950/55 p-3 backdrop-blur-sm sm:items-center sm:p-4">
           <div className="max-h-[86vh] w-full max-w-lg overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_28px_90px_-36px_rgba(15,23,42,0.65)]">

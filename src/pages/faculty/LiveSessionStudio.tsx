@@ -626,12 +626,18 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
     0
   );
 
-  // Auto-sync roster on mount or session change
+  // Auto-sync roster on mount or session change, with teardown cleanup on unmount
   useEffect(() => {
     setIsReviewMode(false);
     setShowCancelConfirm(false);
     onLoadAttendees(true);
-  }, [sessionId, onLoadAttendees]);
+
+    return () => {
+      if (onDisconnectRealtime) {
+        onDisconnectRealtime();
+      }
+    };
+  }, [sessionId, onLoadAttendees, onDisconnectRealtime]);
 
   // Fullscreen listeners
   useEffect(() => {
@@ -704,7 +710,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
     setIsFullscreen(false);
   };
 
-  // Normalized Present Students List (Sorted by newest check-in first)
+  // Normalized Present Students List (Sorted by newest check-in first with O(1) deduplication)
   const presentList = useMemo(() => {
     const map = new Map<string, {
       rawItem: any;
@@ -718,18 +724,20 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
 
     (liveAttendance || []).forEach((item: any) => {
       const student = item?.student || {};
-      const enrollmentNo = String(student.enrollmentNo || item?.enrollmentNo || "").trim();
+      const rawEnrollment = String(student.enrollmentNo || item?.enrollmentNo || item?.roll || "").trim();
+      const enrollmentNo = rawEnrollment.toUpperCase();
       if (!enrollmentNo) return;
       const currentStatus =
         attendanceStatusMap[enrollmentNo] ||
+        attendanceStatusMap[rawEnrollment] ||
         (String(item?.status || "").toLowerCase() === "present" ? "present" : "absent");
 
       if (currentStatus === "present") {
         map.set(enrollmentNo, {
           rawItem: item,
           student,
-          enrollmentNo,
-          name: student.name || item?.name || "Student",
+          enrollmentNo: rawEnrollment || enrollmentNo,
+          name: student.name || item?.studentName || item?.name || "Student",
           photoUrl: student.profilePhotoUrl || item?.profilePhotoUrl || "",
           status: "present",
           timestamp: item?.timestamp || item?.markedAt || Date.now(),
@@ -744,7 +752,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
     });
   }, [liveAttendance, attendanceStatusMap]);
 
-  // Normalized Absent Students List (Sorted alphabetically by enrollment number)
+  // Normalized Absent Students List (Sorted alphabetically by enrollment number with O(1) deduplication)
   const absentList = useMemo(() => {
     const map = new Map<string, {
       rawItem: any;
@@ -757,18 +765,20 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
 
     (liveAttendance || []).forEach((item: any) => {
       const student = item?.student || {};
-      const enrollmentNo = String(student.enrollmentNo || item?.enrollmentNo || "").trim();
+      const rawEnrollment = String(student.enrollmentNo || item?.enrollmentNo || item?.roll || "").trim();
+      const enrollmentNo = rawEnrollment.toUpperCase();
       if (!enrollmentNo) return;
       const currentStatus =
         attendanceStatusMap[enrollmentNo] ||
+        attendanceStatusMap[rawEnrollment] ||
         (String(item?.status || "").toLowerCase() === "present" ? "present" : "absent");
 
       if (currentStatus === "absent") {
         map.set(enrollmentNo, {
           rawItem: item,
           student,
-          enrollmentNo,
-          name: student.name || item?.name || "Student",
+          enrollmentNo: rawEnrollment || enrollmentNo,
+          name: student.name || item?.studentName || item?.name || "Student",
           photoUrl: student.profilePhotoUrl || item?.profilePhotoUrl || "",
           status: "absent",
         });

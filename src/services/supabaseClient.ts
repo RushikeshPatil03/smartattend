@@ -54,20 +54,40 @@ export interface AttendanceBroadcastPayload {
   timestamp: string;
 }
 
+export interface CompactAttendanceItem {
+  id: string;
+  sId: string;
+  roll: string;
+  name: string;
+  t: number;
+}
+
+export interface BatchAttendanceBroadcastPayload {
+  e: "BATCH_MARKED";
+  s: string;
+  sessionId: string;
+  type: "BATCH_MARKED";
+  items: CompactAttendanceItem[];
+  records: AttendanceBroadcastPayload["attendance"][];
+  attendance?: AttendanceBroadcastPayload["attendance"];
+  timestamp: string;
+}
+
 export interface SubscribeAttendanceOptions {
   batchWindowMs?: number;
 }
 
 /**
  * Subscribe to realtime attendance updates for a live class session
+ * Supports both high-throughput micro-batched payloads (BATCH_MARKED) and single payloads (ATTENDANCE_MARKED)
  * @param sessionId The active class session UUID
- * @param onAttendance Callback triggered whenever a student marks attendance
+ * @param onAttendance Callback triggered whenever batch or single attendance updates arrive
  * @param options Optional subscription configuration
  * @returns Unsubscribe cleanup function
  */
 export function subscribeToSessionAttendance(
   sessionId: string,
-  onAttendance: (data: AttendanceBroadcastPayload) => void,
+  onAttendance: (data: AttendanceBroadcastPayload | BatchAttendanceBroadcastPayload | any) => void,
   _options?: SubscribeAttendanceOptions
 ): () => void {
   if (!sessionId) return () => {};
@@ -83,6 +103,47 @@ export function subscribeToSessionAttendance(
   });
 
   channel
+    .on("broadcast", { event: "BATCH_MARKED" }, (response) => {
+      // Concurrency barrier: immediately drop events if cleanup has been triggered
+      if (isCleanedUp) return;
+      const payload = response?.payload;
+      if (!payload) return;
+
+      // Unpack ultra-compact micro-batched payload
+      if (Array.isArray(payload.items) && payload.items.length > 0) {
+        const records: AttendanceBroadcastPayload["attendance"][] = [];
+        payload.items.forEach((item: any) => {
+          if (!item) return;
+          const isoTime = item.t
+            ? new Date(item.t * 1000).toISOString()
+            : new Date().toISOString();
+
+          records.push({
+            id: String(item.id || ""),
+            _id: String(item.id || ""),
+            sessionId: String(payload.s || sessionId),
+            studentId: String(item.sId || ""),
+            studentName: String(item.name || ""),
+            enrollmentNo: String(item.roll || "").trim().toUpperCase(),
+            timestamp: isoTime,
+            status: "present",
+          });
+        });
+
+        const batchBroadcastPayload: BatchAttendanceBroadcastPayload = {
+          e: "BATCH_MARKED",
+          s: String(payload.s || sessionId),
+          sessionId: String(payload.s || sessionId),
+          type: "BATCH_MARKED",
+          items: payload.items,
+          records,
+          attendance: records[0],
+          timestamp: new Date().toISOString(),
+        };
+
+        onAttendance(batchBroadcastPayload);
+      }
+    })
     .on("broadcast", { event: "ATTENDANCE_MARKED" }, (response) => {
       // Concurrency barrier: immediately drop events if cleanup has been triggered
       if (isCleanedUp) return;

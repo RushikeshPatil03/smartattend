@@ -378,6 +378,9 @@ class ApiClient {
   getSessionStatus = (id: string) =>
     this.get(`/api/faculty/sessions/${encodeURIComponent(id)}/status`);
 
+  getSessionRosterSnapshot = (sessionId: string) =>
+    this.get(`/api/faculty/sessions/${encodeURIComponent(sessionId)}/roster-snapshot`);
+
   getLiveQR = (sessionId: string) =>
     this.get(`/api/faculty/session/${sessionId}/qr`);
   getFacultySubjectAnalytics = (

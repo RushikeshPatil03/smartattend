@@ -1478,6 +1478,154 @@ router.get(["/sessions/:id/status", "/session/:id/status"], authMiddleware, asyn
 });
 
 // ----------------------------------------------------
+// SESSION ROSTER SNAPSHOT (ATOMIC INITIAL ROSTER STATE)
+// GET /api/faculty/sessions/:id/roster-snapshot
+// ----------------------------------------------------
+router.get(["/sessions/:id/roster-snapshot", "/session/:id/roster-snapshot"], authMiddleware, async (req, res) => {
+  try {
+    const sessionId = String(req.params.id);
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
+
+    const { data: session, error: sessErr } = await supabase
+      .from("sessions")
+      .select(`
+        id, faculty, subject, department, year, semester, section, is_active, start_time,
+        subj:subjects(id, name, code, created_by_admin, departments, allotted_faculties)
+      `)
+      .eq("id", sessionId)
+      .single();
+
+    if (sessErr || !session) {
+      return res.status(404).json({ ok: false, error: "Session not found" });
+    }
+
+    if (req.userRole === "FACULTY") {
+      const isDirectFaculty = String(session.faculty) === String(req.userId);
+      const isSubjectAllotted =
+        Array.isArray(session.subj?.allotted_faculties) &&
+        session.subj.allotted_faculties.some((f) => String(f) === String(req.userId));
+      if (!isDirectFaculty && !isSubjectAllotted) {
+        return res.status(403).json({ ok: false, error: "Forbidden" });
+      }
+    }
+
+    // Fetch recorded attendances
+    const { data: rawAttendances } = await supabase
+      .from("attendances")
+      .select(`
+        id, student, timestamp, status, device_fingerprint, face_verification, location,
+        enrollment_no, student_name, student_email,
+        profile:students(id, name, enrollment_no, email, profile_photo_url)
+      `)
+      .eq("session", sessionId)
+      .order("timestamp", { ascending: false });
+
+    const rawList = rawAttendances || [];
+    const presentStudentIds = new Set();
+    const presentEnrollmentNos = new Set();
+
+    const presentRecords = rawList.map((att) => {
+      const studentObj = (Array.isArray(att.profile) ? att.profile[0] : att.profile) || {};
+      const effectiveEnrollmentNo = studentObj.enrollment_no || att.enrollment_no || "";
+      const effectiveName = studentObj.name || att.student_name || "Student";
+      const effectiveEmail = studentObj.email || att.student_email || "";
+      const effectiveStudentId = studentObj.id || att.student || `stud_${effectiveEnrollmentNo}`;
+
+      if (studentObj.id) presentStudentIds.add(String(studentObj.id));
+      if (effectiveEnrollmentNo) presentEnrollmentNos.add(String(effectiveEnrollmentNo).trim().toUpperCase());
+
+      return {
+        id: att.id,
+        _id: att.id,
+        attendanceId: att.id,
+        student: {
+          id: effectiveStudentId,
+          _id: effectiveStudentId,
+          name: effectiveName,
+          enrollmentNo: effectiveEnrollmentNo,
+          email: effectiveEmail,
+          profilePhotoUrl: studentObj.profile_photo_url || "",
+        },
+        enrollmentNo: effectiveEnrollmentNo,
+        status: att.status || "present",
+        timestamp: att.timestamp,
+        markedAt: att.timestamp,
+      };
+    });
+
+    // Query enrolled students for this class section
+    let studentQuery = supabase
+      .from("students")
+      .select("id, name, enrollment_no, email, profile_photo_url, department, year, semester, section")
+      .eq("year", Number(session.year))
+      .eq("semester", Number(session.semester));
+
+    const normalizedSec = String(session.section || "").trim().toUpperCase();
+    if (normalizedSec) {
+      studentQuery = studentQuery.eq("section", normalizedSec);
+    }
+    if (session.department) {
+      studentQuery = studentQuery.eq("department", String(session.department));
+    }
+
+    const { data: studentsList } = await studentQuery;
+    let allRegisteredStudents = studentsList || [];
+
+    if (!session.department && Array.isArray(session.subj?.departments) && session.subj.departments.length > 0) {
+      allRegisteredStudents = allRegisteredStudents.filter((stu) =>
+        session.subj.departments.some((d) => String(d) === String(stu.department))
+      );
+    }
+
+    const absentRecords = [];
+    for (const stu of allRegisteredStudents) {
+      const sid = String(stu.id);
+      const eno = String(stu.enrollment_no || "").trim().toUpperCase();
+      if (!presentStudentIds.has(sid) && (!eno || !presentEnrollmentNos.has(eno))) {
+        absentRecords.push({
+          id: `derived-absent-${stu.id}`,
+          _id: `derived-absent-${stu.id}`,
+          attendanceId: null,
+          student: {
+            id: stu.id,
+            _id: stu.id,
+            name: stu.name || "Student",
+            enrollmentNo: stu.enrollment_no || "",
+            email: stu.email || "",
+            profilePhotoUrl: stu.profile_photo_url || "",
+          },
+          enrollmentNo: stu.enrollment_no || "",
+          status: "absent",
+          timestamp: null,
+          markedAt: null,
+        });
+      }
+    }
+
+    const totalStudents = Math.max(
+      allRegisteredStudents.length,
+      presentRecords.length + absentRecords.length
+    );
+
+    return res.json({
+      ok: true,
+      sessionId,
+      attendance: [...presentRecords, ...absentRecords],
+      presentRecords,
+      absentRecords,
+      presentCount: presentRecords.length,
+      absentCount: absentRecords.length,
+      totalStudents,
+      totalStrength: totalStudents,
+    });
+  } catch (err) {
+    console.error("Roster snapshot error:", err);
+    return res.status(500).json({ ok: false, error: err?.message || "Server error" });
+  }
+});
+
+// ----------------------------------------------------
 // SESSION STOP
 // POST /api/faculty/session/:id/stop
 // ----------------------------------------------------
