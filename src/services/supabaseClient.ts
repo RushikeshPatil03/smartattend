@@ -60,6 +60,7 @@ export interface CompactAttendanceItem {
   roll: string;
   name: string;
   t: number;
+  st?: "present" | "absent";
 }
 
 export interface BatchAttendanceBroadcastPayload {
@@ -117,6 +118,7 @@ export function subscribeToSessionAttendance(
           const isoTime = item.t
             ? new Date(item.t * 1000).toISOString()
             : new Date().toISOString();
+          const itemStatus = item.st === "absent" || item.status === "absent" ? "absent" : "present";
 
           records.push({
             id: String(item.id || ""),
@@ -126,7 +128,7 @@ export function subscribeToSessionAttendance(
             studentName: String(item.name || ""),
             enrollmentNo: String(item.roll || "").trim().toUpperCase(),
             timestamp: isoTime,
-            status: "present",
+            status: itemStatus,
           });
         });
 

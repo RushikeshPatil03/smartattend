@@ -869,7 +869,8 @@ const FacultyDashboard: React.FC = () => {
   const manual = useCallback(
     async (status: "present" | "absent", enrollmentNo?: string) => {
       if (!activeSessionId) return;
-      const targetEnrollment = String(enrollmentNo || manualEnrollment).trim();
+      const rawEnrollment = String(enrollmentNo || manualEnrollment).trim();
+      const targetEnrollment = rawEnrollment.toUpperCase();
       if (!targetEnrollment) return;
 
       const isManualInput = !enrollmentNo;
@@ -882,11 +883,13 @@ const FacultyDashboard: React.FC = () => {
       const currentList = liveAttendanceRef.current;
       const prevStatus: "present" | "absent" =
         currentMap[targetEnrollment] ||
+        currentMap[rawEnrollment] ||
         (() => {
           const item = currentList.find(
-            (it: any) =>
-              String(it?.student?.enrollmentNo || it?.enrollmentNo || "").trim() ===
-              targetEnrollment
+            (it: any) => {
+              const itRoll = String(it?.student?.enrollmentNo || it?.enrollmentNo || it?.roll || "").trim().toUpperCase();
+              return itRoll === targetEnrollment;
+            }
           );
           return String(item?.status || "").toLowerCase() === "present"
             ? "present"
@@ -899,12 +902,17 @@ const FacultyDashboard: React.FC = () => {
       }
 
       // 2. Immediate Optimistic UI Update (< 1ms execution, 0 button lag)
-      setAttendanceStatusMap((prev) => ({ ...prev, [targetEnrollment]: status }));
+      setAttendanceStatusMap((prev) => ({
+        ...prev,
+        [targetEnrollment]: status,
+        [rawEnrollment]: status,
+      }));
       setLiveAttendance((prev) => {
         const idx = prev.findIndex(
-          (item: any) =>
-            String(item?.student?.enrollmentNo || item?.enrollmentNo || "").trim() ===
-            targetEnrollment
+          (item: any) => {
+            const itRoll = String(item?.student?.enrollmentNo || item?.enrollmentNo || item?.roll || "").trim().toUpperCase();
+            return itRoll === targetEnrollment;
+          }
         );
         if (idx >= 0) {
           const next = [...prev];
@@ -917,10 +925,10 @@ const FacultyDashboard: React.FC = () => {
           timestamp: new Date().toISOString(),
           status,
           student: {
-            name: targetEnrollment,
-            enrollmentNo: targetEnrollment,
+            name: rawEnrollment || targetEnrollment,
+            enrollmentNo: rawEnrollment || targetEnrollment,
           },
-          enrollmentNo: targetEnrollment,
+          enrollmentNo: rawEnrollment || targetEnrollment,
         };
         return [newRecord, ...prev];
       });
@@ -955,12 +963,14 @@ const FacultyDashboard: React.FC = () => {
             setAttendanceStatusMap((prev) => ({
               ...prev,
               [targetEnrollment]: prevStatus,
+              [rawEnrollment]: prevStatus,
             }));
             setLiveAttendance((prev) => {
               const idx = prev.findIndex(
-                (item: any) =>
-                  String(item?.student?.enrollmentNo || item?.enrollmentNo || "").trim() ===
-                  targetEnrollment
+                (item: any) => {
+                  const itRoll = String(item?.student?.enrollmentNo || item?.enrollmentNo || item?.roll || "").trim().toUpperCase();
+                  return itRoll === targetEnrollment;
+                }
               );
               if (idx >= 0) {
                 const next = [...prev];
@@ -1189,13 +1199,14 @@ const FacultyDashboard: React.FC = () => {
         } else if (Array.isArray(payload.items) && payload.items.length > 0) {
           payload.items.forEach((item: any) => {
             if (!item) return;
+            const itemStatus = item.st === "absent" || item.status === "absent" ? "absent" : "present";
             queueRef.current.push({
               id: item.id,
               studentId: item.sId,
               studentName: item.name,
               enrollmentNo: item.roll,
               timestamp: item.t ? new Date(item.t * 1000).toISOString() : new Date().toISOString(),
-              status: "present",
+              status: itemStatus,
             });
           });
         } else {

@@ -1522,18 +1522,26 @@ router.get(["/sessions/:id/roster-snapshot", "/session/:id/roster-snapshot"], au
       .order("timestamp", { ascending: false });
 
     const rawList = rawAttendances || [];
+    const recordedStudentIds = new Set();
+    const recordedEnrollmentNos = new Set();
     const presentStudentIds = new Set();
     const presentEnrollmentNos = new Set();
 
-    const presentRecords = rawList.map((att) => {
+    const recordedRecords = rawList.map((att) => {
       const studentObj = (Array.isArray(att.profile) ? att.profile[0] : att.profile) || {};
       const effectiveEnrollmentNo = studentObj.enrollment_no || att.enrollment_no || "";
       const effectiveName = studentObj.name || att.student_name || "Student";
       const effectiveEmail = studentObj.email || att.student_email || "";
       const effectiveStudentId = studentObj.id || att.student || `stud_${effectiveEnrollmentNo}`;
+      const status = String(att.status || "present").toLowerCase() === "absent" ? "absent" : "present";
 
-      if (studentObj.id) presentStudentIds.add(String(studentObj.id));
-      if (effectiveEnrollmentNo) presentEnrollmentNos.add(String(effectiveEnrollmentNo).trim().toUpperCase());
+      if (studentObj.id) recordedStudentIds.add(String(studentObj.id));
+      if (effectiveEnrollmentNo) recordedEnrollmentNos.add(String(effectiveEnrollmentNo).trim().toUpperCase());
+
+      if (status === "present") {
+        if (studentObj.id) presentStudentIds.add(String(studentObj.id));
+        if (effectiveEnrollmentNo) presentEnrollmentNos.add(String(effectiveEnrollmentNo).trim().toUpperCase());
+      }
 
       return {
         id: att.id,
@@ -1548,11 +1556,13 @@ router.get(["/sessions/:id/roster-snapshot", "/session/:id/roster-snapshot"], au
           profilePhotoUrl: studentObj.profile_photo_url || "",
         },
         enrollmentNo: effectiveEnrollmentNo,
-        status: att.status || "present",
+        status,
         timestamp: att.timestamp,
         markedAt: att.timestamp,
       };
     });
+
+    const presentRecords = recordedRecords.filter((r) => r.status === "present");
 
     // Query enrolled students for this class section
     let studentQuery = supabase
@@ -1578,12 +1588,12 @@ router.get(["/sessions/:id/roster-snapshot", "/session/:id/roster-snapshot"], au
       );
     }
 
-    const absentRecords = [];
+    const derivedAbsentRecords = [];
     for (const stu of allRegisteredStudents) {
       const sid = String(stu.id);
       const eno = String(stu.enrollment_no || "").trim().toUpperCase();
-      if (!presentStudentIds.has(sid) && (!eno || !presentEnrollmentNos.has(eno))) {
-        absentRecords.push({
+      if (!recordedStudentIds.has(sid) && (!eno || !recordedEnrollmentNos.has(eno))) {
+        derivedAbsentRecords.push({
           id: `derived-absent-${stu.id}`,
           _id: `derived-absent-${stu.id}`,
           attendanceId: null,
@@ -1603,19 +1613,24 @@ router.get(["/sessions/:id/roster-snapshot", "/session/:id/roster-snapshot"], au
       }
     }
 
+    const allAbsentRecords = [
+      ...recordedRecords.filter((r) => r.status === "absent"),
+      ...derivedAbsentRecords,
+    ];
+
     const totalStudents = Math.max(
       allRegisteredStudents.length,
-      presentRecords.length + absentRecords.length
+      presentRecords.length + allAbsentRecords.length
     );
 
     return res.json({
       ok: true,
       sessionId,
-      attendance: [...presentRecords, ...absentRecords],
+      attendance: [...presentRecords, ...allAbsentRecords],
       presentRecords,
-      absentRecords,
+      absentRecords: allAbsentRecords,
       presentCount: presentRecords.length,
-      absentCount: absentRecords.length,
+      absentCount: allAbsentRecords.length,
       totalStudents,
       totalStrength: totalStudents,
     });

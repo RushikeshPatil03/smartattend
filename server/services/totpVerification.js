@@ -12,6 +12,7 @@ const TOTP_SKEW_TOLERANCE_BLOCKS = Number(process.env.TOTP_SKEW_TOLERANCE_BLOCKS
 
 const totpSecretMemoryStore = new Map();
 const presenceMemoryStore = new Map(); // sessionId -> Set of studentIds
+const manualAbsentMemoryStore = new Map(); // sessionId -> Set of manually removed/absent studentIds and rolls
 
 /**
  * Generate TOTP token (matching client-side logic)
@@ -276,11 +277,59 @@ async function removeInstantPresence(sessionId, studentId) {
   }
 }
 
+/**
+ * Record manual absent status in fast memory cache
+ */
+async function recordManualAbsent(sessionId, studentIdentifier) {
+  if (!sessionId || !studentIdentifier) return;
+  const sid = String(sessionId);
+  const stuId = String(studentIdentifier).trim().toUpperCase();
+
+  const existing = manualAbsentMemoryStore.get(sid) || new Set();
+  existing.add(stuId);
+  manualAbsentMemoryStore.set(sid, existing);
+
+  // Also remove from present store
+  await removeInstantPresence(sessionId, studentIdentifier);
+}
+
+/**
+ * Remove manual absent status (e.g. if faculty marks them present again)
+ */
+async function removeManualAbsent(sessionId, studentIdentifier) {
+  if (!sessionId || !studentIdentifier) return;
+  const sid = String(sessionId);
+  const stuId = String(studentIdentifier).trim().toUpperCase();
+
+  const set = manualAbsentMemoryStore.get(sid);
+  if (set) {
+    set.delete(stuId);
+  }
+}
+
+/**
+ * Check if student was manually marked absent by faculty
+ */
+async function isManualAbsent(sessionId, studentId, enrollmentNo = null) {
+  if (!sessionId) return false;
+  const set = manualAbsentMemoryStore.get(String(sessionId));
+  if (!set || set.size === 0) return false;
+
+  if (studentId && set.has(String(studentId).trim().toUpperCase())) {
+    return true;
+  }
+  if (enrollmentNo && set.has(String(enrollmentNo).trim().toUpperCase())) {
+    return true;
+  }
+  return false;
+}
+
 async function clearSessionSecret(sessionId) {
   if (!sessionId) return;
   const sid = String(sessionId);
   totpSecretMemoryStore.delete(sid);
   presenceMemoryStore.delete(sid);
+  manualAbsentMemoryStore.delete(sid);
 
   const supabase = getSupabaseClient();
   if (supabase) {
@@ -310,6 +359,9 @@ module.exports = {
   recordInstantPresence,
   removeInstantPresence,
   isStudentPresent,
+  recordManualAbsent,
+  removeManualAbsent,
+  isManualAbsent,
   getPresentStudents,
   TOTP_BLOCK_DURATION_MS,
   TOTP_SKEW_TOLERANCE_BLOCKS,

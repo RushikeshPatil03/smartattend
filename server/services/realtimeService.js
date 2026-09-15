@@ -36,12 +36,15 @@ function toCompactAttendanceItem(raw) {
     t = Math.floor(Date.now() / 1000);
   }
 
+  const status = raw.status === "absent" ? "absent" : "present";
+
   return {
     id: String(id),
     sId,
     roll,
     name,
     t,
+    st: status,
   };
 }
 

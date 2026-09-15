@@ -10,6 +10,9 @@ const {
   recordInstantPresence,
   removeInstantPresence,
   isStudentPresent,
+  recordManualAbsent,
+  removeManualAbsent,
+  isManualAbsent,
 } = require("../services/totpVerification");
 const { validateStudentLocation } = require("../services/locationValidation");
 const { verifyFaceAgainstStudent } = require("../services/faceVerification");
@@ -422,6 +425,15 @@ router.post(
         return res.status(400).json({ ok: false, error: "Session is no longer active" });
       }
 
+      const isManuallyAbsent = await isManualAbsent(sessionId, student.id, student.enrollment_no);
+      if (isManuallyAbsent) {
+        return res.status(403).json({
+          ok: false,
+          code: "REMOVED_BY_FACULTY",
+          error: "You were removed from this attendance session by faculty.",
+        });
+      }
+
       const eligibility = validateStudentSessionEligibility(student, session);
       if (!eligibility.ok) {
         return res.status(403).json({ ok: false, error: eligibility.error });
@@ -564,6 +576,15 @@ const handleMarkAttendance = async (req, res) => {
       const isRunning = Boolean(session?.is_active ?? session?.isActive);
       if (!isRunning) {
         return res.status(400).json({ ok: false, error: "Session is no longer active" });
+      }
+
+      const isManuallyAbsent = await isManualAbsent(sessionId, student.id, student.enrollment_no);
+      if (isManuallyAbsent) {
+        return res.status(403).json({
+          ok: false,
+          code: "REMOVED_BY_FACULTY",
+          error: "You were removed from this attendance session by faculty.",
+        });
       }
 
       const eligibility = validateStudentSessionEligibility(student, session);
@@ -1454,10 +1475,14 @@ async function handleTotpAttendanceSubmission(req, res) {
       return res.status(400).json({ ok: false, error: "Session is no longer active" });
     }
 
-    // Strict Section & Academic Eligibility Check
-    const eligibility = validateStudentSessionEligibility(student, session);
-    if (!eligibility.ok) {
-      return res.status(403).json({ ok: false, error: eligibility.error });
+    // Strict check: if faculty manually marked student as absent / removed them
+    const isManuallyAbsent = await isManualAbsent(sessionId, student.id, student.enrollment_no);
+    if (isManuallyAbsent) {
+      return res.status(403).json({
+        ok: false,
+        code: "REMOVED_BY_FACULTY",
+        error: "You were removed from this attendance session by faculty.",
+      });
     }
 
     // Fast-path in-memory duplicate check
@@ -1852,26 +1877,69 @@ async function handleManualAttendance(req, res) {
 
       if (error || !upserted) throw error || new Error("Failed to mark manual attendance");
       attendance = upserted;
-    } else {
-      await supabase
-        .from("attendances")
-        .delete()
-        .eq("session", String(sessionId))
-        .eq("student", String(student.id));
 
+      // Clear any manual absent lock and record presence
+      await removeManualAbsent(sessionId, student.id);
       if (student.enrollment_no) {
-        await supabase
-          .from("attendances")
-          .delete()
-          .eq("session", String(sessionId))
-          .ilike("enrollment_no", String(student.enrollment_no).trim());
+        await removeManualAbsent(sessionId, student.enrollment_no);
       }
-
-      // Clear from in-memory presence cache so student can re-scan if needed
+      await recordInstantPresence(sessionId, student.id);
+      if (student.enrollment_no) {
+        await recordInstantPresence(sessionId, student.enrollment_no);
+      }
+    } else {
+      // Record manual absent lock so student device cannot auto re-scan on QR rotation
+      await recordManualAbsent(sessionId, student.id);
+      if (student.enrollment_no) {
+        await recordManualAbsent(sessionId, student.enrollment_no);
+      }
       await removeInstantPresence(sessionId, student.id);
       if (student.enrollment_no) {
         await removeInstantPresence(sessionId, student.enrollment_no);
       }
+
+      // Persist status as 'absent' in database
+      const absentPayload = {
+        session: String(sessionId),
+        student: String(student.id),
+        faculty: session.faculty,
+        subject: session.subject,
+        enrollment_no: student.enrollment_no || null,
+        student_name: student.name || null,
+        student_email: student.email || null,
+        department_code: student.dept?.code || student.departmentCode || null,
+        semester: Number(student.semester || session.semester) || null,
+        section: String(student.section || session.section || "").toUpperCase() || null,
+        year: Number(student.year || session.year) || null,
+        status: "absent",
+        timestamp: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      let { data: upsertedAbsent, error: absErr } = await supabase
+        .from("attendances")
+        .upsert(absentPayload, { onConflict: "session,student" })
+        .select("id, session, student, status, timestamp")
+        .single();
+
+      if (absErr && (absErr.code === "PGRST204" || absErr.code === "42703" || String(absErr.message || "").includes("column"))) {
+        const baseAbsentPayload = {
+          session: String(sessionId),
+          student: String(student.id),
+          faculty: session.faculty,
+          subject: session.subject,
+          status: "absent",
+          timestamp: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        const retryRes = await supabase
+          .from("attendances")
+          .upsert(baseAbsentPayload, { onConflict: "session,student" })
+          .select("id, session, student, status, timestamp")
+          .single();
+        upsertedAbsent = retryRes?.data;
+      }
+      attendance = upsertedAbsent;
     }
 
     const requestMeta = getRequestMeta(req);
