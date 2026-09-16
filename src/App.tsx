@@ -5,6 +5,7 @@ import HeaderBar from "./components/HeaderBar";
 import ProtectedRoute from "./routes/ProtectedRoute";
 import { useApp } from "./store";
 import { initDeviceFingerprint, requestPersistentStorage } from "./services/attendanceClient";
+import { DashboardBackground } from "./components/DashboardBackground";
 
 // Helper to handle stale client cache / dynamic chunk loading retries
 function lazyWithRetry<T extends React.ComponentType<any>>(
@@ -79,54 +80,57 @@ const RootRedirect = () => {
   return <Navigate to="/login" replace />;
 };
 
-const Container = ({ children }: { children: React.ReactNode }) => (
-  <div
-    className="relative min-h-screen page-enter flex flex-col bg-[#f8fafc]"
-    style={{
-      backgroundImage: `
-        radial-gradient(ellipse 70% 55% at 10% 10%, rgba(56, 189, 248, 0.18), transparent 60%),
-        radial-gradient(ellipse 70% 55% at 90% 90%, rgba(99, 102, 241, 0.16), transparent 60%),
-        radial-gradient(ellipse 50% 40% at 50% 40%, rgba(20, 184, 166, 0.10), transparent 60%)
-      `,
-    }}
-  >
-    {/* Global High-Contrast Dot Grid Matrix */}
-    <div
-      className="pointer-events-none fixed inset-0 z-0 opacity-40"
-      style={{
-        backgroundImage: "radial-gradient(rgba(15, 23, 42, 0.28) 1.25px, transparent 1.25px)",
-        backgroundSize: "24px 24px",
-      }}
-      aria-hidden="true"
-    />
-
-    {/* Floating Ambient Mesh Lighting Orbs */}
-    <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden" aria-hidden="true">
-      <div className="absolute -top-24 -left-16 h-[580px] w-[580px] rounded-full bg-[radial-gradient(circle,rgba(56,189,248,0.22)_0%,rgba(37,99,235,0.12)_45%,transparent_70%)] blur-3xl will-change-transform" />
-      <div className="absolute top-1/3 -right-24 h-[620px] w-[620px] rounded-full bg-[radial-gradient(circle,rgba(99,102,241,0.20)_0%,rgba(168,85,247,0.10)_45%,transparent_70%)] blur-3xl will-change-transform" />
-      <div className="absolute -bottom-24 left-1/4 h-[520px] w-[520px] rounded-full bg-[radial-gradient(circle,rgba(20,184,166,0.16)_0%,rgba(6,182,212,0.08)_45%,transparent_70%)] blur-3xl will-change-transform" />
-    </div>
-
-    <div className="relative z-10 flex-1 flex flex-col">{children}</div>
-  </div>
-);
+const Container = ({ children }: { children: React.ReactNode }) => {
+  const { currentUser } = useApp();
+  const role = (currentUser?.role?.toLowerCase() || "default") as "admin" | "faculty" | "student" | "default";
+  return (
+    <DashboardBackground role={role} className="flex flex-col page-enter">
+      {children}
+    </DashboardBackground>
+  );
+};
 
 const PageLoader = () => (
-  <div className="mx-auto mt-16 w-full max-w-2xl px-4 animate-pulse">
-    <div className="rounded-3xl border border-slate-200/80 bg-white/80 p-6 shadow-sm backdrop-blur-md">
-      <div className="flex items-center gap-4">
-        <div className="h-12 w-12 rounded-2xl bg-slate-200/80" />
-        <div className="flex-1 space-y-2">
-          <div className="h-4 w-44 rounded-md bg-slate-200/80" />
-          <div className="h-3 w-28 rounded-md bg-slate-100" />
+  <div className="flex min-h-screen flex-col items-center justify-center gap-5 px-4">
+    <div className="flex flex-col items-center gap-3 text-center">
+      {/* Brand ring with spinner */}
+      <div className="relative flex h-16 w-16 items-center justify-center">
+        <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-blue-600 via-indigo-600 to-violet-600 opacity-10 blur-xl" />
+        <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl border border-slate-200 bg-white shadow-md">
+          <svg
+            className="h-8 w-8 animate-spin text-blue-600"
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+            <path className="opacity-80" fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
         </div>
       </div>
-      <div className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-3">
-        <div className="h-20 rounded-2xl bg-slate-100/90" />
-        <div className="h-20 rounded-2xl bg-slate-100/90" />
-        <div className="h-20 rounded-2xl bg-slate-100/90 col-span-2 sm:col-span-1" />
+      <p className="text-sm font-semibold text-slate-600 tracking-wide">
+        SmartAttend
+      </p>
+      <p className="text-xs text-slate-400">Loading your workspace…</p>
+    </div>
+
+    {/* Skeleton preview consistent with Card component */}
+    <div className="w-full max-w-md animate-pulse space-y-3 rounded-2xl border border-slate-200/80 bg-white/80 p-5 shadow-sm backdrop-blur-md">
+      <div className="flex items-center gap-3">
+        <div className="h-10 w-10 rounded-xl bg-slate-200/80" />
+        <div className="flex-1 space-y-2">
+          <div className="h-3.5 w-36 rounded-md bg-slate-200/80" />
+          <div className="h-2.5 w-24 rounded-md bg-slate-100" />
+        </div>
       </div>
-      <div className="mt-6 h-36 rounded-2xl bg-slate-100/70" />
+      <div className="grid grid-cols-3 gap-3 pt-1">
+        <div className="h-16 rounded-xl bg-slate-100/90" />
+        <div className="h-16 rounded-xl bg-slate-100/90" />
+        <div className="h-16 rounded-xl bg-slate-100/90" />
+      </div>
+      <div className="h-24 rounded-xl bg-slate-100/70" />
     </div>
   </div>
 );

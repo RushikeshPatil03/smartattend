@@ -1441,17 +1441,23 @@ const StudentDashboard: React.FC = () => {
   };
 
   return (
-    <div className="relative mx-auto min-h-screen max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+    <div className="relative min-h-screen w-full overflow-x-hidden selection:bg-emerald-500 selection:text-white">
+      <div className="relative z-10 mx-auto min-h-screen max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
       {showInstallBanner && (
-        <div className="mx-4 mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center gap-3 text-sm text-amber-200">
+        <div className="mx-0 mb-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 flex items-center gap-3 text-sm shadow-sm">
           <span>📲</span>
           <div>
-            <p className="font-semibold">Install SmartAttend for secure login</p>
-            <p className="text-xs text-amber-300/70 mt-0.5">
+            <p className="font-semibold text-amber-900">Install SmartAttend for secure login</p>
+            <p className="text-xs text-amber-700/80 mt-0.5">
               Tap the browser menu → "Add to Home Screen" to protect your session.
             </p>
           </div>
-          <button onClick={() => setShowInstallBanner(false)} className="ml-auto text-slate-400 hover:text-amber-200">✕</button>
+          <button
+            onClick={() => setShowInstallBanner(false)}
+            className="ml-auto shrink-0 rounded-lg p-1 text-amber-500 hover:bg-amber-100 hover:text-amber-700 transition"
+          >
+            <X size={14} />
+          </button>
         </div>
       )}
 
@@ -1836,6 +1842,7 @@ const StudentDashboard: React.FC = () => {
           </p>
         </button>
       </div>
+    </div>
     </div>
   );
 };

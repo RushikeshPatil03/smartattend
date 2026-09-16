@@ -181,6 +181,96 @@ const NAV_ITEMS = [
   },
 ] as const;
 
+const SubjectAnalyticsCard = React.memo(({ subject }: { subject: StudentAnalyticsSubject }) => {
+  const tone = getAttendanceTone(subject.attendancePercentage);
+  const circumference = 2 * Math.PI * 32;
+  const dashOffset =
+    circumference - (Math.max(0, Math.min(subject.attendancePercentage, 100)) / 100) * circumference;
+  const gradientId = `grad-${subject.subjectId}`;
+
+  return (
+    <div
+      className="rounded-[22px] border border-slate-200 bg-[linear-gradient(180deg,_#ffffff_0%,_#f8fafc_100%)] p-4 shadow-sm transition-transform duration-200 hover:-translate-y-0.5"
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h5 className="truncate text-base font-semibold text-slate-900">{subject.subjectName}</h5>
+            <Badge color={tone.badge}>{tone.text}</Badge>
+          </div>
+          <p className="mt-1 text-sm text-slate-500">
+            {subject.subjectCode || "No subject code"}
+          </p>
+          {subject.facultyNames.length > 0 ? (
+            <p className="mt-2 text-xs font-medium uppercase tracking-[0.16em] text-slate-400">
+              Faculty: {subject.facultyNames.join(", ")}
+            </p>
+          ) : null}
+        </div>
+
+        <div className="relative h-16 w-16 shrink-0">
+          <svg viewBox="0 0 80 80" className="h-16 w-16 -rotate-90">
+            <circle cx="40" cy="40" r="32" stroke="#e2e8f0" strokeWidth="8" fill="none" />
+            <circle
+              cx="40"
+              cy="40"
+              r="32"
+              stroke={`url(#${gradientId})`}
+              strokeWidth="8"
+              strokeLinecap="round"
+              strokeDasharray={circumference}
+              strokeDashoffset={dashOffset}
+              fill="none"
+            />
+            <defs>
+              <linearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stopColor="#14b8a6" />
+                <stop offset="100%" stopColor="#2563eb" />
+              </linearGradient>
+            </defs>
+          </svg>
+          <div className="absolute inset-0 flex items-center justify-center text-xs font-bold text-slate-900">
+            {Math.round(subject.attendancePercentage)}%
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <div className={`h-3 overflow-hidden rounded-full ${tone.rail}`}>
+          <div
+            className={`h-full rounded-full ${tone.fill}`}
+            style={{ width: `${Math.max(4, Math.min(subject.attendancePercentage, 100))}%` }}
+          />
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-3 gap-2">
+        <div className="rounded-2xl bg-slate-50 px-3 py-2.5 text-center">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Total</p>
+          <p className="mt-1.5 text-lg font-bold text-slate-900">{subject.totalClassesConducted}</p>
+        </div>
+        <div className="rounded-2xl bg-emerald-50 px-3 py-2.5 text-center">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-emerald-600">Attended</p>
+          <p className="mt-1.5 text-lg font-bold text-emerald-700">{subject.classesAttended}</p>
+        </div>
+        <div className="rounded-2xl bg-rose-50 px-3 py-2.5 text-center">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-rose-600">Missed</p>
+          <p className="mt-1.5 text-lg font-bold text-rose-700">{subject.classesMissed}</p>
+        </div>
+      </div>
+
+      {subject.lastClassAt ? (
+        <p className="mt-3 text-xs text-slate-400">
+          Last completed class: {new Date(subject.lastClassAt).toLocaleString()}
+        </p>
+      ) : (
+        <p className="mt-3 text-xs text-slate-400">No completed class recorded yet.</p>
+      )}
+    </div>
+  );
+});
+SubjectAnalyticsCard.displayName = "SubjectAnalyticsCard";
+
 const AdminDashboard: React.FC = () => {
   const {
     currentUser,
@@ -250,10 +340,11 @@ const AdminDashboard: React.FC = () => {
 
   useEffect(() => {
     if (genCooldownRemaining <= 0) return;
-    const timer = setInterval(() => {
-      setGenCooldownRemaining((prev) => Math.max(0, prev - 1));
-    }, 1000);
-    return () => clearInterval(timer);
+    const timer = setTimeout(
+      () => setGenCooldownRemaining((prev) => Math.max(0, prev - 1)),
+      1000
+    );
+    return () => clearTimeout(timer);
   }, [genCooldownRemaining]);
 
   useEffect(() => {
@@ -323,12 +414,12 @@ const AdminDashboard: React.FC = () => {
     const controller = new AbortController();
     const signal = controller.signal;
 
-    if (!departments.length || !subjects.length || !users.length) {
-      Promise.all([
-        fetchDepartments(false, signal),
-        fetchSubjects(false, signal),
-        fetchUsers(signal),
-      ]).catch((err) => {
+    const fetches: Promise<any>[] = [];
+    if (!departments.length) fetches.push(fetchDepartments(false, signal));
+    if (!subjects.length) fetches.push(fetchSubjects(false, signal));
+    if (!users.length) fetches.push(fetchUsers(signal));
+    if (fetches.length > 0) {
+      Promise.all(fetches).catch((err) => {
         if (err?.name !== "AbortError" && !signal.aborted) {
           console.error("Admin dashboard data fetch error:", err);
         }
@@ -812,6 +903,26 @@ const AdminDashboard: React.FC = () => {
     setStudentAnalyticsData(null);
   };
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (studentAnalyticsOpen) {
+        closeStudentAnalytics();
+        return;
+      }
+      if (activeMetricModal) {
+        setActiveMetricModal(null);
+        return;
+      }
+      if (showGenModal) {
+        setShowGenModal(false);
+        return;
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [studentAnalyticsOpen, activeMetricModal, showGenModal]);
+
   const handleFacultyDeviceLockToggle = async (faculty: any) => {
     const facultyId = String(faculty?.id || "");
     if (!facultyId || lockingFacultyIds[facultyId]) return;
@@ -871,37 +982,31 @@ const AdminDashboard: React.FC = () => {
   // Copy to Clipboard
   const copyToken = async () => {
     if (!generatedLink) return;
-    if (!navigator.clipboard?.writeText) {
-      prompt("Copy this link:", generatedLink);
-      return;
-    }
     try {
-      await navigator.clipboard.writeText(generatedLink);
-      setCopyMessage("Copied");
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(generatedLink);
+        setCopyMessage("Copied ✓");
+        setTimeout(() => setCopyMessage(""), 2500);
+      } else {
+        const el = document.createElement("textarea");
+        el.value = generatedLink;
+        el.style.cssText = "position:fixed;opacity:0;top:0;left:0";
+        document.body.appendChild(el);
+        el.focus();
+        el.select();
+        document.execCommand("copy");
+        document.body.removeChild(el);
+        setCopyMessage("Copied ✓");
+        setTimeout(() => setCopyMessage(""), 2500);
+      }
     } catch {
-      setCopyMessage("Select the link and copy it manually.");
+      setCopyMessage("Copy failed — select the link above and copy manually.");
     }
   };
 
   return (
-    <div className="relative min-h-screen w-full overflow-x-hidden bg-[radial-gradient(ellipse_at_20%_10%,rgba(56,189,248,0.06),transparent_55%),radial-gradient(ellipse_at_80%_90%,rgba(99,102,241,0.06),transparent_55%),#f8fafc] selection:bg-indigo-500 selection:text-white">
-      {/* Shared Ambient Gradient Mesh Background & Lighting */}
-      <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden" aria-hidden="true">
-        {/* Subtle Geometric Dot Matrix Grid */}
-        <div
-          className="absolute inset-0 opacity-[0.04]"
-          style={{
-            backgroundImage: `radial-gradient(#0f172a 1px, transparent 1px)`,
-            backgroundSize: "24px 24px",
-          }}
-        />
-
-        <div className="absolute -top-32 -left-20 h-[600px] w-[600px] rounded-full bg-[radial-gradient(circle,rgba(56,189,248,0.08)_0%,transparent_70%)] blur-3xl will-change-transform" />
-        <div className="absolute top-1/2 -right-32 h-[650px] w-[650px] rounded-full bg-[radial-gradient(circle,rgba(99,102,241,0.07)_0%,transparent_70%)] blur-3xl will-change-transform" />
-        <div className="absolute -bottom-32 left-1/3 h-[550px] w-[550px] rounded-full bg-[radial-gradient(circle,rgba(6,182,212,0.05)_0%,transparent_70%)] blur-3xl will-change-transform" />
-      </div>
-
-      <div className="relative z-10 grid min-h-screen grid-cols-1 gap-6 px-4 py-4 sm:px-6 lg:grid-cols-4 lg:px-8">
+    <>
+      <div className="relative z-10 grid min-h-screen grid-cols-1 gap-6 px-4 py-4 sm:px-6 lg:grid-cols-4 lg:px-8 selection:bg-rose-500 selection:text-white">
       <div className="lg:col-span-4">
         <CollegeHeader
           className="surface-card"
@@ -977,6 +1082,15 @@ const AdminDashboard: React.FC = () => {
         {/* USERS */}
         {activeTab === "users" && (
           <div>
+            {users.length === 0 && !metricCards.some(c => c.value > 0) && (
+              <div className="flex flex-col items-center gap-3 rounded-3xl border border-dashed border-slate-300 bg-white px-8 py-14 text-center shadow-sm">
+                <Users size={32} className="text-slate-300" />
+                <p className="text-base font-semibold text-slate-700">No users registered yet</p>
+                <p className="text-sm text-slate-400 max-w-xs">
+                  Generate a registration link from the sidebar to invite faculty and students.
+                </p>
+              </div>
+            )}
             <div className="mb-4 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
               {metricCards.map((card) => {
                 const Icon = card.icon;
@@ -1066,11 +1180,9 @@ const AdminDashboard: React.FC = () => {
                   {metricModalTitle}
                 </h3>
                 <p className="text-xs text-slate-500">
-                  Showing {paginatedMetricUsers.length} of {totalFilteredMetricUsers} record
-                  {totalFilteredMetricUsers === 1 ? "" : "s"}
-                  {totalFilteredMetricUsers !== metricUsers.length
-                    ? ` (filtered from ${metricUsers.length})`
-                    : ""}
+                  {totalFilteredMetricUsers === 0
+                    ? "No records found"
+                    : `${(safeMetricPage - 1) * metricPageSize + 1}–${Math.min(safeMetricPage * metricPageSize, totalFilteredMetricUsers)} of ${totalFilteredMetricUsers} record${totalFilteredMetricUsers === 1 ? "" : "s"}${totalFilteredMetricUsers !== metricUsers.length ? ` (filtered from ${metricUsers.length})` : ""}`}
                 </p>
               </div>
 
@@ -1312,7 +1424,7 @@ const AdminDashboard: React.FC = () => {
                   ) : (
                     paginatedMetricUsers.map((user: any) => (
                       <tr
-                        key={`${activeMetricModal}-${user.id || user._id}`}
+                        key={`${activeMetricModal}-${user.id || user._id || user.email || String(Math.random())}`}
                         className="border-t transition-colors hover:bg-slate-50/70"
                       >
                         <td className="px-4 py-3">
@@ -1408,6 +1520,17 @@ const AdminDashboard: React.FC = () => {
                         </td>
                         {activeMetricModal === "students" ? (
                           <td className="px-4 py-3 text-right">
+                            {typeof user.overallAttendancePct === "number" && (
+                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold mr-2
+                                ${user.overallAttendancePct >= 75
+                                  ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                                  : user.overallAttendancePct >= 60
+                                  ? "bg-amber-50 text-amber-700 border border-amber-200"
+                                  : "bg-rose-50 text-rose-700 border border-rose-200"
+                                }`}>
+                                {Math.round(user.overallAttendancePct)}%
+                              </span>
+                            )}
                             <Button
                               variant="outline"
                               className="whitespace-nowrap !text-xs !py-1.5"
@@ -1683,95 +1806,9 @@ const AdminDashboard: React.FC = () => {
                           No completed class sessions found for this student yet.
                         </div>
                       ) : (
-                        studentAnalyticsData.subjects.map((subject) => {
-                          const tone = getAttendanceTone(subject.attendancePercentage);
-                          const circumference = 2 * Math.PI * 32;
-                          const dashOffset =
-                            circumference - (Math.max(0, Math.min(subject.attendancePercentage, 100)) / 100) * circumference;
-                          const gradientId = `subject-analytics-${subject.subjectId}`;
-
-                          return (
-                            <div
-                              key={subject.subjectId}
-                              className="rounded-[22px] border border-slate-200 bg-[linear-gradient(180deg,_#ffffff_0%,_#f8fafc_100%)] p-4 shadow-sm transition-transform duration-200 hover:-translate-y-0.5"
-                            >
-                              <div className="flex items-start justify-between gap-4">
-                                <div className="min-w-0">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <h5 className="truncate text-base font-semibold text-slate-900">{subject.subjectName}</h5>
-                                    <Badge color={tone.badge}>{tone.text}</Badge>
-                                  </div>
-                                  <p className="mt-1 text-sm text-slate-500">
-                                    {subject.subjectCode || "No subject code"}
-                                  </p>
-                                  {subject.facultyNames.length > 0 ? (
-                                    <p className="mt-2 text-xs font-medium uppercase tracking-[0.16em] text-slate-400">
-                                      Faculty: {subject.facultyNames.join(", ")}
-                                    </p>
-                                  ) : null}
-                                </div>
-
-                                <div className="relative h-16 w-16 shrink-0">
-                                  <svg viewBox="0 0 80 80" className="h-16 w-16 -rotate-90">
-                                    <circle cx="40" cy="40" r="32" stroke="#e2e8f0" strokeWidth="8" fill="none" />
-                                    <circle
-                                      cx="40"
-                                      cy="40"
-                                      r="32"
-                                      stroke={`url(#${gradientId})`}
-                                      strokeWidth="8"
-                                      strokeLinecap="round"
-                                      strokeDasharray={circumference}
-                                      strokeDashoffset={dashOffset}
-                                      fill="none"
-                                    />
-                                    <defs>
-                                      <linearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="100%">
-                                        <stop offset="0%" stopColor="#14b8a6" />
-                                        <stop offset="100%" stopColor="#2563eb" />
-                                      </linearGradient>
-                                    </defs>
-                                  </svg>
-                                  <div className="absolute inset-0 flex items-center justify-center text-xs font-bold text-slate-900">
-                                    {Math.round(subject.attendancePercentage)}%
-                                  </div>
-                                </div>
-                              </div>
-
-                              <div className="mt-4">
-                                <div className={`h-3 overflow-hidden rounded-full ${tone.rail}`}>
-                                  <div
-                                    className={`h-full rounded-full ${tone.fill}`}
-                                    style={{ width: `${Math.max(4, Math.min(subject.attendancePercentage, 100))}%` }}
-                                  />
-                                </div>
-                              </div>
-
-                              <div className="mt-4 grid grid-cols-3 gap-2">
-                                <div className="rounded-2xl bg-slate-50 px-3 py-2.5 text-center">
-                                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">Total</p>
-                                  <p className="mt-1.5 text-lg font-bold text-slate-900">{subject.totalClassesConducted}</p>
-                                </div>
-                                <div className="rounded-2xl bg-emerald-50 px-3 py-2.5 text-center">
-                                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-emerald-600">Attended</p>
-                                  <p className="mt-1.5 text-lg font-bold text-emerald-700">{subject.classesAttended}</p>
-                                </div>
-                                <div className="rounded-2xl bg-rose-50 px-3 py-2.5 text-center">
-                                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-rose-600">Missed</p>
-                                  <p className="mt-1.5 text-lg font-bold text-rose-700">{subject.classesMissed}</p>
-                                </div>
-                              </div>
-
-                              {subject.lastClassAt ? (
-                                <p className="mt-3 text-xs text-slate-400">
-                                  Last completed class: {new Date(subject.lastClassAt).toLocaleString()}
-                                </p>
-                              ) : (
-                                <p className="mt-3 text-xs text-slate-400">No completed class recorded yet.</p>
-                              )}
-                            </div>
-                          );
-                        })
+                        studentAnalyticsData.subjects.map((subject) => (
+                          <SubjectAnalyticsCard key={subject.subjectId} subject={subject} />
+                        ))
                       )}
                     </div>
                   </div>
@@ -1982,7 +2019,10 @@ const AdminDashboard: React.FC = () => {
                       <div className="rounded-xl bg-white p-3 border border-slate-200 sm:col-span-2">
                         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Public Host</p>
                         <p className="mt-1 text-sm font-semibold text-slate-900 break-all">
-                          {new URL(generatedLink).origin}
+                          {(() => {
+                            try { return new URL(generatedLink).origin; }
+                            catch { return generatedLink; }
+                          })()}
                         </p>
                       </div>
                     </div>
@@ -2003,22 +2043,30 @@ const AdminDashboard: React.FC = () => {
                     </div>
                   </div>
                 ) : (
-                  <div className="flex flex-col gap-3 sm:flex-row">
-                    <Button
-                      disabled={genLoading || genCooldownRemaining > 0}
-                      onClick={handleGenerate}
-                      className="w-full sm:w-auto"
-                    >
-                      {genLoading
-                        ? "Generating..."
-                        : genCooldownRemaining > 0
-                        ? `Wait ${genCooldownRemaining}s...`
-                        : "Generate Link"}
-                    </Button>
-                    <Button variant="secondary" onClick={() => setShowGenModal(false)} className="w-full sm:w-auto">
-                      Cancel
-                    </Button>
-                  </div>
+                  <>
+                    <div className="flex flex-col gap-3 sm:flex-row">
+                      <Button
+                        disabled={genLoading || genCooldownRemaining > 0}
+                        onClick={handleGenerate}
+                        className="w-full sm:w-auto"
+                      >
+                        {genLoading
+                          ? "Generating..."
+                          : genCooldownRemaining > 0
+                          ? `Wait ${genCooldownRemaining}s...`
+                          : "Generate Link"}
+                      </Button>
+                      <Button variant="secondary" onClick={() => setShowGenModal(false)} className="w-full sm:w-auto">
+                        Cancel
+                      </Button>
+                    </div>
+                    {genCooldownRemaining > 0 && (
+                      <p className="text-xs text-slate-500 text-center mt-1 tabular-nums">
+                        Next link available in{" "}
+                        <span className="font-bold text-slate-800">{genCooldownRemaining}s</span>
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -2026,7 +2074,7 @@ const AdminDashboard: React.FC = () => {
         </div>
       )}
       </div>
-    </div>
+    </>
   );
 };
 

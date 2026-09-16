@@ -1340,7 +1340,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
               </div>
             </div>
 
-            {/* Middle: Live Beacon Pill with Elapsed HH:MM:SS + Duration Ring */}
+            {/* Middle: Live Beacon Pill with Elapsed HH:MM:SS */}
             <div className="flex items-center gap-3">
               <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/40 bg-emerald-950/60 px-4 py-1.5 shadow-[0_0_15px_rgba(16,185,129,0.2)]">
                 <span className="relative flex h-2.5 w-2.5">
@@ -1355,13 +1355,6 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                   {formattedElapsed}
                 </span>
               </div>
-              {/* Session Duration Ring — shows elapsed vs expected class time */}
-              <SessionDurationRing
-                progressPercent={durationProgressPct}
-                size={40}
-                strokeWidth={4}
-                isProjector
-              />
             </div>
 
             {/* Right: Circular Progress Ring, Counter & Exit Button */}
@@ -1967,22 +1960,6 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                     {presentCount} / {totalCount} Enrolled
                   </div>
                 </div>
-
-                {/* Thin divider */}
-                <div className="h-10 w-px bg-slate-700/60 mx-0.5 shrink-0" aria-hidden />
-
-                {/* Session duration ring */}
-                <SessionDurationRing
-                  progressPercent={durationProgressPct}
-                  size={48}
-                  strokeWidth={4}
-                />
-                <div className="text-left font-mono">
-                  <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400">Duration</div>
-                  <div className="text-sm font-bold text-slate-300">
-                    {formattedElapsed}
-                  </div>
-                </div>
               </div>
 
               {/* Right: Action Hub Buttons */}
@@ -2178,32 +2155,6 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                     {effectiveTotalStudents > 0 ? ` / ${effectiveTotalStudents}` : ""} Present
                   </span>
                 </div>
-
-                {/* ── Scan Rate Badge ──────────────────────────────────────── */}
-                {(() => {
-                  const cfg = {
-                    active:   { dot: "bg-emerald-500", label: "Active 🟢",   text: "text-emerald-700", bg: "bg-emerald-50/80  border-emerald-200/80" },
-                    idle:     { dot: "bg-amber-400",   label: "Idle 🟡",     text: "text-amber-700",   bg: "bg-amber-50/80    border-amber-200/80"   },
-                    inactive: { dot: "bg-rose-400",    label: "Inactive 🔴", text: "text-rose-700",    bg: "bg-rose-50/80     border-rose-200/80"     },
-                  }[scanStatus];
-                  return (
-                    <div className={`mt-2 flex items-center justify-between rounded-xl border px-3.5 py-1.5 text-[11px] shadow-2xs ${cfg.bg}`}>
-                      <span className={`flex items-center gap-1.5 font-bold ${cfg.text}`}>
-                        <span className={`h-1.5 w-1.5 rounded-full ${cfg.dot}`} />
-                        Scan Rate
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <span className={`font-mono font-black ${cfg.text}`}>
-                          {scanRate}/min
-                        </span>
-                        <span className={`font-semibold ${cfg.text} opacity-70`}>
-                          {cfg.label}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })()}
-
 
                 {/* High-Performance Compact Student Search Bar */}
                 <div className="mt-3 relative">

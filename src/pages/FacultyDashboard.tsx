@@ -1581,24 +1581,8 @@ const FacultyDashboard: React.FC = () => {
   ];
 
   return (
-    <div className="relative min-h-screen w-full overflow-x-hidden bg-[radial-gradient(ellipse_at_20%_10%,rgba(56,189,248,0.06),transparent_55%),radial-gradient(ellipse_at_80%_90%,rgba(99,102,241,0.06),transparent_55%),#f8fafc] selection:bg-emerald-500 selection:text-white pb-20">
-      {/* Shared Ambient Gradient Mesh Background & Lighting */}
-      <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden" aria-hidden="true">
-        {/* Subtle Geometric Dot Matrix Grid */}
-        <div
-          className="absolute inset-0 opacity-[0.04]"
-          style={{
-            backgroundImage: `radial-gradient(#0f172a 1px, transparent 1px)`,
-            backgroundSize: "24px 24px",
-          }}
-        />
-
-        <div className="absolute -top-32 right-0 w-[720px] h-[720px] rounded-full bg-[radial-gradient(circle_at_top_right,rgba(56,189,248,0.08),transparent_55%)] blur-3xl will-change-transform" />
-        <div className="absolute top-1/3 -left-20 w-[600px] h-[600px] rounded-full bg-[radial-gradient(circle,rgba(99,102,241,0.07)_0%,transparent_55%)] blur-3xl will-change-transform" />
-        <div className="absolute -bottom-32 right-1/4 w-[500px] h-[500px] rounded-full bg-[radial-gradient(circle,rgba(6,182,212,0.05)_0%,transparent_60%)] blur-3xl will-change-transform" />
-      </div>
-
-      <div className="relative z-10 mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 space-y-6">
+    <>
+      <div className="relative z-10 mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 space-y-6 pb-20 selection:bg-emerald-500 selection:text-white">
         {/* College Header with Elevated Glassmorphism */}
         <CollegeHeader
           className="surface-card mb-0 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-white/50 bg-white/70 backdrop-blur-2xl"
@@ -1901,7 +1885,7 @@ const FacultyDashboard: React.FC = () => {
           )}
         </AnimatePresence>
       </div>
-    </div>
+    </>
   );
 };
 
