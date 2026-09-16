@@ -1506,6 +1506,11 @@ async function handleTotpAttendanceSubmission(req, res) {
       });
     }
 
+    const eligibility = validateStudentSessionEligibility(student, session);
+    if (!eligibility.ok) {
+      return res.status(403).json({ ok: false, error: eligibility.error });
+    }
+
     // Fast-path in-memory duplicate check
     const isAlreadyPresent = await isStudentPresent(sessionId, student.id);
     if (isAlreadyPresent) {
@@ -1585,6 +1590,13 @@ async function handleTotpAttendanceSubmission(req, res) {
         student: student.id,
         faculty: session.faculty,
         subject: session.subject,
+        enrollment_no: student.enrollment_no || null,
+        student_name: student.name || null,
+        student_email: student.email || null,
+        department_code: student.dept?.code || student.departmentCode || null,
+        semester: Number(student.semester || session.semester) || null,
+        section: String(student.section || session.section || "").toUpperCase() || null,
+        year: Number(student.year || session.year) || null,
         timestamp: new Date().toISOString(),
         status: "present",
         location: location
