@@ -164,7 +164,6 @@ export default function CameraQrScanner({
   const [usingFallback, setUsingFallback] = useState(false);
   const [restartNonce, setRestartNonce] = useState(0);
   const [scanSuccessPulse, setScanSuccessPulse] = useState(false);
-  const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
 
   // Non-blocking concurrency refs for smooth zoom & scanning loop
   const zoomLevelRef = useRef<number>(1.0);
@@ -185,21 +184,20 @@ export default function CameraQrScanner({
 
   useEffect(() => {
     if (!faceVerifiedExpiresAt || faceVerifiedExpiresAt <= 0) {
-      setSecondsLeft(null);
       return;
     }
 
-    const updateTimer = () => {
-      const remaining = Math.max(0, Math.ceil((faceVerifiedExpiresAt - Date.now()) / 1000));
-      setSecondsLeft(remaining);
-      if (remaining <= 0) {
-        onSessionExpiredRef.current?.();
-      }
-    };
+    const remainingMs = faceVerifiedExpiresAt - Date.now();
+    if (remainingMs <= 0) {
+      onSessionExpiredRef.current?.();
+      return;
+    }
 
-    updateTimer();
-    const interval = window.setInterval(updateTimer, 1000);
-    return () => window.clearInterval(interval);
+    const timer = window.setTimeout(() => {
+      onSessionExpiredRef.current?.();
+    }, remainingMs);
+
+    return () => window.clearTimeout(timer);
   }, [faceVerifiedExpiresAt]);
 
   const detectorSupported = useMemo(
@@ -752,20 +750,6 @@ export default function CameraQrScanner({
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
         >
-          {secondsLeft !== null && secondsLeft > 0 && faceVerifiedExpiresAt && faceVerifiedExpiresAt > 0 ? (
-            <div className="pointer-events-none absolute top-3 inset-x-0 z-20 flex justify-center px-3">
-              <span
-                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold backdrop-blur-md border shadow-lg transition-colors ${
-                  secondsLeft <= 5
-                    ? "bg-amber-500/25 text-amber-300 border-amber-500/50 animate-pulse"
-                    : "bg-slate-900/80 text-emerald-300 border-emerald-500/40"
-                }`}
-              >
-                <span>⏱</span> Face verified — {secondsLeft}s remaining
-              </span>
-            </div>
-          ) : null}
-
           {/* Floating Zoom Indicator Pill during Pinch / Active Zoom */}
           {zoomValue > 1.01 && (
             <div className="pointer-events-none absolute bottom-3 right-3 z-20 flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-950/80 backdrop-blur-md border border-teal-500/40 text-[11px] font-bold text-teal-300 shadow-lg">

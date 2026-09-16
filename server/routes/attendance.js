@@ -362,14 +362,35 @@ function validateStudentSessionEligibility(student, session) {
     };
   }
 
-  // 4. Section Check (Strict: Case-insensitive, trimmed)
-  const sessionSection = String(session.section || "").trim().toUpperCase();
+  // 4. Section Check (Strict, Case-Insensitive, Multi-Section & Wildcard Aware)
+  const rawSessionSection = String(session.section || "").trim().toUpperCase();
   const studentSection = String(student.section || "").trim().toUpperCase();
-  if (sessionSection && studentSection && sessionSection !== studentSection) {
-    return {
-      ok: false,
-      error: `Section mismatch: You are registered in Section ${studentSection}, but this lecture is for Section ${sessionSection}`,
-    };
+
+  // If session requires a specific section and is not a general/all session
+  if (rawSessionSection && rawSessionSection !== "ALL" && rawSessionSection !== "*") {
+    // Parse allowed sections (supports "A", "A, B", "A/B", "A & B")
+    const allowedSections = new Set(
+      rawSessionSection
+        .split(/[,/&|]/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+    );
+
+    if (allowedSections.size > 0) {
+      if (!studentSection) {
+        return {
+          ok: false,
+          error: `Section mismatch: You have no section assigned in your profile, but this lecture is restricted to Section ${rawSessionSection}.`,
+        };
+      }
+
+      if (!allowedSections.has(studentSection)) {
+        return {
+          ok: false,
+          error: `Section mismatch: You are registered in Section ${studentSection}, but this lecture is for Section ${rawSessionSection}.`,
+        };
+      }
+    }
   }
 
   return { ok: true };
