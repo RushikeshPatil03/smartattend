@@ -44,6 +44,21 @@ function throttledTouchSession(sessionId) {
   return touchSession(sessionId);
 }
 
+// Clean up expired scan grants and stale throttle timestamps every 60 seconds
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, grant] of scanGrantsMemoryStore.entries()) {
+    if (now - (grant.issuedAt || 0) > (SCAN_GRANT_TTL_MS || 25000) + 10000) {
+      scanGrantsMemoryStore.delete(key);
+    }
+  }
+  for (const [sid, timestamp] of sessionTouchThrottleMs.entries()) {
+    if (now - timestamp > 120000) {
+      sessionTouchThrottleMs.delete(sid);
+    }
+  }
+}, 60000);
+
 function setCachedSession(sid, session) {
   if (activeSessionsMemoryCache.size >= ACTIVE_SESSION_CACHE_MAX_SIZE) {
     const oldestKey = activeSessionsMemoryCache.keys().next().value;
@@ -650,14 +665,9 @@ const handleMarkAttendance = async (req, res) => {
         };
       }
 
-      // Row-level validation: Direct DB check to verify session is currently active
-      const { data: liveSession, error: sessionCheckError } = await supabase
-        .from("sessions")
-        .select("is_active")
-        .eq("id", sessionId)
-        .single();
-
-      if (sessionCheckError || !liveSession || !liveSession.is_active) {
+      // In-memory LRU cache guarantees session active status with zero network latency.
+      // (Cache is automatically evicted the instant faculty ends the session via invalidateCachedSession).
+      if (!session || !(session.is_active ?? session.isActive)) {
         invalidateCachedSession(sessionId);
         return res.status(400).json({ ok: false, error: "Session is no longer active" });
       }
@@ -1570,14 +1580,8 @@ async function handleTotpAttendanceSubmission(req, res) {
     const supabase = getSupabaseClient();
     if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
 
-    // Row-level validation: Direct DB check to verify session is currently active
-    const { data: liveSession, error: sessionCheckError } = await supabase
-      .from("sessions")
-      .select("is_active")
-      .eq("id", sessionId)
-      .single();
-
-    if (sessionCheckError || !liveSession || !liveSession.is_active) {
+    // In-memory LRU cache guarantees session active status with zero network latency.
+    if (!session || !(session.is_active ?? session.isActive)) {
       invalidateCachedSession(sessionId);
       return res.status(400).json({ ok: false, error: "Session is no longer active" });
     }

@@ -485,43 +485,35 @@ const LivePhotoCapture: React.FC<{
       const video = videoRef.current;
       if (video) {
         video.srcObject = stream;
-        video.style.transform = "none";
         video.setAttribute("playsinline", "true");
         video.setAttribute("autoplay", "true");
         video.muted = true;
         try {
           await video.play();
         } catch {
-          // Ignore autoplay restriction
+          // Autoplay fallback
         }
-
-        // Wait until video has valid dimensions and is actively streaming frames
+        // Wait until video has valid dimensions before lifting loading state
         await new Promise<void>((resolve) => {
-          if (
-            (video.readyState >= 2 || video.currentTime > 0) &&
-            video.videoWidth > 0 &&
-            video.videoHeight > 0
-          ) {
+          if (video.videoWidth > 0 && video.videoHeight > 0) {
+            setCameraLoading(false);
             resolve();
             return;
           }
-          let resolved = false;
-          const events = ["loadedmetadata", "loadeddata", "canplay", "playing", "timeupdate"];
-          const onReady = () => {
-            if (!resolved && video.videoWidth > 0 && video.videoHeight > 0) {
-              resolved = true;
-              events.forEach((ev) => video.removeEventListener(ev, onReady));
+          const onFrame = () => {
+            if (video.videoWidth > 0 && video.videoHeight > 0) {
+              video.removeEventListener("loadeddata", onFrame);
+              video.removeEventListener("playing", onFrame);
+              setCameraLoading(false);
               resolve();
             }
           };
-          events.forEach((ev) => video.addEventListener(ev, onReady, { once: true }));
+          video.addEventListener("loadeddata", onFrame);
+          video.addEventListener("playing", onFrame);
           setTimeout(() => {
-            if (!resolved) {
-              resolved = true;
-              events.forEach((ev) => video.removeEventListener(ev, onReady));
-              resolve();
-            }
-          }, 800);
+            setCameraLoading(false);
+            resolve();
+          }, 600);
         });
       }
     } catch (error: any) {
@@ -538,8 +530,8 @@ const LivePhotoCapture: React.FC<{
     setVerificationInProgress(true);
 
     try {
-      if (!videoRef.current) {
-        throw new Error("Camera preview is not ready yet.");
+      if (!videoRef.current || videoRef.current.videoWidth === 0 || videoRef.current.readyState < 2) {
+        throw new Error("Camera preview is not ready yet. Please hold still.");
       }
 
       let faceVerification: ClientFaceVerification | undefined;
@@ -872,11 +864,13 @@ const LivePhotoCapture: React.FC<{
                 setCameraActive(true);
                 setCameraLoading(false);
               }}
-              className="absolute inset-0 h-full w-full object-cover -scale-x-100 transition-opacity duration-200"
-              style={{
-                opacity: cameraLoading ? 0 : 1,
-                background: "#020617",
+              onCanPlay={() => {
+                setCameraLoading(false);
+                if (videoRef.current) {
+                  videoRef.current.play().catch(() => {});
+                }
               }}
+              className="absolute inset-0 h-full w-full object-cover -scale-x-100 bg-slate-950"
             />
 
             {/* Circular Progress Ring & Direction Guidance Overlay */}

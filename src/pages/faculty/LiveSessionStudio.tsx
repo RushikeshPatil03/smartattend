@@ -2275,8 +2275,8 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                             </motion.div>
                           ))}
 
-                          {/* Matching Already Present Students (Verified with remove option) */}
-                          {filteredLivePresentList.map((item) => {
+                          {/* Matching Already Present Students (Verified with remove option - top 40) */}
+                          {filteredLivePresentList.slice(0, 40).map((item) => {
                             const scanTime = item.timestamp
                               ? new Date(item.timestamp).toLocaleTimeString([], {
                                   hour: "2-digit",
@@ -2342,58 +2342,66 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                           </p>
                         </div>
                       ) : (
-                        presentList.map((item) => {
-                          const scanTime = item.timestamp
-                            ? new Date(item.timestamp).toLocaleTimeString([], {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                                second: "2-digit",
-                              })
-                            : "Verified";
+                        <>
+                          {/* Keep only the most recent 40 cards in DOM to prevent browser jank */}
+                          {presentList.slice(0, 40).map((item) => {
+                            const scanTime = item.timestamp
+                              ? new Date(item.timestamp).toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                  second: "2-digit",
+                                })
+                              : "Verified";
 
-                          return (
-                            <motion.div
-                              key={item.enrollmentNo}
-                              layout
-                              initial={{ opacity: 0, y: -6 }}
-                              animate={{ opacity: 1, y: 0 }}
-                              exit={{ opacity: 0, scale: 0.95 }}
-                              transition={{ duration: 0.15 }}
-                              className="flex items-center justify-between rounded-xl border border-emerald-200/80 bg-emerald-50/40 px-2.5 py-1.5 transition-colors duration-150 hover:bg-emerald-50/70"
-                            >
-                              <div className="flex items-center gap-2.5 min-w-0">
-                                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white border border-slate-200 overflow-hidden shadow-2xs">
-                                  {item.photoUrl ? (
-                                    <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
-                                  ) : (
-                                    <span className="font-extrabold text-[11px] text-slate-700">
-                                      {item.name.slice(0, 1).toUpperCase()}
-                                    </span>
-                                  )}
+                            return (
+                              <motion.div
+                                key={item.enrollmentNo}
+                                layout
+                                initial={{ opacity: 0, y: -6 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, scale: 0.95 }}
+                                transition={{ duration: 0.15 }}
+                                className="flex items-center justify-between rounded-xl border border-emerald-200/80 bg-emerald-50/40 px-2.5 py-1.5 transition-colors duration-150 hover:bg-emerald-50/70"
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white border border-slate-200 overflow-hidden shadow-2xs">
+                                    {item.photoUrl ? (
+                                      <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
+                                    ) : (
+                                      <span className="font-extrabold text-[11px] text-slate-700">
+                                        {item.name.slice(0, 1).toUpperCase()}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="min-w-0">
+                                    <p className="truncate text-xs font-bold text-slate-900 leading-tight">{item.name}</p>
+                                    <p className="font-mono text-[10px] text-slate-500 truncate leading-tight">{item.enrollmentNo}</p>
+                                  </div>
                                 </div>
-                                <div className="min-w-0">
-                                  <p className="truncate text-xs font-bold text-slate-900 leading-tight">{item.name}</p>
-                                  <p className="font-mono text-[10px] text-slate-500 truncate leading-tight">{item.enrollmentNo}</p>
-                                </div>
-                              </div>
 
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100/90 border border-emerald-300 px-2 py-0.5 text-[9px] font-extrabold text-emerald-800 shadow-2xs">
-                                  <Check size={10} className="stroke-[3]" /> {scanTime}
-                                </span>
-                                {/* Quick Remove / Trash Dustbin Icon */}
-                                <button
-                                  type="button"
-                                  onClick={() => onManualAttendance("absent", item.enrollmentNo)}
-                                  title={`Remove ${item.name} (${item.enrollmentNo})`}
-                                  className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 active:scale-90 transition cursor-pointer"
-                                >
-                                  <Trash2 size={13} />
-                                </button>
-                              </div>
-                            </motion.div>
-                          );
-                        })
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100/90 border border-emerald-300 px-2 py-0.5 text-[9px] font-extrabold text-emerald-800 shadow-2xs">
+                                    <Check size={10} className="stroke-[3]" /> {scanTime}
+                                  </span>
+                                  {/* Quick Remove / Trash Dustbin Icon */}
+                                  <button
+                                    type="button"
+                                    onClick={() => onManualAttendance("absent", item.enrollmentNo)}
+                                    title={`Remove ${item.name} (${item.enrollmentNo})`}
+                                    className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 active:scale-90 transition cursor-pointer"
+                                  >
+                                    <Trash2 size={13} />
+                                  </button>
+                                </div>
+                              </motion.div>
+                            );
+                          })}
+                          {presentList.length > 40 && (
+                            <div className="py-2 text-center text-[11px] font-medium text-slate-400">
+                              Showing latest 40 scans ({presentList.length} total recorded)
+                            </div>
+                          )}
+                        </>
                       )
                     )}
                   </AnimatePresence>

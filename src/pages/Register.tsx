@@ -30,7 +30,7 @@ import {
 } from "../services/attendanceClient";
 import apiClient from "../services/apiClient";
 import { Department } from "../types";
-import LivePhotoCapture, { prewarmFrontCamera } from "../components/LivePhotoCapture";
+const LivePhotoCapture = React.lazy(() => import("../components/LivePhotoCapture"));
 import { buildFaceSignatures } from "../utils/faceSignature";
 
 type RoleType = "admin" | "student" | "faculty" | null;
@@ -161,9 +161,6 @@ const Register: React.FC = () => {
   const [registrationMeta, setRegistrationMeta] = useState<RegistrationMeta | null>(null);
 
   useEffect(() => {
-    // Prewarm front camera in background so student gets instant open
-    void prewarmFrontCamera();
-
     if (urlRole === "admin") {
       setRoleType("admin");
       setLoading(false);
@@ -180,6 +177,16 @@ const Register: React.FC = () => {
     setLinkError("Invalid or incomplete registration link. Please ask your administrator for a fresh registration link.");
     setLoading(false);
   }, []);
+
+  // Only warm up models if roleType === "student" after 3000ms idle time
+  useEffect(() => {
+    if (roleType === "student") {
+      const timer = setTimeout(() => {
+        void import("../utils/faceApiLoader").then((m) => m.loadModelsIfNeeded());
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [roleType]);
 
   const fetchRegistrationContext = async (registrationToken: string) => {
     setLoading(true);
@@ -706,15 +713,23 @@ const Register: React.FC = () => {
               {/* Student Live Selfie Photo Verification */}
               {roleType === "student" && (
                 <div className="pt-1">
-                  <LivePhotoCapture
-                    value={profilePhotoUrl}
-                    onChange={setProfilePhotoUrl}
-                    disabled={submitting}
-                    enableFaceQuality
-                    showCapturedPreview
-                    title="Student Official Face ID Photo"
-                    description="Position your face inside the oval guide. The capture button enables as soon as your face is centered."
-                  />
+                  <React.Suspense
+                    fallback={
+                      <div className="h-48 w-full rounded-2xl bg-slate-100 dark:bg-slate-800 animate-pulse flex items-center justify-center text-slate-400 text-sm">
+                        Loading camera module...
+                      </div>
+                    }
+                  >
+                    <LivePhotoCapture
+                      value={profilePhotoUrl}
+                      onChange={setProfilePhotoUrl}
+                      disabled={submitting}
+                      enableFaceQuality
+                      showCapturedPreview
+                      title="Student Official Face ID Photo"
+                      description="Position your face inside the oval guide. The capture button enables as soon as your face is centered."
+                    />
+                  </React.Suspense>
                 </div>
               )}
 
