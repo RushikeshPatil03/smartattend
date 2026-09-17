@@ -297,7 +297,13 @@ export default function CameraQrScanner({
       }
       const stream = streamRef.current;
       if (stream) {
-        stream.getTracks().forEach((track) => track.stop());
+        stream.getTracks().forEach((track) => {
+          try {
+            track.stop();
+          } catch {
+            // Ignore track stop errors on older WebViews
+          }
+        });
         streamRef.current = null;
       }
       if (videoRef.current) {
@@ -568,7 +574,13 @@ export default function CameraQrScanner({
         }
 
         if (!mountedRef.current) {
-          stream.getTracks().forEach((track) => track.stop());
+          stream.getTracks().forEach((track) => {
+            try {
+              track.stop();
+            } catch {
+              // Ignore track stop errors on older WebViews
+            }
+          });
           return;
         }
 

@@ -257,7 +257,13 @@ const LivePhotoCapture: React.FC<{
     }
     const stream = streamRef.current;
     if (stream) {
-      stream.getTracks().forEach((track) => track.stop());
+      stream.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {
+          // Ignore track stop errors on older WebViews
+        }
+      });
       streamRef.current = null;
     }
 
@@ -437,7 +443,13 @@ const LivePhotoCapture: React.FC<{
         stream = streamRef.current;
       } else {
         if (streamRef.current) {
-          streamRef.current.getTracks().forEach((track) => track.stop());
+          streamRef.current.getTracks().forEach((track) => {
+            try {
+              track.stop();
+            } catch {
+              // Ignore track stop errors on older WebViews
+            }
+          });
           streamRef.current = null;
         }
         if (videoRef.current) {
@@ -568,8 +580,9 @@ const LivePhotoCapture: React.FC<{
         setVerificationMessage("Matching your registered face...");
 
         try {
+          // Instant client-side verification
           const [capturedDataUrl, referenceDescriptor, liveDescriptor] = await Promise.all([
-            Promise.resolve().then(() => captureVideoFrame(videoRef.current!, DEFAULT_CAPTURE_OPTIONS)),
+            captureVideoFrame(videoRef.current!, DEFAULT_CAPTURE_OPTIONS),
             computeDescriptorFromImageURL(faceVerificationReferenceUrl),
             computeDescriptorFromVideoFrame(videoRef.current!),
           ]);

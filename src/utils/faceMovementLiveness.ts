@@ -18,12 +18,12 @@ export const CHALLENGES: readonly LivenessChallenge[] = [
 ] as const;
 
 export const DEFAULT_MOVEMENT_MAX_TIME_MS = Math.max(
-  2500,
-  Number(import.meta.env.VITE_FACEAPI_MOVEMENT_MAX_TIME_MS || 4000)
+  2000,
+  Number(import.meta.env.VITE_FACEAPI_MOVEMENT_MAX_TIME_MS || 3500)
 );
 export const DEFAULT_MOVEMENT_SAMPLE_FPS = Math.max(
-  10,
-  Math.min(24, Number(import.meta.env.VITE_FACEAPI_MOVEMENT_SAMPLE_FPS || 18))
+  12,
+  Math.min(24, Number(import.meta.env.VITE_FACEAPI_MOVEMENT_SAMPLE_FPS || 20))
 );
 export const DEFAULT_MOVEMENT_TRANSLATE_THRESHOLD = Number(
   import.meta.env.VITE_FACEAPI_MOVEMENT_TRANSLATE_THRESHOLD || 0.045
@@ -32,10 +32,11 @@ export const DEFAULT_MOVEMENT_ROTATION_THRESHOLD = Number(
   import.meta.env.VITE_FACEAPI_MOVEMENT_ROTATION_THRESHOLD || 0.045
 );
 
-export const RELATIVE_PITCH_DELTA_THRESHOLD = 0.048;
-export const RELATIVE_YAW_DELTA_THRESHOLD = 0.058;
-export const MIN_LIVENESS_DURATION_MS = 180;
-export const CONSECUTIVE_FRAMES_REQUIRED = 1;
+// Calibrated for subtle, natural head turns (10°-15°) without neck strain
+export const RELATIVE_PITCH_DELTA_THRESHOLD = 0.035; // Subtle nod/tilt (Up/Down)
+export const RELATIVE_YAW_DELTA_THRESHOLD = 0.040;   // Subtle turn (Left/Right)
+export const MIN_LIVENESS_DURATION_MS = 140;         // Fast confirmation window
+export const CONSECUTIVE_FRAMES_REQUIRED = 1;        // Single clean frame verification
 
 export type ChallengeDirection = "UP" | "DOWN" | "LEFT" | "RIGHT";
 
@@ -294,36 +295,45 @@ export async function runMovementLiveness(
 
     const elapsed = performance.now() - startedAt;
 
-    // Determine motion delta towards the target challenge
-    let currentDelta = 0;
-    let targetThreshold = 1;
-
-    if (challenge === "TILT_UP") {
-      targetThreshold = RELATIVE_PITCH_DELTA_THRESHOLD;
-      currentDelta = baseline.pitchRatio - pose.pitchRatio;
-    } else if (challenge === "TILT_DOWN") {
-      targetThreshold = RELATIVE_PITCH_DELTA_THRESHOLD;
-      currentDelta = pose.pitchRatio - baseline.pitchRatio;
-    } else if (challenge === "TURN_LEFT") {
-      targetThreshold = RELATIVE_YAW_DELTA_THRESHOLD;
-      currentDelta = pose.yawRatio - baseline.yawRatio;
-    } else if (challenge === "TURN_RIGHT") {
-      targetThreshold = RELATIVE_YAW_DELTA_THRESHOLD;
-      currentDelta = baseline.yawRatio - pose.yawRatio;
+    // Calculate directional delta with exponential responsiveness
+    let delta = 0;
+    let isCorrectDirection = false;
+    switch (challenge) {
+      case "TURN_LEFT":
+        // Nose moves rightward relative to face frame in mirrored selfie
+        delta = pose.yawRatio - baseline.yawRatio;
+        isCorrectDirection = delta >= RELATIVE_YAW_DELTA_THRESHOLD;
+        break;
+      case "TURN_RIGHT":
+        delta = baseline.yawRatio - pose.yawRatio;
+        isCorrectDirection = delta >= RELATIVE_YAW_DELTA_THRESHOLD;
+        break;
+      case "TILT_UP":
+        delta = baseline.pitchRatio - pose.pitchRatio;
+        isCorrectDirection = delta >= RELATIVE_PITCH_DELTA_THRESHOLD;
+        break;
+      case "TILT_DOWN":
+        delta = pose.pitchRatio - baseline.pitchRatio;
+        isCorrectDirection = delta >= RELATIVE_PITCH_DELTA_THRESHOLD;
+        break;
     }
+    const threshold = challenge.startsWith("TURN")
+      ? RELATIVE_YAW_DELTA_THRESHOLD
+      : RELATIVE_PITCH_DELTA_THRESHOLD;
+    const progress = Math.min(1.0, Math.max(0, delta / threshold));
 
-    // Granular delta progress calculation
-    const deltaRatio = Math.max(0, currentDelta / targetThreshold);
-    const currentProgress = Math.min(1.0, deltaRatio);
+    const currentDelta = delta;
+    const targetThreshold = threshold;
+    const currentProgress = progress;
 
-    if (deltaRatio >= 1.0) {
+    if (isCorrectDirection) {
       consecutiveFrames += 1;
       if (consecutiveFrames >= CONSECUTIVE_FRAMES_REQUIRED) {
         challengePassed = true;
       }
     } else {
       consecutiveFrames = Math.max(0, consecutiveFrames - 1);
-      if (deltaRatio < 0.70) {
+      if (progress < 0.70) {
         challengePassed = false;
       }
     }

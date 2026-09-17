@@ -223,7 +223,13 @@ const Login: React.FC = () => {
   const stopFrontCamera = () => {
     const stream = streamRef.current;
     if (stream) {
-      stream.getTracks().forEach((track) => track.stop());
+      stream.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {
+          // Ignore track stop errors on older WebViews
+        }
+      });
       streamRef.current = null;
     }
     setCameraActive(false);
