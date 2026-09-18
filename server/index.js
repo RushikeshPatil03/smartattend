@@ -1,3 +1,5 @@
+// MUST BE LINE 1 before any other require()
+process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || "64";
 const path = require("path");
 const http = require("http");
 const https = require("https");

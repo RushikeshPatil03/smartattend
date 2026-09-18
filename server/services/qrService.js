@@ -1,35 +1,126 @@
+﻿// server/services/qrService.js
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const env = require("../config/env");
 const { getSupabaseClient } = require("../config/supabase");
 
 const QR_SECRET = env.QR_SECRET;
-const QR_TTL = env.QR_TTL_SECONDS; // dynamic QR lifetime in seconds
+const QR_TTL = env.QR_TTL_SECONDS || 10;
 const QR_AUDIENCE = "a";
 const QR_ISSUER = "sa";
-const QR_RECENT_HISTORY = Math.max(3, env.QR_RECENT_HISTORY);
-const QR_MAX_SEQUENCE_DRIFT = Math.max(0, env.QR_MAX_SEQUENCE_DRIFT);
-const QR_MIN_ROTATION_SECONDS = Math.max(3, env.QR_MIN_ROTATION_SECONDS || 3);
+const QR_RECENT_HISTORY = Math.max(3, env.QR_RECENT_HISTORY || 3);
+const QR_MAX_SEQUENCE_DRIFT = Math.max(0, env.QR_MAX_SEQUENCE_DRIFT || 1);
+const QR_MIN_ROTATION_SECONDS = Math.max(2, env.QR_MIN_ROTATION_SECONDS || 2);
 const QR_MIN_ROTATION_MS = QR_MIN_ROTATION_SECONDS * 1000;
-const QR_STATE_TTL_SECONDS = Math.max(
-  QR_VERIFY_MAX_STATE_SECONDS(),
-  Number(process.env.QR_STATE_TTL_SECONDS || 300)
-);
+const GRACE_PERIOD_BLOCKS = 3; // Allows current block + past 3 blocks (8-second window)
 
-function QR_VERIFY_MAX_STATE_SECONDS() {
-  return (
-    Math.max(env.QR_VERIFY_MAX_AGE_SECONDS, env.QR_MAX_TWO_STEP_GAP_SECONDS, QR_TTL) +
-    120
-  );
-}
+// =========================================================================
+// L1 IN-MEMORY CACHES (Sub-millisecond access)
+// =========================================================================
+const qrMemoryStore = new Map();     // sessionId -> state object
+const l1SecretCache = new Map();     // sessionId -> { secretKey, expiresAt }
 
-// In-memory cache for fast sub-millisecond dynamic QR rotation
-const qrMemoryStore = new Map();
+// Auto-clean stale memory every 10 minutes to prevent memory leaks
+setInterval(() => {
+  const now = Date.now();
+  for (const [sid, entry] of l1SecretCache.entries()) {
+    if (now > entry.expiresAt) l1SecretCache.delete(sid);
+  }
+}, 10 * 60 * 1000).unref();
 
 function hashToken(token) {
   return crypto.createHash("sha256").update(String(token)).digest("hex");
 }
 
+// =========================================================================
+// TOTP SECRET RESOLUTION (L1 Cache -> totp_secrets Table Fallback)
+// =========================================================================
+async function getSessionSecret(sessionId) {
+  if (!sessionId) return null;
+  const sid = String(sessionId);
+
+  // 1. Check L1 Memory Cache
+  const cached = l1SecretCache.get(sid);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.secretKey;
+  }
+
+  // 2. Database Fallback (handles server restart / cold boot mid-class)
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from("totp_secrets")
+        .select("secret_key, expires_at")
+        .eq("session_id", sid)
+        .single();
+
+      if (!error && data?.secret_key) {
+        const expiresAtMs = data.expires_at
+          ? new Date(data.expires_at).getTime()
+          : Date.now() + 4 * 60 * 60 * 1000;
+
+        l1SecretCache.set(sid, {
+          secretKey: data.secret_key,
+          expiresAt: expiresAtMs,
+        });
+
+        return data.secret_key;
+      }
+    } catch {
+      // Fallback failed, continue
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Deterministic HMAC-SHA256 8-character token generator matching Faculty UI
+ */
+function generateTokenForBlock(secretKey, blockIndex) {
+  return crypto
+    .createHmac("sha256", secretKey)
+    .update(`totp-qr:${blockIndex}`)
+    .digest("hex")
+    .substring(0, 8);
+}
+
+/**
+ * HIGH-CONCURRENCY SLIDING WINDOW VALIDATION (Zero DB I/O once cached)
+ */
+async function validateDynamicQrTokenFast(sessionId, candidateToken) {
+  if (!sessionId || !candidateToken) {
+    return { valid: false, error: "Missing session or QR credentials" };
+  }
+
+  const cleanToken = String(candidateToken).trim().toLowerCase();
+  const secretKey = await getSessionSecret(sessionId);
+
+  if (!secretKey) {
+    return { valid: false, error: "Session QR engine not found or expired. Please refresh the faculty screen." };
+  }
+
+  const currentBlock = Math.floor(Date.now() / 1000 / QR_MIN_ROTATION_SECONDS);
+  const candidateBuf = Buffer.from(cleanToken);
+
+  // Check current block and past grace blocks
+  for (let i = 0; i <= GRACE_PERIOD_BLOCKS; i++) {
+    const block = currentBlock - i;
+    const expected = generateTokenForBlock(secretKey, block);
+    const expectedBuf = Buffer.from(expected);
+
+    if (candidateBuf.length === expectedBuf.length && crypto.timingSafeEqual(candidateBuf, expectedBuf)) {
+      return { valid: true, blockIndex: block };
+    }
+  }
+
+  return { valid: false, error: "QR Code rotated or expired. Please scan the live display." };
+}
+
+// =========================================================================
+// BACKWARD COMPATIBLE QR STATE ENGINE (For existing two-step flows)
+// =========================================================================
 async function getQRState(sessionId) {
   const sid = String(sessionId);
   const cached = qrMemoryStore.get(sid);
@@ -55,7 +146,7 @@ async function getQRState(sessionId) {
         return state;
       }
     } catch {
-      // Fall back to default
+      // Fallback to empty state
     }
   }
 
@@ -69,7 +160,7 @@ async function setQRState(sessionId, state) {
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
-      const expiresAt = new Date(Date.now() + QR_STATE_TTL_SECONDS * 1000).toISOString();
+      const expiresAt = new Date(Date.now() + 300 * 1000).toISOString();
       await supabase.from("qr_states").upsert({
         session_id: sid,
         state,
@@ -83,14 +174,11 @@ async function setQRState(sessionId, state) {
 }
 
 async function generateQRToken({ sessionId, facultyId, subjectId, location }) {
-  if (!sessionId) {
-    throw new Error("QR token requires sessionId");
-  }
+  if (!sessionId) throw new Error("QR token requires sessionId");
 
   const now = Date.now();
   const state = await getQRState(sessionId);
 
-  // Keep a token visible for a minimum window to avoid "video-like" rapid changes.
   if (
     state.lastToken &&
     state.lastIssuedAt &&
@@ -105,25 +193,13 @@ async function generateQRToken({ sessionId, facultyId, subjectId, location }) {
     iat: Math.floor(now / 1000),
   };
 
-  if (facultyId) {
-    payload.facultyId = String(facultyId);
-  }
-  if (subjectId) {
-    payload.subjectId = String(subjectId);
-  }
-  if (
-    location &&
-    Number.isFinite(Number(location.lat)) &&
-    Number.isFinite(Number(location.lng))
-  ) {
+  if (facultyId) payload.facultyId = String(facultyId);
+  if (subjectId) payload.subjectId = String(subjectId);
+  if (location && Number.isFinite(Number(location.lat)) && Number.isFinite(Number(location.lng))) {
     payload.location = {
       lat: Number(Number(location.lat).toFixed(6)),
       lng: Number(Number(location.lng).toFixed(6)),
-      radiusMeters: Number(
-        Number.isFinite(Number(location.radiusMeters))
-          ? Number(location.radiusMeters)
-          : 0
-      ),
+      radiusMeters: Number(location.radiusMeters || 0),
     };
   }
 
@@ -134,7 +210,6 @@ async function generateQRToken({ sessionId, facultyId, subjectId, location }) {
   });
 
   const tokenHash = hashToken(token);
-
   const lastHash = state.recentTokenHashes[state.recentTokenHashes.length - 1];
   if (lastHash !== tokenHash) {
     state.recentTokenHashes.push(tokenHash);
@@ -146,7 +221,6 @@ async function generateQRToken({ sessionId, facultyId, subjectId, location }) {
   state.lastToken = token;
 
   await setQRState(sessionId, state);
-
   return token;
 }
 
@@ -166,12 +240,9 @@ async function generateQRTokenWithTiming(input) {
 }
 
 function verifyQRToken(token, options = {}) {
-  const allowExpired = Boolean(options.allowExpired);
-  const maxAgeSeconds = Number(options.maxAgeSeconds || 0);
-
   try {
     const decoded = jwt.verify(token, QR_SECRET, {
-      ignoreExpiration: allowExpired,
+      ignoreExpiration: Boolean(options.allowExpired),
       audience: QR_AUDIENCE,
       issuer: QR_ISSUER,
     });
@@ -179,18 +250,6 @@ function verifyQRToken(token, options = {}) {
     if (!decoded || decoded.type !== "DYNAMIC_QR" || !decoded.sessionId) {
       return { ok: false, error: "Invalid or expired QR token" };
     }
-
-    if (allowExpired && maxAgeSeconds > 0) {
-      const iatSec = Number(decoded.iat || 0);
-      if (!iatSec) {
-        return { ok: false, error: "Invalid or expired QR token" };
-      }
-      const ageSec = Math.floor(Date.now() / 1000) - iatSec;
-      if (ageSec > maxAgeSeconds) {
-        return { ok: false, error: "Invalid or expired QR token" };
-      }
-    }
-
     return { ok: true, decoded };
   } catch {
     return { ok: false, error: "Invalid or expired QR token" };
@@ -203,11 +262,7 @@ async function validateTwoStepQR({ sessionId, firstToken, secondToken }) {
   }
 
   const state = await getQRState(sessionId);
-  if (
-    !state ||
-    !Array.isArray(state.recentTokenHashes) ||
-    state.recentTokenHashes.length < 2
-  ) {
+  if (!state || !Array.isArray(state.recentTokenHashes) || state.recentTokenHashes.length < 2) {
     return { ok: false, error: "QR session not initialized" };
   }
 
@@ -233,16 +288,17 @@ async function validateTwoStepQR({ sessionId, firstToken, secondToken }) {
 }
 
 async function clearSessionQR(sessionId) {
-  if (sessionId) {
-    const sid = String(sessionId);
-    qrMemoryStore.delete(sid);
-    const supabase = getSupabaseClient();
-    if (supabase) {
-      try {
-        await supabase.from("qr_states").delete().eq("session_id", sid);
-      } catch {
-        // Ignore deletion error
-      }
+  if (!sessionId) return;
+  const sid = String(sessionId);
+  qrMemoryStore.delete(sid);
+  l1SecretCache.delete(sid);
+
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      await supabase.from("qr_states").delete().eq("session_id", sid);
+    } catch {
+      // Best-effort cleanup
     }
   }
 }
@@ -252,5 +308,7 @@ module.exports = {
   generateQRTokenWithTiming,
   verifyQRToken,
   validateTwoStepQR,
+  validateDynamicQrTokenFast,
+  getSessionSecret,
   clearSessionQR,
 };

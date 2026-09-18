@@ -17,20 +17,7 @@ const FACULTY_AUTH_SELECT =
 const ADMIN_AUTH_SELECT =
   "id, name, email, password_hash, college_name, profile_photo_url";
 
-async function comparePassword(password, hash) {
-  if (!password || !hash) return false;
-  try {
-    return await bcrypt.compare(String(password), String(hash));
-  } catch (err) {
-    console.warn("Bcrypt compare fallback triggered:", err?.message || err);
-    try {
-      const bcryptjs = require("bcryptjs");
-      return await bcryptjs.compare(String(password), String(hash));
-    } catch {
-      return false;
-    }
-  }
-}
+const { verifyUserPassword } = require("../services/authService");
 
 const adminCollegeCache = new Map();
 const ADMIN_COLLEGE_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -302,7 +289,7 @@ router.post(
           return res.status(500).json({ ok: false, error: "Password not set for admin" });
         }
 
-        const valid = await comparePassword(password, storedHash);
+        const valid = await verifyUserPassword(password, storedHash);
         if (!valid) {
           return res.status(401).json({ ok: false, error: "Invalid password" });
         }
@@ -345,7 +332,7 @@ router.post(
           return res.status(500).json({ ok: false, error: "Password not set for account" });
         }
 
-        const valid = await comparePassword(password, storedHash);
+        const valid = await verifyUserPassword(password, storedHash);
         if (!valid) {
           return res.status(401).json({ ok: false, error: "Invalid password" });
         }
@@ -645,7 +632,7 @@ router.post("/device-change/verify-student", async (req, res) => {
       return res.status(401).json({ ok: false, error: "Invalid student credentials" });
     }
 
-    const valid = await comparePassword(String(password), student.password_hash || "");
+    const valid = await verifyUserPassword(String(password), student.password_hash || "");
     if (!valid) {
       return res.status(401).json({ ok: false, error: "Invalid student credentials" });
     }

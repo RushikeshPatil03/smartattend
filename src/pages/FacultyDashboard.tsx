@@ -1151,7 +1151,9 @@ const FacultyDashboard: React.FC = () => {
           }
         });
 
-        return newItemsToPrepend.length > 0 ? [...newItemsToPrepend, ...nextList] : nextList;
+        // Cap in-memory live display list to the latest 50 arrivals to prevent browser thread freeze
+        const combined = newItemsToPrepend.length > 0 ? [...newItemsToPrepend, ...nextList] : nextList;
+        return combined.slice(0, 50);
       });
 
       setAttendanceStatusMap((prev) => {

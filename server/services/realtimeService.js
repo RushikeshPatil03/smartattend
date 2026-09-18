@@ -102,16 +102,24 @@ async function flushSessionBatch(sessionId) {
     return;
   }
 
-  // Atomic queue drain: splice up to MAX_BATCH_SIZE records
+  // Atomic queue drain: splice up to MAX_BATCH_SIZE records (20-30 items)
   const itemsToSend = buffer.queue.splice(0, MAX_BATCH_SIZE);
   if (itemsToSend.length === 0) return;
-
   const compactBatchPayload = {
     e: "BATCH_MARKED",
     s: sid,
+    sessionId: sid,
     items: itemsToSend,
+    records: itemsToSend.map((it) => ({
+      id: it.id,
+      _id: it.id,
+      studentId: it.sId,
+      studentName: it.name,
+      enrollmentNo: it.roll,
+      status: it.st || "present",
+      timestamp: it.t ? new Date(it.t * 1000).toISOString() : new Date().toISOString(),
+    })),
   };
-
   buffer.isFlushing = true;
   try {
     const channel = getSessionChannel(sid);
@@ -119,7 +127,6 @@ async function flushSessionBatch(sessionId) {
       console.warn("⚠️ Supabase Realtime channel unavailable for session batch:", sid);
       return;
     }
-
     await channel.send({
       type: "broadcast",
       event: "BATCH_MARKED",
@@ -239,8 +246,17 @@ async function removeSessionChannel(sessionId) {
   }
 }
 
+const realtimeBroadcaster = {
+  enqueue: (sessionId, data) => {
+    broadcastAttendance(sessionId, data).catch((err) => {
+      console.error("❌ Realtime broadcast enqueue error:", err?.message || err);
+    });
+  },
+};
+
 module.exports = {
   broadcastAttendance,
+  realtimeBroadcaster,
   flushSessionBatch,
   removeSessionChannel,
   getSessionChannel,

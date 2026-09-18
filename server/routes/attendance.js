@@ -18,7 +18,15 @@ const { validateStudentLocation } = require("../services/locationValidation");
 const { verifyFaceAgainstStudent } = require("../services/faceVerification");
 const { normalizeFingerprint } = require("../services/deviceFingerprint");
 const { expireIfInactive, touchSession } = require("../services/sessionLifecycle");
-const { broadcastAttendance, removeSessionChannel } = require("../services/realtimeService");
+const { broadcastAttendance, removeSessionChannel, realtimeBroadcaster } = require("../services/realtimeService");
+// In-memory sliding lock to prevent double-tap race conditions (10-second sliding window)
+const scanLocks = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, timestamp] of scanLocks.entries()) {
+    if (now - timestamp > 10000) scanLocks.delete(key);
+  }
+}, 10000).unref();
 const auth = require("../middleware/auth");
 const rateLimit = require("../middleware/rateLimit");
 const env = require("../config/env");
@@ -537,281 +545,196 @@ router.post(
 // POST /api/attendance/scan-grant/mark
 // ----------------------------------------------------
 const handleMarkAttendance = async (req, res) => {
-    try {
-      const student = req.user;
-      const {
-        scanGrantToken,
-        firstQrToken,
-        secondQrToken,
-        location,
-        fingerprint,
+  const student = req.user;
+  const {
+    scanGrantToken,
+    firstQrToken,
+    secondQrToken,
+    location,
+    fingerprint,
+    faceMatch,
+    faceMetrics,
+    faceEmbedding,
+  } = req.body || {};
+  // --- ATOMIC IN-MEMORY DEDUPLICATION GUARD ---
+  // Keyed by student ID to prevent simultaneous double-scans from hitting PostgreSQL
+  const lockKey = `mark:${student?.id}`;
+  if (scanLocks.has(lockKey)) {
+    return res.status(409).json({ ok: false, error: "Submission already in progress. Please wait." });
+  }
+  scanLocks.set(lockKey, Date.now());
+  try {
+    if (!scanGrantToken || !firstQrToken || !secondQrToken) {
+      scanLocks.delete(lockKey);
+      return res.status(400).json({ ok: false, error: "Two dynamic QR scans & grant token required" });
+    }
+    const normalizedFp = normalizeFingerprint(fingerprint);
+    if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
+      scanLocks.delete(lockKey);
+      return res.status(401).json({ ok: false, error: "Device mismatch - attendance blocked" });
+    }
+    const firstVerified = verifyQRToken(firstQrToken, {
+      allowExpired: true,
+      maxAgeSeconds: QR_VERIFY_MAX_AGE_SECONDS,
+    });
+    const secondVerified = verifyQRToken(secondQrToken, {
+      allowExpired: false,
+    });
+    if (!firstVerified.ok || !secondVerified.ok) {
+      scanLocks.delete(lockKey);
+      return res.status(400).json({ ok: false, error: "QR token expired or invalid" });
+    }
+    const firstIat = Number(firstVerified.decoded?.iat || 0);
+    const secondIat = Number(secondVerified.decoded?.iat || 0);
+    const gapSeconds = Math.abs(secondIat - firstIat);
+    if (gapSeconds > QR_MAX_TWO_STEP_GAP_SECONDS) {
+      scanLocks.delete(lockKey);
+      return res.status(400).json({ ok: false, error: "Scan timeout between QR rotations. Scan again." });
+    }
+    const sessionId = secondVerified.decoded.sessionId;
+    if (String(firstVerified.decoded.sessionId) !== String(sessionId)) {
+      scanLocks.delete(lockKey);
+      return res.status(400).json({ ok: false, error: "QR scans belong to different sessions" });
+    }
+    const grantCheck = await consumeScanGrant({
+      token: scanGrantToken,
+      studentId: student.id,
+      sessionId,
+      fingerprint: normalizedFp,
+    });
+    if (!grantCheck.ok) {
+      scanLocks.delete(lockKey);
+      return res.status(400).json({ ok: false, error: grantCheck.error });
+    }
+    const sequenceCheck = await validateTwoStepQR({
+      sessionId,
+      firstToken: firstQrToken,
+      secondToken: secondQrToken,
+    });
+    if (!sequenceCheck.ok) {
+      scanLocks.delete(lockKey);
+      return res.status(400).json({ ok: false, error: sequenceCheck.error });
+    }
+    const session = await getCachedActiveSession(sessionId);
+    if (!session) {
+      scanLocks.delete(lockKey);
+      return res.status(404).json({ ok: false, error: "Session not found" });
+    }
+    const isRunning = Boolean(session?.is_active ?? session?.isActive);
+    if (!isRunning) {
+      scanLocks.delete(lockKey);
+      return res.status(400).json({ ok: false, error: "Session is no longer active" });
+    }
+    const isManuallyAbsent = await isManualAbsent(sessionId, student.id, student.enrollment_no);
+    if (isManuallyAbsent) {
+      scanLocks.delete(lockKey);
+      return res.status(403).json({
+        ok: false,
+        code: "REMOVED_BY_FACULTY",
+        error: "You were removed from this attendance session by faculty.",
+      });
+    }
+    // --- STRICT SECTION VALIDATION ---
+    const eligibility = validateStudentSessionEligibility(student, session);
+    if (!eligibility.ok) {
+      scanLocks.delete(lockKey);
+      return res.status(403).json({ ok: false, error: eligibility.error });
+    }
+    // --- GEOFENCING VALIDATION ---
+    const locationCheck = validateStudentLocation(location, session.location, sessionId);
+    if (!locationCheck.ok) {
+      scanLocks.delete(lockKey);
+      return res.status(403).json({
+        ok: false,
+        code: locationCheck.code || "LOCATION_ERROR",
+        error: locationCheck.error,
+        distanceMeters: locationCheck.distanceMeters,
+        allowedMeters: locationCheck.allowedMeters,
+        accuracy: locationCheck.accuracy,
+      });
+    }
+    // --- BIOMETRIC 1:1 FACE VERIFICATION ---
+    let faceVerificationResult = {
+      verified: true,
+      score: Number(faceMetrics?.confidence || 1),
+      model: "client-mediapipe-facenet512",
+    };
+    if (env.REQUIRE_FACE_VERIFICATION || faceMatch != null || faceEmbedding != null) {
+      const faceEval = await verifyFaceAgainstStudent(student, {
         faceMatch,
         faceMetrics,
         faceEmbedding,
-      } = req.body || {};
-
-      if (!scanGrantToken || !firstQrToken || !secondQrToken) {
-        return res.status(400).json({ ok: false, error: "Two dynamic QR scans & grant token required" });
-      }
-
-      const normalizedFp = normalizeFingerprint(fingerprint);
-      if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
-        return res.status(401).json({ ok: false, error: "Device mismatch - attendance blocked" });
-      }
-
-      const firstVerified = verifyQRToken(firstQrToken, {
-        allowExpired: true,
-        maxAgeSeconds: QR_VERIFY_MAX_AGE_SECONDS,
       });
-      const secondVerified = verifyQRToken(secondQrToken, {
-        allowExpired: false,
-      });
-
-      if (!firstVerified.ok || !secondVerified.ok) {
-        return res.status(400).json({ ok: false, error: "QR token expired or invalid" });
+      if (!faceEval.ok) {
+        scanLocks.delete(lockKey);
+        return res.status(403).json({ ok: false, error: faceEval.error });
       }
-
-      const firstIat = Number(firstVerified.decoded?.iat || 0);
-      const secondIat = Number(secondVerified.decoded?.iat || 0);
-      const gapSeconds = Math.abs(secondIat - firstIat);
-      if (gapSeconds > QR_MAX_TWO_STEP_GAP_SECONDS) {
-        return res.status(400).json({ ok: false, error: "Scan timeout between QR rotations. Scan again." });
-      }
-
-      const sessionId = secondVerified.decoded.sessionId;
-      if (String(firstVerified.decoded.sessionId) !== String(sessionId)) {
-        return res.status(400).json({ ok: false, error: "QR scans belong to different sessions" });
-      }
-
-      const grantCheck = await consumeScanGrant({
-        token: scanGrantToken,
-        studentId: student.id,
-        sessionId,
-        fingerprint: normalizedFp,
-      });
-
-      if (!grantCheck.ok) {
-        return res.status(400).json({ ok: false, error: grantCheck.error });
-      }
-
-      const sequenceCheck = await validateTwoStepQR({
-        sessionId,
-        firstToken: firstQrToken,
-        secondToken: secondQrToken,
-      });
-
-      if (!sequenceCheck.ok) {
-        return res.status(400).json({ ok: false, error: sequenceCheck.error });
-      }
-
-      const session = await getCachedActiveSession(sessionId);
-      if (!session) {
-        return res.status(404).json({ ok: false, error: "Session not found" });
-      }
-
-      const isRunning = Boolean(session?.is_active ?? session?.isActive);
-      if (!isRunning) {
-        return res.status(400).json({ ok: false, error: "Session is no longer active" });
-      }
-
-      const isManuallyAbsent = await isManualAbsent(sessionId, student.id, student.enrollment_no);
-      if (isManuallyAbsent) {
-        return res.status(403).json({
-          ok: false,
-          code: "REMOVED_BY_FACULTY",
-          error: "You were removed from this attendance session by faculty.",
-        });
-      }
-
-      const eligibility = validateStudentSessionEligibility(student, session);
-      if (!eligibility.ok) {
-        return res.status(403).json({ ok: false, error: eligibility.error });
-      }
-
-      const locationCheck = validateStudentLocation(location, session.location, sessionId);
-      if (!locationCheck.ok) {
-        return res.status(403).json({
-          ok: false,
-          code: locationCheck.code || "LOCATION_ERROR",
-          error: locationCheck.error,
-          distanceMeters: locationCheck.distanceMeters,
-          allowedMeters: locationCheck.allowedMeters,
-          accuracy: locationCheck.accuracy,
-        });
-      }
-
-      // Check face verification if enabled
-      let faceVerificationResult = {
+      faceVerificationResult = {
         verified: true,
-        score: Number(faceMetrics?.confidence || 1),
-        model: "client-mediapipe-facenet512",
+        score: Number(faceEval.score || 1),
+        model: faceEval.model || "facenet512",
       };
-
-      if (env.REQUIRE_FACE_VERIFICATION || faceMatch != null || faceEmbedding != null) {
-        const faceEval = await verifyFaceAgainstStudent(student, {
-          faceMatch,
-          faceMetrics,
-          faceEmbedding,
-        });
-
-        if (!faceEval.ok) {
-          return res.status(403).json({ ok: false, error: faceEval.error });
-        }
-
-        faceVerificationResult = {
-          verified: true,
-          score: Number(faceEval.score || 1),
-          model: faceEval.model || "facenet512",
-        };
-      }
-
-      // In-memory LRU cache guarantees session active status with zero network latency.
-      // (Cache is automatically evicted the instant faculty ends the session via invalidateCachedSession).
-      if (!session || !(session.is_active ?? session.isActive)) {
-        invalidateCachedSession(sessionId);
-        return res.status(400).json({ ok: false, error: "Session is no longer active" });
-      }
-
-      // Insert Attendance atomically with USN snapshot (with schema-resilient fallback)
-      const fullAttendancePayload = {
-        session: sessionId,
-        student: student.id,
-        faculty: session.faculty,
-        subject: session.subject,
-        enrollment_no: student.enrollment_no || null,
-        student_name: student.name || null,
-        student_email: student.email || null,
-        department_code: student.dept?.code || student.departmentCode || null,
-        semester: Number(student.semester || session.semester) || null,
-        section: String(student.section || session.section || "").toUpperCase() || null,
-        year: Number(student.year || session.year) || null,
-        timestamp: new Date().toISOString(),
-        status: "present",
-        location: {
-          lat: Number(location.lat),
-          lng: Number(location.lng),
-          accuracy: location.accuracy != null ? Number(location.accuracy) : null,
-          distanceMeters: locationCheck.distanceMeters != null ? Math.round(locationCheck.distanceMeters) : null,
-        },
-        device_fingerprint: normalizedFp,
-        face_verification: faceVerificationResult,
-      };
-
-      let { data: attendance, error: insertError } = await supabase
-        .from("attendances")
-        .upsert(fullAttendancePayload, { onConflict: "session,student" })
-        .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification")
-        .single();
-
-      if (insertError && (insertError.code === "PGRST204" || insertError.code === "42703" || String(insertError.message || "").includes("column"))) {
-        const baseAttendancePayload = {
-          session: sessionId,
-          student: student.id,
-          faculty: session.faculty,
-          subject: session.subject,
-          timestamp: new Date().toISOString(),
-          status: "present",
-          location: {
-            lat: Number(location.lat),
-            lng: Number(location.lng),
-            accuracy: location.accuracy != null ? Number(location.accuracy) : null,
-            distanceMeters: locationCheck.distanceMeters != null ? Math.round(locationCheck.distanceMeters) : null,
-          },
-          device_fingerprint: normalizedFp,
-          face_verification: faceVerificationResult,
-        };
-        const retryRes = await supabase
-          .from("attendances")
-          .upsert(baseAttendancePayload, { onConflict: "session,student" })
-          .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification")
-          .single();
-        attendance = retryRes.data;
-        insertError = retryRes.error;
-      }
-
-      if (insertError || !attendance) {
-        if (insertError?.code === "23505") {
-          return res.status(409).json({ ok: false, error: "Attendance already marked for this session" });
-        }
-        if (String(insertError?.message || "").includes("Session is no longer active")) {
-          invalidateCachedSession(sessionId);
-          return res.status(400).json({ ok: false, error: "Session is no longer active" });
-        }
-        throw insertError || new Error("Failed to record attendance");
-      }
-
-      // Synchronously capture request metadata before connection ends
-      const requestMeta = getRequestMeta(req);
-
-      // Realtime Broadcast Payload
-      const attendanceBroadcastPayload = {
-        id: attendance.id,
-        _id: attendance.id,
-        sessionId,
-        studentId: student.id,
-        studentName: student.name,
-        enrollmentNo: student.enrollment_no,
-        timestamp: attendance.timestamp,
-        status: "present",
-        method: "QR_TWO_STEP",
-      };
-
-      // 1. Immediately return success response to student
-      res.json({
-        ok: true,
-        attendanceId: attendance.id,
-        _id: attendance.id,
-        status: "present",
-        markedAt: attendance.timestamp,
-        session: {
-          id: session.id,
-          _id: session.id,
-          subjectName: session.subj?.name || "Subject",
-          subjectCode: session.subj?.code || "",
-        },
-      });
-
-      // 2. Fire side effects asynchronously (non-blocking) with error handlers
-      throttledTouchSession(sessionId).catch((err) => {
-        console.warn("Background touchSession warning:", err?.message || err);
-      });
-
-      recordAttendanceAudit({
-        attendanceId: attendance.id,
-        sessionId,
-        studentId: student.id,
-        facultyId: session.faculty,
-        subjectId: session.subject,
-        enrollmentNo: student.enrollment_no,
-        studentName: student.name,
-        studentEmail: student.email,
-        action: "MARK_PRESENT",
-        method: "QR_TWO_STEP",
-        actorRole: "STUDENT",
-        actorId: student.id,
-        deviceFingerprint: normalizedFp,
-        location: {
-          lat: Number(location.lat),
-          lng: Number(location.lng),
-          accuracy: Number(location.accuracy || 0),
-        },
-        qr: { firstIat, secondIat, gapSeconds },
-        faceVerification: faceVerificationResult,
-        requestMeta,
-      }).catch((err) => {
-        console.error("Background attendance audit log error:", err?.message || err);
-      });
-
-      broadcastAttendance(sessionId, attendanceBroadcastPayload).catch((err) => {
-        console.error("Background realtime broadcast error:", err?.message || err);
-      });
-
-      return;
-    } catch (err) {
-      console.error("Mark attendance error:", err);
-      return res.status(500).json({ ok: false, error: err?.message || "Server error" });
     }
-  };
+    // --- ATOMIC DATABASE INSERTION (USING EXACT SCHEMA COLUMNS) ---
+    const supabase = getSupabaseClient();
+    const fullAttendancePayload = {
+      session: sessionId,
+      student: student.id,
+      faculty: session.faculty,
+      subject: session.subject,
+      enrollment_no: student.enrollment_no || null,
+      student_name: student.name || null,
+      student_email: student.email || null,
+      department_code: student.dept?.code || student.departmentCode || null,
+      semester: Number(student.semester || session.semester) || null,
+      section: String(student.section || session.section || "").toUpperCase() || null,
+      year: Number(student.year || session.year) || null,
+      timestamp: new Date().toISOString(),
+      status: "present",
+      location: location ? {
+        lat: Number(location.lat),
+        lng: Number(location.lng),
+        accuracy: location.accuracy != null ? Number(location.accuracy) : null,
+        distanceMeters: locationCheck.distanceMeters != null ? Math.round(locationCheck.distanceMeters) : null,
+      } : null,
+      device_fingerprint: normalizedFp,
+      face_verification: faceVerificationResult,
+    };
+    let { data: attendance, error: insertError } = await supabase
+      .from("attendances")
+      .upsert(fullAttendancePayload, { onConflict: "session,student" })
+      .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification")
+      .single();
+    if (insertError) {
+      if (insertError.code === "23505") { // Postgres unique constraint hit
+        return res.status(409).json({ ok: false, error: "Attendance already marked for this session" });
+      }
+      scanLocks.delete(lockKey);
+      throw insertError;
+    }
+    // --- SHAPED REALTIME BROADCAST (Micro-batched to avoid WS storms) ---
+    realtimeBroadcaster.enqueue(sessionId, {
+      id: attendance.id,
+      sessionId,
+      studentId: student.id,
+      studentName: student.name,
+      enrollmentNo: student.enrollment_no,
+      timestamp: attendance.timestamp,
+      status: "present",
+    });
+    return res.json({
+      ok: true,
+      attendanceId: attendance.id,
+      status: "present",
+      markedAt: attendance.timestamp,
+      message: "Attendance verified and recorded successfully",
+    });
+  } catch (err) {
+    scanLocks.delete(lockKey);
+    console.error("Attendance submission error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to record attendance" });
+  }
+};
 
 router.post(
   "/mark",
@@ -1448,8 +1371,15 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
 // POST /api/attendance/submit, /api/attendance/totp, /api/attendance/totp-submit
 // ----------------------------------------------------
 async function handleTotpAttendanceSubmission(req, res) {
+  const student = req.user;
+  // --- ATOMIC IN-MEMORY DEDUPLICATION GUARD ---
+  const lockKey = `totp:${student?.id}`;
+  if (scanLocks.has(lockKey)) {
+    return res.status(409).json({ ok: false, error: "Submission already in progress. Please wait." });
+  }
+  scanLocks.set(lockKey, Date.now());
+
   try {
-    const student = req.user;
     const {
       sequence,
       token1,
@@ -1473,6 +1403,7 @@ async function handleTotpAttendanceSubmission(req, res) {
         : null);
 
     if (!rawSessionId) {
+      scanLocks.delete(lockKey);
       return res.status(400).json({ ok: false, error: "Session ID required" });
     }
 
@@ -1480,6 +1411,7 @@ async function handleTotpAttendanceSubmission(req, res) {
     const normalizedFp = normalizeFingerprint(fingerprint);
 
     if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
+      scanLocks.delete(lockKey);
       return res.status(401).json({ ok: false, error: "Device mismatch - attendance blocked" });
     }
 
@@ -1489,26 +1421,31 @@ async function handleTotpAttendanceSubmission(req, res) {
     } else if (token1 && token2) {
       totpValidation = await verifyConsecutiveTotpTokens(sessionId, token1, token2);
     } else {
+      scanLocks.delete(lockKey);
       return res.status(400).json({ ok: false, error: "Two consecutive TOTP tokens required" });
     }
 
     if (!totpValidation.ok) {
+      scanLocks.delete(lockKey);
       return res.status(400).json({ ok: false, error: totpValidation.error });
     }
 
     const session = await getCachedActiveSession(sessionId);
     if (!session) {
+      scanLocks.delete(lockKey);
       return res.status(404).json({ ok: false, error: "Session not found" });
     }
 
     const isRunning = Boolean(session?.is_active ?? session?.isActive);
     if (!isRunning) {
+      scanLocks.delete(lockKey);
       return res.status(400).json({ ok: false, error: "Session is no longer active" });
     }
 
     // Strict check: if faculty manually marked student as absent / removed them
     const isManuallyAbsent = await isManualAbsent(sessionId, student.id, student.enrollment_no);
     if (isManuallyAbsent) {
+      scanLocks.delete(lockKey);
       return res.status(403).json({
         ok: false,
         code: "REMOVED_BY_FACULTY",
@@ -1518,6 +1455,7 @@ async function handleTotpAttendanceSubmission(req, res) {
 
     const eligibility = validateStudentSessionEligibility(student, session);
     if (!eligibility.ok) {
+      scanLocks.delete(lockKey);
       return res.status(403).json({ ok: false, error: eligibility.error });
     }
 
@@ -1542,6 +1480,7 @@ async function handleTotpAttendanceSubmission(req, res) {
     if (session.location) {
       locationCheck = validateStudentLocation(location, session.location, sessionId);
       if (!locationCheck.ok) {
+        scanLocks.delete(lockKey);
         return res.status(403).json({
           ok: false,
           code: locationCheck.code || "LOCATION_ERROR",
@@ -1567,6 +1506,7 @@ async function handleTotpAttendanceSubmission(req, res) {
       });
 
       if (!faceEval.ok) {
+        scanLocks.delete(lockKey);
         return res.status(403).json({ ok: false, error: faceEval.error });
       }
 
@@ -1578,11 +1518,15 @@ async function handleTotpAttendanceSubmission(req, res) {
     }
 
     const supabase = getSupabaseClient();
-    if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
+    if (!supabase) {
+      scanLocks.delete(lockKey);
+      return res.status(503).json({ ok: false, error: "Database unavailable" });
+    }
 
     // In-memory LRU cache guarantees session active status with zero network latency.
     if (!session || !(session.is_active ?? session.isActive)) {
       invalidateCachedSession(sessionId);
+      scanLocks.delete(lockKey);
       return res.status(400).json({ ok: false, error: "Session is no longer active" });
     }
 
@@ -1637,6 +1581,7 @@ async function handleTotpAttendanceSubmission(req, res) {
           },
         });
       }
+      scanLocks.delete(lockKey);
       console.error("Attendance insert error:", insertError);
       return res.status(400).json({ ok: false, error: insertError?.message || "Failed to record attendance" });
     }
@@ -1685,7 +1630,7 @@ async function handleTotpAttendanceSubmission(req, res) {
       method: "QR_TOTP",
     };
 
-    broadcastAttendance(sessionId, attendanceBroadcastPayload).catch(() => {});
+    realtimeBroadcaster.enqueue(sessionId, attendanceBroadcastPayload);
 
     return res.json({
       ok: true,
@@ -1701,6 +1646,7 @@ async function handleTotpAttendanceSubmission(req, res) {
       },
     });
   } catch (err) {
+    scanLocks.delete(lockKey);
     console.error("Attendance submission error:", err);
     return res.status(500).json({ ok: false, error: err?.message || "Server error" });
   }
