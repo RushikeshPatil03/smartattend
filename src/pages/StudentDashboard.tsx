@@ -764,14 +764,21 @@ const StudentDashboard: React.FC = () => {
   } | null>(null);
 
   const faceVerified = faceVerifiedUntil > Date.now();
-  const registeredFacePhoto = String(
-    currentUser?.studentProfilePhotoUrl ||
-    currentUser?.profilePhotoUrl ||
-    currentUser?.profile_photo_url ||
-    currentUser?.student?.profilePhotoUrl ||
-    currentUser?.studentPhotoUrl ||
-    ""
-  ).trim();
+  const registeredFacePhoto = useMemo(() => {
+    const studentPhoto = String(
+      currentUser?.studentProfilePhotoUrl ||
+      currentUser?.student?.profilePhotoUrl ||
+      currentUser?.studentPhotoUrl ||
+      ""
+    ).trim();
+    if (studentPhoto && studentPhoto.length > 5) return studentPhoto;
+
+    const raw = String(currentUser?.profile_photo_url || currentUser?.profilePhotoUrl || "").trim();
+    if (raw && raw.length > 5) {
+      return raw;
+    }
+    return "";
+  }, [currentUser]);
 
   const todaysClasses = useMemo<TodayClassRow[]>(
     () =>

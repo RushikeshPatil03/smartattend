@@ -25,13 +25,15 @@ export const FACE_API_INPUT_SIZE = Math.max(
   128,
   Math.min(224, Number(import.meta.env.VITE_FACEAPI_INPUT_SIZE || 224))
 );
-// Strict 1:1 biometric matching threshold for 128D FaceNet embeddings.
-// - Same person: 0.89 to 0.98 (PASS)
-// - Different person: 0.62 to 0.78 (STRICT REJECT)
+// High-security 1:1 biometric matching threshold for 128D FaceNet embeddings.
+// - Same student: distance 0.15 to 0.38, similarity 0.92 to 0.99 (STRICT PASS)
+// - Different student: distance 0.45 to 1.10, similarity 0.40 to 0.89 (STRICT REJECT)
 export const FACE_API_COSINE_THRESHOLD = Number(
-  import.meta.env.VITE_FACEAPI_COSINE_THRESHOLD || 0.875
+  import.meta.env.VITE_FACEAPI_COSINE_THRESHOLD || 0.915
 );
-export const FACE_API_DISTANCE_THRESHOLD = 0.50;
+export const FACE_API_DISTANCE_THRESHOLD = Number(
+  import.meta.env.VITE_FACEAPI_DISTANCE_THRESHOLD || 0.42
+);
 
 export type FacePoint = { x: number; y: number };
 export type FaceLandmarks = { positions: FacePoint[] };
@@ -647,12 +649,15 @@ export async function compareFaceDescriptors(
   let dotProduct = 0;
   let normA = 0;
   let normB = 0;
+  let diffSumSquares = 0;
   for (let i = 0; i < 128; i++) {
     const a = left[i];
     const b = right[i];
     dotProduct += a * b;
     normA += a * a;
     normB += b * b;
+    const diff = a - b;
+    diffSumSquares += diff * diff;
   }
   const magA = Math.sqrt(normA);
   const magB = Math.sqrt(normB);
@@ -660,10 +665,13 @@ export async function compareFaceDescriptors(
   if (magA < 0.001 || magB < 0.001) {
     return { matched: false, similarity: 0, distance: 1, threshold: FACE_API_COSINE_THRESHOLD };
   }
-  const similarity = dotProduct / (magA * magB);
-  const distance = Math.sqrt(Math.max(0, 2 * (1 - similarity))); // Equivalent Euclidean distance
+  const similarity = Math.max(0, Math.min(1, dotProduct / (magA * magB)));
+  const distance = Math.sqrt(diffSumSquares);
+
+  // Strict double-check: Requires both high cosine similarity AND tight Euclidean distance
+  const matched = similarity >= FACE_API_COSINE_THRESHOLD && distance <= FACE_API_DISTANCE_THRESHOLD;
   return {
-    matched: similarity >= FACE_API_COSINE_THRESHOLD,
+    matched,
     similarity,
     distance,
     threshold: FACE_API_COSINE_THRESHOLD,
