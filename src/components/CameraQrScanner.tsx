@@ -30,7 +30,32 @@ type CameraQrScannerProps = {
 };
 
 let envStreamPool: MediaStream | null = null;
-let envStreamPoolPromise: Promise<MediaStream | null> | null = null;
+export function forceReleaseAllCameraTracks(): void {
+  try {
+    if (typeof window === "undefined") return;
+    if (envStreamPool) {
+      envStreamPool.getTracks().forEach((track) => {
+        try { track.stop(); } catch {}
+      });
+      envStreamPool = null;
+    }
+  } catch {}
+}
+/**
+ * Pre-warms BarcodeDetector API in memory.
+ * NEVER acquires a physical hardware camera in background (prevents OS camera collision).
+ */
+export async function prewarmQrCamera(): Promise<void> {
+  if (typeof window === "undefined") return;
+  try {
+    if ("BarcodeDetector" in window) {
+      new (window as any).BarcodeDetector({ formats: ["qr_code"] });
+    }
+  } catch {}
+}
+export async function consumeEnvStreamPool(): Promise<MediaStream | null> {
+  return null;
+}
 
 const ENV_CAMERA_CONSTRAINTS: MediaStreamConstraints = {
   audio: false,
@@ -46,49 +71,6 @@ const ENV_CAMERA_FALLBACK_CONSTRAINTS: MediaStreamConstraints = {
   audio: false,
   video: { facingMode: "environment" },
 };
-
-function isEnvStreamUsable(stream: MediaStream | null): stream is MediaStream {
-  if (!stream || !stream.active) return false;
-  const tracks = stream.getVideoTracks();
-  return tracks.length > 0 && tracks.some((t) => t.readyState === "live" && !t.muted);
-}
-
-export async function prewarmQrCamera(): Promise<void> {
-  if (typeof window === "undefined" || !navigator.mediaDevices?.getUserMedia) return;
-  if (isEnvStreamUsable(envStreamPool)) return;
-  if (envStreamPoolPromise) return;
-
-  envStreamPoolPromise = (async () => {
-    try {
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia(ENV_CAMERA_CONSTRAINTS);
-      } catch {
-        stream = await navigator.mediaDevices.getUserMedia(ENV_CAMERA_FALLBACK_CONSTRAINTS);
-      }
-      envStreamPool = stream;
-      return stream;
-    } catch {
-      return null;
-    } finally {
-      envStreamPoolPromise = null;
-    }
-  })();
-}
-
-export async function consumeEnvStreamPool(): Promise<MediaStream | null> {
-  if (isEnvStreamUsable(envStreamPool)) {
-    const stream = envStreamPool;
-    envStreamPool = null;
-    return stream;
-  }
-  if (envStreamPoolPromise) {
-    const stream = await envStreamPoolPromise;
-    envStreamPool = null;
-    return isEnvStreamUsable(stream) ? stream : null;
-  }
-  return null;
-}
 
 const SCAN_INTERVAL_MS = 60;
 const DUPLICATE_DETECTION_COOLDOWN_MS = 400;

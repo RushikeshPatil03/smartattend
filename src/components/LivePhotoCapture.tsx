@@ -442,6 +442,7 @@ const LivePhotoCapture: React.FC<{
       ) {
         stream = streamRef.current;
       } else {
+        // Clean up previous stream and release video source
         if (streamRef.current) {
           streamRef.current.getTracks().forEach((track) => {
             try {
@@ -469,7 +470,10 @@ const LivePhotoCapture: React.FC<{
           void requestOrientationPermission();
         }
 
-        // 2. Request front camera directly with graceful constraints fallback
+        // 80ms OS HAL buffer to avoid NotReadableError collision
+        await new Promise((res) => setTimeout(res, 80));
+
+        // Request front camera with fallback
         try {
           stream = await navigator.mediaDevices.getUserMedia(FRONT_CAMERA_CONSTRAINTS);
         } catch {

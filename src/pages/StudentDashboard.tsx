@@ -848,12 +848,12 @@ const StudentDashboard: React.FC = () => {
       void preloadForStudent(registeredFacePhoto);
     }, 900);
 
-    // TIER 6 (t=1300ms idle): MediaPipe and QR camera warmup last.
+    // TIER 6 (t=1300ms idle): MediaPipe and QR decoder warmup last.
     // MediaPipe WASM init is the heaviest, starts after face-api has GPU context.
     scheduleIdle(() => {
       if (!mountedRef.current) return;
       void prewarmMediaPipe();
-      void prewarmFrontCamera();
+      // QR decoder prewarm only (loads BarcodeDetector, zero camera hardware lock)
       void prewarmQrCamera();
     }, 1300);
 
@@ -969,12 +969,12 @@ const StudentDashboard: React.FC = () => {
       handleFaceSessionExpired();
     }, FACE_VERIFICATION_WINDOW_MS);
 
-    // Prewarm environment camera immediately while modal transitions
-    void prewarmQrCamera();
-
-    // Transition directly into QR Scanner
+    // Give mobile OS 120ms to flush the front camera hardware before opening rear camera
     setStatusMsg("Step 2 of 2: Scan Classroom QR");
-    void submitQrAttendance();
+    setTimeout(() => {
+      if (!mountedRef.current) return;
+      void submitQrAttendance();
+    }, 120);
   }, [handleFaceSessionExpired]);
 
   useEffect(() => {
@@ -1406,7 +1406,7 @@ const StudentDashboard: React.FC = () => {
       return;
     }
 
-    // Step 1: Open Face Gate Modal first
+    // Step 1: Open Face Gate Modal first (Only front camera is requested)
     setFaceGateStatus("VERIFYING");
     setFaceGateMessage("Looking for your face...");
     setLiveFacePhoto("");
@@ -1414,8 +1414,7 @@ const StudentDashboard: React.FC = () => {
     setScanStep("SCANNING");
     setStatusMsg("Step 1 of 2: Face Verification");
 
-    // Pre-warm rear camera in background so it's ready when face verification completes
-    void prewarmQrCamera();
+    // Warm up GPS location only — NEVER prewarm rear camera while front camera is starting!
     void warmLocation();
   }, [busy, submitQrAttendance, warmLocation]);
 
