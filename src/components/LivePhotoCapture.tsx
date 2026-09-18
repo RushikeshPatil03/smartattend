@@ -56,6 +56,7 @@ type ClientFaceVerification = {
     pitchDelta?: number;
     yawDelta?: number;
     challenge?: string;
+    similarity?: number;
   };
 };
 
@@ -572,8 +573,8 @@ const LivePhotoCapture: React.FC<{
         throw new Error(liveness.reason || "Live face movement was not detected.");
       }
       setLivenessPassed(true);
-      setVerificationMessage("Verifying against registered photo...");
-      // 3. Strict 128D Face Descriptor Matching
+      setVerificationMessage("Verifying biometric identity...");
+      // 3. Extract descriptors and run strict 1:1 match
       const [capturedDataUrl, referenceDescriptor, liveDescriptor] = await Promise.all([
         captureVideoFrame(videoRef.current!, DEFAULT_CAPTURE_OPTIONS),
         computeDescriptorFromImageURL(faceVerificationReferenceUrl),
@@ -582,7 +583,9 @@ const LivePhotoCapture: React.FC<{
       imageDataUrl = capturedDataUrl;
       const match = await compareFaceDescriptors(referenceDescriptor, liveDescriptor);
       if (!match.matched) {
-        throw new Error("Face verification failed: Your face does not match the registered account owner.");
+        throw new Error(
+          `Face mismatch: Detected face does not match the registered account photo (Score: ${(match.similarity * 100).toFixed(1)}%).`
+        );
       }
       faceVerification = {
         method: "client-faceapi",
@@ -593,6 +596,7 @@ const LivePhotoCapture: React.FC<{
         livenessMetric: {
           ...liveness.metric,
           challenge: liveness.challenge,
+          similarity: match.similarity,
         },
       };
 
