@@ -483,18 +483,40 @@ function detectorOptions(faceapi: FaceApi) {
   return cachedDetectorOptions;
 }
 
-async function detectDescriptor(faceapi: FaceApi, canvas: HTMLCanvasElement) {
-  const result = await faceapi
-    .detectSingleFace(canvas, detectorOptions(faceapi))
+async function detectDescriptor(
+  faceapi: FaceApi,
+  input: HTMLCanvasElement | HTMLImageElement | HTMLVideoElement
+): Promise<Float32Array> {
+  let result = await faceapi
+    .detectSingleFace(input, detectorOptions(faceapi))
     .withFaceLandmarks(true)
     .withFaceDescriptor();
-  if (!result?.descriptor) throw new Error("No clear single face was found.");
+
+  if (!result?.descriptor) {
+    // Fallback with slightly more permissive score threshold
+    const fallbackOptions = new (faceapi as any).TinyFaceDetectorOptions({
+      inputSize: FACE_API_INPUT_SIZE,
+      scoreThreshold: 0.35,
+    });
+    result = await faceapi
+      .detectSingleFace(input, fallbackOptions)
+      .withFaceLandmarks(true)
+      .withFaceDescriptor();
+  }
+
+  if (!result?.descriptor) {
+    throw new Error("No clear single face was found.");
+  }
   return result.descriptor;
 }
 
 // ─── Public descriptor API ────────────────────────────────────────────────────
 
 export async function computeDescriptorFromImageURL(url: string): Promise<Float32Array> {
+  if (!url || url.trim().length < 5) {
+    throw new Error("Invalid or missing registered profile photo URL.");
+  }
+
   // 1. Hot path: memory cache (sub-millisecond)
   const cached = memoryDescriptorCache.get(url);
   if (cached) return cached;
@@ -540,13 +562,23 @@ export async function computeDescriptorFromImageURL(url: string): Promise<Float3
       // 5. Cold path B: full inference (network + GPU)
       // Run model load and image fetch concurrently to minimize latency
       const [faceapi, image] = await Promise.all([loadModelsIfNeeded(), loadImage(url)]);
-      const canvas = drawSmallSquare(
-        image,
-        image.naturalWidth || image.width,
-        image.naturalHeight || image.height,
-        false
-      );
-      const descriptor = await detectDescriptor(faceapi, canvas);
+      let descriptor: Float32Array;
+      try {
+        descriptor = await detectDescriptor(faceapi, image);
+      } catch {
+        // Fallback: scale image onto a clean canvas if direct image detection failed
+        const maxDim = 640;
+        const w = image.naturalWidth || image.width || 480;
+        const h = image.naturalHeight || image.height || 480;
+        const scale = Math.min(1, maxDim / Math.max(w, h));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(w * scale);
+        canvas.height = Math.round(h * scale);
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        if (!ctx) throw new Error("Unable to read registered profile photo.");
+        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+        descriptor = await detectDescriptor(faceapi, canvas);
+      }
 
       // Populate all cache layers:
       memoryDescriptorCache.set(url, descriptor);
@@ -570,13 +602,23 @@ export async function computeDescriptorFromImageURL(url: string): Promise<Float3
   return descriptorPromise;
 }
 
-export async function computeDescriptorFromVideoFrame(video: HTMLVideoElement) {
+export async function computeDescriptorFromVideoFrame(video: HTMLVideoElement): Promise<Float32Array> {
   if (!video || !video.videoWidth || !video.videoHeight || video.readyState < 2) {
     throw new Error("Camera feed is not ready yet.");
   }
   const faceapi = cachedFaceApi || (await loadModelsIfNeeded());
-  const canvas = drawSmallSquare(video, video.videoWidth, video.videoHeight, true);
-  return detectDescriptor(faceapi, canvas);
+  try {
+    return await detectDescriptor(faceapi, video);
+  } catch {
+    // If direct video element inference failed, capture video frame to canvas
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) throw new Error("Unable to process live camera frame.");
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return await detectDescriptor(faceapi, canvas);
+  }
 }
 
 export async function computeLandmarksFromVideoFrame(video: HTMLVideoElement) {

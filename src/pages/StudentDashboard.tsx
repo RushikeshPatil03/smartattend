@@ -765,8 +765,8 @@ const StudentDashboard: React.FC = () => {
 
   const faceVerified = faceVerifiedUntil > Date.now();
   const registeredFacePhoto = String(
-    currentUser?.profilePhotoUrl ||
     currentUser?.studentProfilePhotoUrl ||
+    currentUser?.profilePhotoUrl ||
     currentUser?.profile_photo_url ||
     currentUser?.student?.profilePhotoUrl ||
     currentUser?.studentPhotoUrl ||
@@ -1379,6 +1379,12 @@ const StudentDashboard: React.FC = () => {
   const handleStartAttendance = useCallback(() => {
     if (busy) return;
 
+    if (!registeredFacePhoto || registeredFacePhoto.length < 5) {
+      setScanStep("ERROR");
+      setStatusMsg("No registered face photo found on your account. Please contact your college administrator to upload your official photo.");
+      return;
+    }
+
     // If biometric verification is already valid within the 15s window, jump straight to QR
     if (faceVerifiedUntilRef.current && Date.now() < faceVerifiedUntilRef.current) {
       void submitQrAttendance();
@@ -1395,7 +1401,7 @@ const StudentDashboard: React.FC = () => {
 
     // Warm up GPS location only — NEVER prewarm rear camera while front camera is starting!
     void warmLocation();
-  }, [busy, submitQrAttendance, warmLocation]);
+  }, [busy, registeredFacePhoto, submitQrAttendance, warmLocation]);
 
   const simulateScan = useCallback(() => {
     handleStartAttendance();

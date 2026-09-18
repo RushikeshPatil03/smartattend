@@ -428,40 +428,31 @@ export const IntegratedAttendanceScanner: React.FC<IntegratedAttendanceScannerPr
 
       // Evaluate face descriptor concurrently
       let faceVerification: any = {
-        matched: true,
-        method: "client-mediapipe-facenet",
-        confidence: 0.95,
+        matched: false,
+        method: "client-faceapi",
       };
 
       if (registeredProfilePhotoUrl) {
         try {
-          const [refDesc, liveDesc] = await Promise.allSettled([
+          const [refDesc, liveDesc] = await Promise.all([
             computeDescriptorFromImageURL(registeredProfilePhotoUrl),
             computeDescriptorFromVideoFrame(video),
           ]);
 
-          if (refDesc.status === "fulfilled" && liveDesc.status === "fulfilled") {
-            const comparison = await compareFaceDescriptors(
-              refDesc.value,
-              liveDesc.value
-            );
-            faceVerification = {
-              matched: comparison.matched,
-              distance: comparison.distance,
-              threshold: comparison.threshold,
-              method: "client-faceapi",
-            };
-          }
-        } catch {
-          // Fallback to signature comparison
-          try {
-            const signatures = await buildFaceSignatures(webpDataUrl);
-            faceVerification = {
-              matched: true,
-              signatures,
-              method: "client-signature",
-            };
-          } catch {}
+          const comparison = await compareFaceDescriptors(refDesc, liveDesc);
+          faceVerification = {
+            matched: comparison.matched,
+            distance: comparison.distance,
+            similarity: comparison.similarity,
+            threshold: comparison.threshold,
+            method: "client-faceapi",
+          };
+        } catch (err: any) {
+          faceVerification = {
+            matched: false,
+            error: err?.message || "Face verification failed",
+            method: "client-faceapi",
+          };
         }
       }
 

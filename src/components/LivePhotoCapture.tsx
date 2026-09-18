@@ -533,73 +533,83 @@ const LivePhotoCapture: React.FC<{
     if (verificationInFlightRef.current) return;
     verificationInFlightRef.current = true;
     setVerificationInProgress(true);
-
     try {
       if (!videoRef.current || videoRef.current.videoWidth === 0 || videoRef.current.readyState < 2) {
         throw new Error("Camera preview is not ready yet. Please hold still.");
       }
-
-      let faceVerification: ClientFaceVerification | undefined;
-      let imageDataUrl = "";
-
-      // 1. Strict Reference Photo Guard
-      if (!faceVerificationReferenceUrl || faceVerificationReferenceUrl.length < 5) {
-        throw new Error("No registered profile photo found for this student account. Please contact your college administrator to upload your photo.");
-      }
       if (!faceQualityReady) {
         throw new Error(faceQuality?.reason || "Hold steady until your face is centered in the frame.");
       }
-      setCaptureError("");
-      setVerificationMessage("Checking live face movement...");
-      setLivenessProgress(0);
-      setLivenessPassed(false);
-      setLivenessChallenge(null);
-      setLivenessDirection(null);
-      // 2. Movement Liveness
-      if (!isModelsLoaded()) {
-        await loadModelsIfNeeded();
-      }
-      const liveness = await runMovementLiveness(videoRef.current!, {
-        onChallengeUpdate: (update) => {
-          setVerificationMessage(update.prompt);
-          setLivenessProgress(update.progress);
-          setLivenessChallenge(update.challenge);
-          setLivenessDirection(update.direction);
-          setLivenessPassed(update.passed);
-        },
-      });
-      if (!liveness.ok) {
+      let faceVerification: ClientFaceVerification | undefined;
+      let imageDataUrl = "";
+      const isVerificationMode = Boolean(
+        faceVerificationReferenceUrl && faceVerificationReferenceUrl.trim().length > 5
+      );
+      if (isVerificationMode) {
+        // ─────────────────────────────────────────────────────────────────
+        // MODE A: ATTENDANCE 1:1 BIOMETRIC VERIFICATION MODE
+        // ─────────────────────────────────────────────────────────────────
+        setCaptureError("");
+        setVerificationMessage("Checking live face movement...");
+        setLivenessProgress(0);
         setLivenessPassed(false);
-        throw new Error(liveness.reason || "Live face movement was not detected.");
-      }
-      setLivenessPassed(true);
-      setVerificationMessage("Verifying biometric identity...");
-      // 3. Extract descriptors and run strict 1:1 match
-      const [capturedDataUrl, referenceDescriptor, liveDescriptor] = await Promise.all([
-        captureVideoFrame(videoRef.current!, DEFAULT_CAPTURE_OPTIONS),
-        computeDescriptorFromImageURL(faceVerificationReferenceUrl),
-        computeDescriptorFromVideoFrame(videoRef.current!),
-      ]);
-      imageDataUrl = capturedDataUrl;
-      const match = await compareFaceDescriptors(referenceDescriptor, liveDescriptor);
-      if (!match.matched) {
-        throw new Error(
-          `Face mismatch: Detected face does not match the registered account photo (Score: ${(match.similarity * 100).toFixed(1)}%).`
-        );
-      }
-      faceVerification = {
-        method: "client-faceapi",
-        distance: match.distance,
-        threshold: match.threshold,
-        matched: true,
-        liveness: "movement",
-        livenessMetric: {
-          ...liveness.metric,
-          challenge: liveness.challenge,
-          similarity: match.similarity,
-        },
-      };
+        setLivenessChallenge(null);
+        setLivenessDirection(null);
+        // 1. Movement Liveness Challenge
+        if (!isModelsLoaded()) {
+          await loadModelsIfNeeded();
+        }
+        const liveness = await runMovementLiveness(videoRef.current!, {
+          onChallengeUpdate: (update) => {
+            setVerificationMessage(update.prompt);
+            setLivenessProgress(update.progress);
+            setLivenessChallenge(update.challenge);
+            setLivenessDirection(update.direction);
+            setLivenessPassed(update.passed);
+          },
+        });
+        if (!liveness.ok) {
+          setLivenessPassed(false);
+          throw new Error(liveness.reason || "Live face movement was not detected.");
+        }
+        setLivenessPassed(true);
+        setVerificationMessage("Verifying face against registered photo...");
+        // Stabilize frame after head movement challenge
+        await new Promise((res) => setTimeout(res, 140));
 
+        // 2. Strict 1:1 Cosine Similarity Matching (Threshold >= 0.875)
+        const [capturedDataUrl, referenceDescriptor, liveDescriptor] = await Promise.all([
+          captureVideoFrame(videoRef.current!, DEFAULT_CAPTURE_OPTIONS),
+          computeDescriptorFromImageURL(faceVerificationReferenceUrl!),
+          computeDescriptorFromVideoFrame(videoRef.current!),
+        ]);
+        imageDataUrl = capturedDataUrl;
+        const match = await compareFaceDescriptors(referenceDescriptor, liveDescriptor);
+        if (!match.matched) {
+          throw new Error(
+            `Face mismatch: Detected face does not match the registered account photo (Similarity: ${(match.similarity * 100).toFixed(1)}% / Required: ${(match.threshold * 100).toFixed(0)}%).`
+          );
+        }
+        faceVerification = {
+          method: "client-faceapi",
+          distance: match.distance,
+          threshold: match.threshold,
+          matched: true,
+          liveness: "movement",
+          livenessMetric: {
+            ...liveness.metric,
+            challenge: liveness.challenge,
+            similarity: match.similarity,
+          },
+        };
+      } else {
+        // ─────────────────────────────────────────────────────────────────
+        // MODE B: INITIAL REGISTRATION / ENROLLMENT PHOTO CAPTURE MODE
+        // ─────────────────────────────────────────────────────────────────
+        setCaptureError("");
+        setVerificationMessage("Capturing official profile photo...");
+        imageDataUrl = captureVideoFrame(videoRef.current!, DEFAULT_CAPTURE_OPTIONS);
+      }
       stopCamera();
       onChange(imageDataUrl);
       onCaptured?.({
@@ -624,15 +634,16 @@ const LivePhotoCapture: React.FC<{
       setLivenessDirection(null);
       const errMsg = error?.message || "Unable to capture photo.";
       setCaptureError(errMsg);
-
-      // In autoCapture mode, schedule a calm 3-second auto-retry so warnings do not flash rapidly
+      // In autoCapture mode, schedule a 3-second auto-retry
       if (autoCapture) {
         if (retryCooldownTimerRef.current != null) {
           window.clearTimeout(retryCooldownTimerRef.current);
         }
         retryCooldownTimerRef.current = window.setTimeout(() => {
           retryCooldownTimerRef.current = null;
-          setCaptureError("");
+          if (cameraActive && !disabled) {
+            void capturePhoto();
+          }
         }, 3000);
       }
     } finally {
