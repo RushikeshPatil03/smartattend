@@ -764,7 +764,14 @@ const StudentDashboard: React.FC = () => {
   } | null>(null);
 
   const faceVerified = faceVerifiedUntil > Date.now();
-  const registeredFacePhoto = String(currentUser?.studentProfilePhotoUrl || "").trim();
+  const registeredFacePhoto = String(
+    currentUser?.profilePhotoUrl ||
+    currentUser?.studentProfilePhotoUrl ||
+    currentUser?.profile_photo_url ||
+    currentUser?.student?.profilePhotoUrl ||
+    currentUser?.studentPhotoUrl ||
+    ""
+  ).trim();
 
   const todaysClasses = useMemo<TodayClassRow[]>(
     () =>
@@ -1205,193 +1212,165 @@ const StudentDashboard: React.FC = () => {
     pendingQrPairRef.current = pair;
     setScanStep("SUBMITTING");
     setStatusMsg("QR captured. Getting your GPS location...");
+    setBusy(true);
 
-    let coords: any = null;
     try {
-      coords = await resolveLiveLocation();
-      setStatusMsg("GPS locked ✓  Sending to server...");
-    } catch (locErr: any) {
-      pendingQrPairRef.current = null;
-      setScanStep("ERROR");
-      try { navigator.vibrate?.(400); } catch {}
-      setStatusMsg(
-        locErr?.message || "GPS location is required to verify your presence in class."
-      );
-      setBusy(false);
-      return;
-    }
-    const fingerprint = getFingerprint();
-
-    const isTimeoutOrNetworkError = (res: any) => {
-      if (!res || res.ok) return false;
-      const errStr = String(res.error || res.message || "").toLowerCase();
-      const status = Number(res.status || 0);
-      return (
-        errStr.includes("timed out") ||
-        errStr.includes("timeout") ||
-        errStr.includes("network error") ||
-        errStr.includes("failed to fetch") ||
-        errStr.includes("network request failed") ||
-        status === 408 ||
-        status === 502 ||
-        status === 503 ||
-        status === 504
-      );
-    };
-
-    // Helper for executing the attendance request
-    const executeSubmit = async () => {
-      if (!pendingQrPairRef.current) {
-        return { ok: false, error: "Missing QR payload" };
+      let coords: any = null;
+      try {
+        coords = await resolveLiveLocation();
+        setStatusMsg("GPS locked ✓  Sending to server...");
+      } catch (locErr: any) {
+        pendingQrPairRef.current = null;
+        setScanStep("ERROR");
+        try { navigator.vibrate?.(400); } catch {}
+        setStatusMsg(
+          locErr?.message || "GPS location is required to verify your presence in class."
+        );
+        return;
       }
-      if (pendingQrPairRef.current.kind === "totp") {
-        const seq = pendingQrPairRef.current.sequence;
-        const targetSessionId = seq?.[0]?.classId || (seq?.[0] as any)?.sessionId;
-        return await apiClient.post("/api/attendance/submit", {
-          sessionId: targetSessionId,
-          sequence: seq,
-          fingerprint,
-          lat: coords.lat,
-          lng: coords.lng,
-          accuracy: coords.accuracy,
-          location: {
+      const fingerprint = getFingerprint();
+
+      // Execute attendance submit with 12s fast timeout
+      const submitPromise = (async () => {
+        if (pendingQrPairRef.current?.kind === "totp") {
+          const seq = pendingQrPairRef.current.sequence;
+          const targetSessionId = seq?.[0]?.classId || (seq?.[0] as any)?.sessionId;
+          return await apiClient.post("/api/attendance/submit", {
+            sessionId: targetSessionId,
+            sequence: seq,
+            fingerprint,
             lat: coords.lat,
             lng: coords.lng,
             accuracy: coords.accuracy,
-          },
-          facePhotoWebp: facePayload?.dataUrl,
-          faceVerification: facePayload?.faceVerification,
-        });
-      } else {
-        return await markAttendanceTwoStep(
-          pendingQrPairRef.current.first,
-          pendingQrPairRef.current.second,
-          fingerprint,
-          coords.lat,
-          coords.lng,
-          facePayload?.dataUrl || null,
-          coords.accuracy,
-          facePayload?.faceVerification || null
-        );
-      }
-    };
+            location: {
+              lat: coords.lat,
+              lng: coords.lng,
+              accuracy: coords.accuracy,
+            },
+            facePhotoWebp: facePayload?.dataUrl,
+            faceVerification: facePayload?.faceVerification,
+          });
+        } else {
+          return await markAttendanceTwoStep(
+            pendingQrPairRef.current.first,
+            pendingQrPairRef.current.second,
+            fingerprint,
+            coords.lat,
+            coords.lng,
+            facePayload?.dataUrl || null,
+            coords.accuracy,
+            facePayload?.faceVerification || null
+          );
+        }
+      })();
 
-    let result: any = null;
-
-    try {
-      setStatusMsg("Verifying your identity on server...");
-      result = await executeSubmit();
-    } catch (err: any) {
-      result = { ok: false, error: err?.message || "Failed to submit attendance" };
-    }
-
-    // Automatic silent retry (1 retry) on network timeout or transient network failure
-    if (!result?.ok && isTimeoutOrNetworkError(result)) {
-      if (mountedRef.current) {
-        setStatusMsg("Connection timed out. Retrying attendance confirmation...");
-      }
-      // Brief jittered pause before retry (350ms) to let network socket clear
-      await new Promise((resolve) => setTimeout(resolve, 350));
-      try {
-        result = await executeSubmit();
-      } catch (retryErr: any) {
-        result = {
-          ok: false,
-          error: retryErr?.message || "Retry failed due to network error",
-        };
-      }
-    }
-
-    if (result?.ok) {
-      const targetSessionId =
-        pendingQrPairRef.current?.kind === "totp"
-          ? pendingQrPairRef.current.sequence?.[0]?.classId || (pendingQrPairRef.current.sequence?.[0] as any)?.sessionId
-          : pendingQrPairRef.current?.kind === "legacy"
-            ? decodeDynamicQrPayload(pendingQrPairRef.current.first)?.sessionId
-            : null;
-
-      pendingQrPairRef.current = null;
-      setScanStep("SUCCESS");
-      try { navigator.vibrate?.([80, 40, 160]); } catch {}
-      playSuccessChime();
-      setStatusMsg(result.already || result.alreadyMarked ? "Attendance already marked." : "Attendance confirmed.");
-
-      // 1. Optimistic Local State Update (Instant 0ms UI Feedback)
-      const markedSessionId = String(
-        result?.session?.id ||
-        result?.session?._id ||
-        result?.sessionId ||
-        targetSessionId ||
-        ""
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Server response timed out. Please scan again.")), 12000)
       );
 
-      if (markedSessionId) {
-        setRecentSessions((prev) => {
-          const nowIso = new Date().toISOString();
-          const existingIndex = prev.findIndex((item) => {
-            const sid = String(
-              item?.sessionId ||
-              item?.session?.id ||
-              item?.session?._id ||
-              item?.session ||
-              item?._id ||
-              item?.id ||
-              ""
-            );
-            return sid === markedSessionId;
-          });
-
-          if (existingIndex >= 0) {
-            const updated = [...prev];
-            updated[existingIndex] = {
-              ...updated[existingIndex],
-              status: "present",
-              attendanceCode: "P",
-              markedAt: result?.markedAt || updated[existingIndex]?.markedAt || nowIso,
-            };
-            return updated;
-          }
-
-          return [
-            {
-              sessionId: markedSessionId,
-              subjectName: result?.session?.subjectName || "Subject",
-              subjectCode: result?.session?.subjectCode || "SUB",
-              facultyName: "Faculty",
-              startTime: nowIso,
-              markedAt: result?.markedAt || nowIso,
-              isActive: true,
-              status: "present",
-              attendanceCode: "P",
-            },
-            ...prev,
-          ];
-        });
+      let result: any = null;
+      try {
+        result = await Promise.race([submitPromise, timeoutPromise]);
+      } catch (err: any) {
+        result = { ok: false, error: err?.message || "Failed to submit attendance" };
       }
 
-      // 2. Silent background sync without blocking UI
-      lastStudentDataFetchMs.current = 0;
-      void loadStudentData().catch(() => {});
+      if (result?.ok) {
+        const targetSessionId =
+          pendingQrPairRef.current?.kind === "totp"
+            ? pendingQrPairRef.current.sequence?.[0]?.classId || (pendingQrPairRef.current.sequence?.[0] as any)?.sessionId
+            : pendingQrPairRef.current?.kind === "legacy"
+              ? decodeDynamicQrPayload(pendingQrPairRef.current.first)?.sessionId
+              : null;
 
-      if (resetTimerRef.current) window.clearTimeout(resetTimerRef.current);
-      resetTimerRef.current = window.setTimeout(() => {
-        if (!mountedRef.current) return;
-        setScanStep("IDLE");
-        setStatusMsg("");
-      }, 5000);
-      return;
+        pendingQrPairRef.current = null;
+        setScanStep("SUCCESS");
+        try { navigator.vibrate?.([80, 40, 160]); } catch {}
+        playSuccessChime();
+        setStatusMsg(result.already || result.alreadyMarked ? "Attendance already marked." : "Attendance confirmed ✓");
+
+        // 1. Optimistic Local State Update (Instant 0ms UI Feedback)
+        const markedSessionId = String(
+          result?.session?.id ||
+          result?.session?._id ||
+          result?.sessionId ||
+          targetSessionId ||
+          ""
+        );
+
+        if (markedSessionId) {
+          setRecentSessions((prev) => {
+            const nowIso = new Date().toISOString();
+            const existingIndex = prev.findIndex((item) => {
+              const sid = String(
+                item?.sessionId ||
+                item?.session?.id ||
+                item?.session?._id ||
+                item?.session ||
+                item?._id ||
+                item?.id ||
+                ""
+              );
+              return sid === markedSessionId;
+            });
+
+            if (existingIndex >= 0) {
+              const updated = [...prev];
+              updated[existingIndex] = {
+                ...updated[existingIndex],
+                status: "present",
+                attendanceCode: "P",
+                markedAt: result?.markedAt || updated[existingIndex]?.markedAt || nowIso,
+              };
+              return updated;
+            }
+
+            return [
+              {
+                sessionId: markedSessionId,
+                subjectName: result?.session?.subjectName || "Subject",
+                subjectCode: result?.session?.subjectCode || "SUB",
+                facultyName: "Faculty",
+                startTime: nowIso,
+                markedAt: result?.markedAt || nowIso,
+                isActive: true,
+                status: "present",
+                attendanceCode: "P",
+              },
+              ...prev,
+            ];
+          });
+        }
+
+        // 2. Silent background sync without blocking UI
+        lastStudentDataFetchMs.current = 0;
+        void loadStudentData().catch(() => {});
+
+        if (resetTimerRef.current) window.clearTimeout(resetTimerRef.current);
+        resetTimerRef.current = window.setTimeout(() => {
+          if (!mountedRef.current) return;
+          setScanStep("IDLE");
+          setStatusMsg("");
+        }, 4000);
+        return;
+      }
+
+      // Handle server error responses cleanly
+      const rawError = typeof result === "string" ? "Network or server error" : String(result?.error || result?.message || "Attendance submission failed.");
+      const cleanError =
+        rawError.includes("<!DOCTYPE") || rawError.includes("<html") || rawError.includes("<pre>")
+          ? "Attendance server error. Please try again."
+          : rawError;
+
+      setScanStep("ERROR");
+      try { navigator.vibrate?.(400); } catch {}
+      setStatusMsg(cleanError);
+    } finally {
+      // ALWAYS unlock the UI so student can immediately retry or scan again
+      setBusy(false);
     }
-
-    const rawError = typeof result === "string" ? "Network or server error" : String(result?.error || "");
-    const cleanError =
-      rawError.includes("<!DOCTYPE") || rawError.includes("<html") || rawError.includes("<pre>")
-        ? "Attendance server error. Please try again."
-        : rawError || "Attendance failed.";
-
-    setScanStep("ERROR");
-    try { navigator.vibrate?.(400); } catch {}
-    setStatusMsg(cleanError);
   }, [
+    handleFaceSessionExpired,
     loadStudentData,
     openDynamicPairScanner,
     resolveLiveLocation,

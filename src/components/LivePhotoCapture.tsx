@@ -541,89 +541,60 @@ const LivePhotoCapture: React.FC<{
       let faceVerification: ClientFaceVerification | undefined;
       let imageDataUrl = "";
 
-      if (faceVerificationReferenceUrl) {
-        if (!faceQualityReady) {
-          throw new Error(faceQuality?.reason || "Hold steady until your face is ready.");
-        }
-
-        setCaptureError("");
-        setVerificationMessage("Preparing secure face check...");
-        setLivenessProgress(0);
-        setLivenessPassed(false);
-        setLivenessChallenge(null);
-        setLivenessDirection(null);
-
-        // Models should already be loaded from mount preload; this is a defensive
-        // fallback that hits the cached in-flight promise — not a new load.
-        if (!isModelsLoaded()) {
-          await loadModelsIfNeeded();
-        }
-        const liveness = await runMovementLiveness(videoRef.current!, {
-          onChallengeUpdate: (update) => {
-            setVerificationMessage(update.prompt);
-            setLivenessProgress(update.progress);
-            setLivenessChallenge(update.challenge);
-            setLivenessDirection(update.direction);
-            setLivenessPassed(update.passed);
-          },
-        });
-        if (!liveness.ok) {
-          setLivenessPassed(false);
-          throw new Error(liveness.reason || "Live face movement was not detected.");
-        }
-
-        setLivenessPassed(true);
-        setVerificationMessage("Matching your registered face...");
-
-        try {
-          // Instant client-side verification
-          const [capturedDataUrl, referenceDescriptor, liveDescriptor] = await Promise.all([
-            captureVideoFrame(videoRef.current!, DEFAULT_CAPTURE_OPTIONS),
-            computeDescriptorFromImageURL(faceVerificationReferenceUrl),
-            computeDescriptorFromVideoFrame(videoRef.current!),
-          ]);
-          imageDataUrl = capturedDataUrl;
-          const match = await compareFaceDescriptors(referenceDescriptor, liveDescriptor);
-          if (!match.matched) {
-            throw new Error("Face did not match the registered profile photo.");
-          }
-          faceVerification = {
-            method: "client-faceapi",
-            distance: match.distance,
-            threshold: match.threshold,
-            matched: true,
-            liveness: "movement",
-            livenessMetric: {
-              ...liveness.metric,
-              challenge: liveness.challenge,
-            },
-          };
-        } catch (descriptorError: any) {
-          if (String(descriptorError?.message || "").includes("did not match")) {
-            throw descriptorError;
-          }
-          const fallback = await compareLegacyFaceSignatures(
-            faceVerificationReferenceUrl,
-            imageDataUrl
-          );
-          if (!fallback.matched) {
-            throw new Error("Face did not match the registered profile photo.");
-          }
-          faceVerification = {
-            method: "client-legacy-signature",
-            score: fallback.score,
-            threshold: LEGACY_FACE_SCORE_THRESHOLD,
-            matched: true,
-            liveness: "movement",
-            livenessMetric: {
-              ...liveness.metric,
-              challenge: liveness.challenge,
-            },
-          };
-        }
-      } else {
-        imageDataUrl = captureVideoFrame(videoRef.current, DEFAULT_CAPTURE_OPTIONS);
+      // 1. Strict Reference Photo Guard
+      if (!faceVerificationReferenceUrl || faceVerificationReferenceUrl.length < 5) {
+        throw new Error("No registered profile photo found for this student account. Please contact your college administrator to upload your photo.");
       }
+      if (!faceQualityReady) {
+        throw new Error(faceQuality?.reason || "Hold steady until your face is centered in the frame.");
+      }
+      setCaptureError("");
+      setVerificationMessage("Checking live face movement...");
+      setLivenessProgress(0);
+      setLivenessPassed(false);
+      setLivenessChallenge(null);
+      setLivenessDirection(null);
+      // 2. Movement Liveness
+      if (!isModelsLoaded()) {
+        await loadModelsIfNeeded();
+      }
+      const liveness = await runMovementLiveness(videoRef.current!, {
+        onChallengeUpdate: (update) => {
+          setVerificationMessage(update.prompt);
+          setLivenessProgress(update.progress);
+          setLivenessChallenge(update.challenge);
+          setLivenessDirection(update.direction);
+          setLivenessPassed(update.passed);
+        },
+      });
+      if (!liveness.ok) {
+        setLivenessPassed(false);
+        throw new Error(liveness.reason || "Live face movement was not detected.");
+      }
+      setLivenessPassed(true);
+      setVerificationMessage("Verifying against registered photo...");
+      // 3. Strict 128D Face Descriptor Matching
+      const [capturedDataUrl, referenceDescriptor, liveDescriptor] = await Promise.all([
+        captureVideoFrame(videoRef.current!, DEFAULT_CAPTURE_OPTIONS),
+        computeDescriptorFromImageURL(faceVerificationReferenceUrl),
+        computeDescriptorFromVideoFrame(videoRef.current!),
+      ]);
+      imageDataUrl = capturedDataUrl;
+      const match = await compareFaceDescriptors(referenceDescriptor, liveDescriptor);
+      if (!match.matched) {
+        throw new Error("Face verification failed: Your face does not match the registered account owner.");
+      }
+      faceVerification = {
+        method: "client-faceapi",
+        distance: match.distance,
+        threshold: match.threshold,
+        matched: true,
+        liveness: "movement",
+        livenessMetric: {
+          ...liveness.metric,
+          challenge: liveness.challenge,
+        },
+      };
 
       stopCamera();
       onChange(imageDataUrl);
