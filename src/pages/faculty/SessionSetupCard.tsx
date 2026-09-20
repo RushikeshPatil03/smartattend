@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import QRCode from "react-qr-code";
 import {
@@ -20,9 +20,15 @@ import {
   Shield,
   Navigation,
   Compass,
+  Award,
+  CheckSquare,
+  Square,
+  ChevronDown,
+  Check,
 } from "lucide-react";
 import { Button } from "../../components/Common";
 import { RecentClassPreset } from "./types";
+import apiClient from "../../services/apiClient";
 
 export interface SessionFormState {
   department: string;
@@ -69,6 +75,13 @@ export interface SessionHandlers {
 }
 
 export interface SessionSetupCardProps {
+  category?: "ACADEMICS" | "ACTIVITIES";
+  onCategoryChange?: (category: "ACADEMICS" | "ACTIVITIES") => void;
+  activities?: any[];
+  selectedActivityId?: string;
+  setSelectedActivityId?: (id: string) => void;
+  selectedBatchIds?: string[];
+  setSelectedBatchIds?: (batchIds: string[]) => void;
   departments: any[];
   mySubjects: any[];
   filteredSubjects: any[];
@@ -84,6 +97,13 @@ const SEMESTER_OPTIONS = ["1", "2", "3", "4", "5", "6", "7", "8"] as const;
 const SECTION_OPTIONS = ["A", "B", "C", "D"] as const;
 
 export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
+  category = "ACADEMICS",
+  onCategoryChange,
+  activities = [],
+  selectedActivityId,
+  setSelectedActivityId,
+  selectedBatchIds,
+  setSelectedBatchIds,
   departments,
   filteredSubjects,
   form,
@@ -92,7 +112,176 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
   onApplyRecentClass,
   onRemoveRecentClass,
 }) => {
-  const isFormValid = Boolean(
+  const [internalCategory, setInternalCategory] = useState<"ACADEMICS" | "ACTIVITIES">("ACADEMICS");
+  const activeCategory = category || internalCategory;
+  const handleCategoryChange = (cat: "ACADEMICS" | "ACTIVITIES") => {
+    setInternalCategory(cat);
+    onCategoryChange?.(cat);
+  };
+
+  const [internalActivityId, setInternalActivityId] = useState<string>("");
+  const activeActivityId = selectedActivityId !== undefined ? selectedActivityId : internalActivityId;
+  const handleSelectActivity = (id: string) => {
+    if (setSelectedActivityId) setSelectedActivityId(id);
+    else setInternalActivityId(id);
+    handlers.onResetConfirmedLocation();
+  };
+
+  const [internalBatchIds, setInternalBatchIds] = useState<string[]>([]);
+  const activeBatchIds = selectedBatchIds !== undefined ? selectedBatchIds : internalBatchIds;
+  const handleSetBatchIds = (ids: string[]) => {
+    if (setSelectedBatchIds) setSelectedBatchIds(ids);
+    else setInternalBatchIds(ids);
+  };
+
+  const [isBatchDropdownOpen, setIsBatchDropdownOpen] = useState(false);
+  const batchDropdownRef = useRef<HTMLDivElement | null>(null);
+
+  // Close dropdown on click outside
+  useEffect(() => {
+    if (!isBatchDropdownOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (batchDropdownRef.current && !batchDropdownRef.current.contains(e.target as Node)) {
+        setIsBatchDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [isBatchDropdownOpen]);
+
+  const currentActivity = useMemo(() => {
+    return (activities || []).find((a: any) => String(a.id) === String(activeActivityId)) || null;
+  }, [activities, activeActivityId]);
+
+  const activityBatches: any[] = useMemo(() => {
+    return currentActivity?.batches || [];
+  }, [currentActivity]);
+
+  const toggleBatch = (batchId: string) => {
+    const bId = String(batchId);
+    if (activeBatchIds.includes(bId)) {
+      handleSetBatchIds(activeBatchIds.filter((id) => id !== bId));
+    } else {
+      handleSetBatchIds([...activeBatchIds, bId]);
+    }
+  };
+
+  const isAllBatchesSelected =
+    activityBatches.length > 0 &&
+    (activeBatchIds.length === 0 || activeBatchIds.length === activityBatches.length);
+
+  const toggleAllBatches = () => {
+    if (isAllBatchesSelected) {
+      handleSetBatchIds([]);
+    } else {
+      handleSetBatchIds(activityBatches.map((b: any) => String(b.id)));
+    }
+  };
+
+  const batchDisplayLabel = useMemo(() => {
+    if (!currentActivity) return "-- Select Activity First --";
+    if (activityBatches.length === 0) return "All Enrolled Students (No batches)";
+    if (activeBatchIds.length === 0 || activeBatchIds.length === activityBatches.length) {
+      return `All Batches (${activityBatches.length})`;
+    }
+    if (activeBatchIds.length === 1) {
+      const match = activityBatches.find((b: any) => String(b.id) === activeBatchIds[0]);
+      return match?.batch_name || `Batch ${match?.batch_number || 1}`;
+    }
+    return `${activeBatchIds.length} Batches Selected`;
+  }, [currentActivity, activityBatches, activeBatchIds]);
+
+  // Subject Batches for Academics
+  const [subjectBatches, setSubjectBatches] = useState<any[]>([]);
+  const [loadingSubjectBatches, setLoadingSubjectBatches] = useState(false);
+  const [isAcademicBatchDropdownOpen, setIsAcademicBatchDropdownOpen] = useState(false);
+  const academicBatchDropdownRef = useRef<HTMLDivElement | null>(null);
+
+  // Close academic batch dropdown on click outside
+  useEffect(() => {
+    if (!isAcademicBatchDropdownOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (academicBatchDropdownRef.current && !academicBatchDropdownRef.current.contains(e.target as Node)) {
+        setIsAcademicBatchDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [isAcademicBatchDropdownOpen]);
+
+  // Load subject batches whenever subject changes in Academics mode
+  useEffect(() => {
+    if (activeCategory !== "ACADEMICS" || !form.subject) {
+      setSubjectBatches([]);
+      return;
+    }
+
+    let isMounted = true;
+    setLoadingSubjectBatches(true);
+    apiClient
+      .getSubjectBatches(form.subject)
+      .then((res: any) => {
+        if (isMounted && res?.ok && Array.isArray(res.batches)) {
+          setSubjectBatches(res.batches);
+          // By default, select all batches (or empty array)
+          handleSetBatchIds(res.batches.map((b: any) => String(b.id)));
+        } else if (isMounted) {
+          setSubjectBatches([]);
+          handleSetBatchIds([]);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to load subject batches:", err);
+        if (isMounted) {
+          setSubjectBatches([]);
+          handleSetBatchIds([]);
+        }
+      })
+      .finally(() => {
+        if (isMounted) setLoadingSubjectBatches(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [activeCategory, form.subject]);
+
+  const toggleAcademicBatch = (batchId: string) => {
+    const bId = String(batchId);
+    if (activeBatchIds.includes(bId)) {
+      handleSetBatchIds(activeBatchIds.filter((id) => id !== bId));
+    } else {
+      handleSetBatchIds([...activeBatchIds, bId]);
+    }
+  };
+
+  const isAllAcademicBatchesSelected =
+    subjectBatches.length > 0 &&
+    (activeBatchIds.length === 0 || activeBatchIds.length === subjectBatches.length);
+
+  const toggleAllAcademicBatches = () => {
+    if (isAllAcademicBatchesSelected) {
+      handleSetBatchIds([]);
+    } else {
+      handleSetBatchIds(subjectBatches.map((b: any) => String(b.id)));
+    }
+  };
+
+  const academicBatchDisplayLabel = useMemo(() => {
+    if (!form.subject) return "-- Select Subject First --";
+    if (loadingSubjectBatches) return "Loading batches...";
+    if (subjectBatches.length === 0) return "All Students (Default)";
+    if (activeBatchIds.length === 0 || activeBatchIds.length === subjectBatches.length) {
+      return `All Batches (${subjectBatches.length})`;
+    }
+    if (activeBatchIds.length === 1) {
+      const match = subjectBatches.find((b: any) => String(b.id) === activeBatchIds[0]);
+      return match?.batch_name || `Batch ${match?.batch_number || 1}`;
+    }
+    return `${activeBatchIds.length} Batches Selected`;
+  }, [form.subject, loadingSubjectBatches, subjectBatches, activeBatchIds]);
+
+  const isAcademicValid = Boolean(
     form.department &&
       form.subject &&
       form.locationState &&
@@ -100,10 +289,19 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
       Number(form.radius) > 0
   );
 
+  const isActivityValid = Boolean(
+    activeActivityId &&
+      form.locationState &&
+      form.isLocationConfirmed &&
+      Number(form.radius) > 0
+  );
+
+  const isFormValid = activeCategory === "ACTIVITIES" ? isActivityValid : isAcademicValid;
+
   return (
     <div className="space-y-6">
-      {/* 1-Tap Quick Class Launch Presets */}
-      {recentClassCards.length > 0 && (
+      {/* 1-Tap Quick Class Launch Presets (Academics only) */}
+      {activeCategory === "ACADEMICS" && recentClassCards.length > 0 && (
         <div className="rounded-3xl border border-emerald-500/20 bg-gradient-to-r from-emerald-950/5 via-slate-900/5 to-teal-950/5 p-5 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl border-l-4 border-l-emerald-500">
           <div className="flex items-center justify-between pb-3 border-b border-slate-200/60 mb-3.5">
             <div className="flex items-center gap-2">
@@ -213,178 +411,496 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
 
       {/* Main Configuration Card */}
       <div className="relative overflow-hidden rounded-3xl border border-slate-200/80 bg-white/80 p-6 sm:p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl space-y-6">
-        <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between pb-4 border-b border-slate-100">
           <div>
             <div className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50/90 px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-emerald-700 shadow-xs mb-2">
               <Sparkles size={12} className="text-emerald-600" />
               Live Session Setup
             </div>
             <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
-              <BookOpen size={22} className="text-emerald-600" />
-              Configure Class Session
+              {activeCategory === "ACTIVITIES" ? (
+                <Award size={22} className="text-emerald-600" />
+              ) : (
+                <BookOpen size={22} className="text-emerald-600" />
+              )}
+              {activeCategory === "ACTIVITIES" ? "Configure Activity Session" : "Configure Class Session"}
             </h2>
             <p className="text-xs text-slate-500 font-normal mt-0.5">
-              Select department, course attributes, and lock the high-precision GPS geofence before starting.
+              {activeCategory === "ACTIVITIES"
+                ? "Select activity, target batch(es), and lock the high-precision GPS geofence before starting."
+                : "Select department, course attributes, and lock the high-precision GPS geofence before starting."}
             </p>
           </div>
+
+          {/* Top Right Corner Toggle: Academics vs Activities */}
+          <div className="flex items-center gap-1.5 p-1 bg-slate-200/70 rounded-2xl shadow-inner shrink-0 self-start sm:self-auto">
+            <button
+              type="button"
+              onClick={() => handleCategoryChange("ACADEMICS")}
+              className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+                activeCategory === "ACADEMICS"
+                  ? "bg-white text-emerald-800 shadow-xs ring-1 ring-slate-200/80"
+                  : "text-slate-600 hover:text-slate-900 hover:bg-white/50"
+              }`}
+            >
+              <BookOpen size={14} className={activeCategory === "ACADEMICS" ? "text-emerald-600" : "text-slate-500"} />
+              Academics
+            </button>
+            <button
+              type="button"
+              onClick={() => handleCategoryChange("ACTIVITIES")}
+              className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+                activeCategory === "ACTIVITIES"
+                  ? "bg-white text-emerald-800 shadow-xs ring-1 ring-slate-200/80"
+                  : "text-slate-600 hover:text-slate-900 hover:bg-white/50"
+              }`}
+            >
+              <Award size={14} className={activeCategory === "ACTIVITIES" ? "text-emerald-600" : "text-slate-500"} />
+              Activities
+            </button>
+          </div>
         </div>
 
-        {/* Input Matrix with Floating Style */}
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
-          {/* Department Select */}
-          <div>
-            <label className="block h-5 text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center gap-1">
-              <Building2 size={13} className="text-emerald-600 shrink-0" />
-              Department
-            </label>
-            <select
-              className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300"
-              value={form.department}
-              onChange={(e) => {
-                handlers.setDepartment(e.target.value);
-                handlers.setSubject("");
-                handlers.onResetConfirmedLocation();
-              }}
-            >
-              <option value="">-- Choose Department --</option>
-              {departments.map((d: any) => (
-                <option key={d._id || d.id} value={d._id || d.id}>
-                  {d.name}
-                </option>
-              ))}
-            </select>
-          </div>
+        {/* Dynamic Matrix: Activities Setup OR Academics Setup */}
+        {activeCategory === "ACTIVITIES" ? (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              {/* 1. Activity Select */}
+              <div>
+                <label className="block h-5 text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center gap-1">
+                  <Award size={13} className="text-emerald-600 shrink-0" />
+                  Activity
+                </label>
+                <select
+                  className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300"
+                  value={activeActivityId}
+                  onChange={(e) => {
+                    handleSelectActivity(e.target.value);
+                    handleSetBatchIds([]);
+                  }}
+                >
+                  <option value="">-- Choose Activity --</option>
+                  {(activities || []).map((act: any) => (
+                    <option key={act.id} value={act.id}>
+                      {act.name} ({act.type || "EVENT"})
+                    </option>
+                  ))}
+                </select>
+                {currentActivity && (
+                  <p className="text-[10px] text-emerald-700 font-semibold mt-1.5 px-1 truncate">
+                    {currentActivity.type} • {activityBatches.length} batch(es) • Y{Array.isArray(currentActivity.years) && currentActivity.years.length > 0 ? currentActivity.years.join(", ") : (currentActivity.year || "All")} S{Array.isArray(currentActivity.semesters) && currentActivity.semesters.length > 0 ? currentActivity.semesters.join(", ") : (currentActivity.semester || "All")}
+                  </p>
+                )}
+              </div>
 
-          {/* Year */}
-          <div>
-            <label className="block h-5 text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center gap-1">
-              <Calendar size={13} className="text-emerald-600 shrink-0" />
-              Year
-            </label>
-            <select
-              className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
-              value={form.year}
-              onChange={(e) => {
-                handlers.setYear(e.target.value);
-                handlers.onResetConfirmedLocation();
-              }}
-              disabled={!form.department}
-            >
-              {YEAR_OPTIONS.map((y) => (
-                <option key={y} value={y}>
-                  Year {y}
-                </option>
-              ))}
-            </select>
-          </div>
+              {/* 2. Batch Dropdown with Square Checkbox Multi-Selection */}
+              <div className="relative" ref={batchDropdownRef}>
+                <label className="block h-5 text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center justify-between">
+                  <span className="flex items-center gap-1">
+                    <Layers size={13} className="text-emerald-600 shrink-0" />
+                    Target Batches
+                  </span>
+                  {activeBatchIds.length > 0 && activeBatchIds.length < activityBatches.length && (
+                    <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded-md border border-emerald-200">
+                      {activeBatchIds.length} of {activityBatches.length}
+                    </span>
+                  )}
+                </label>
 
-          {/* Semester */}
-          <div>
-            <label className="block h-5 text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center gap-1">
-              <Layers size={13} className="text-emerald-600 shrink-0" />
-              Semester
-            </label>
-            <select
-              className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
-              value={form.sem}
-              onChange={(e) => {
-                handlers.setSem(e.target.value);
-                handlers.onResetConfirmedLocation();
-              }}
-              disabled={!form.department}
-            >
-              {SEMESTER_OPTIONS.map((s) => (
-                <option key={s} value={s}>
-                  Semester {s}
-                </option>
-              ))}
-            </select>
-          </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (currentActivity && activityBatches.length > 0) {
+                      setIsBatchDropdownOpen((prev) => !prev);
+                    }
+                  }}
+                  disabled={!currentActivity || activityBatches.length === 0}
+                  className="w-full flex items-center justify-between rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400 cursor-pointer disabled:cursor-not-allowed text-left"
+                >
+                  <span className="truncate">{batchDisplayLabel}</span>
+                  <ChevronDown
+                    size={15}
+                    className={`text-slate-400 shrink-0 ml-2 transition-transform duration-200 ${
+                      isBatchDropdownOpen ? "rotate-180" : ""
+                    }`}
+                  />
+                </button>
 
-          {/* Section */}
-          <div>
-            <label className="block h-5 text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center gap-1">
-              <Clock size={13} className="text-emerald-600 shrink-0" />
-              Section
-            </label>
-            <select
-              className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
-              value={form.section}
-              onChange={(e) => {
-                handlers.setSection(e.target.value);
-                handlers.onResetConfirmedLocation();
-              }}
-              disabled={!form.department}
-            >
-              {SECTION_OPTIONS.map((sec) => (
-                <option key={sec} value={sec}>
-                  Section {sec}
-                </option>
-              ))}
-            </select>
-          </div>
+                {/* Dropdown Floating Panel */}
+                <AnimatePresence>
+                  {isBatchDropdownOpen && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -4, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -4, scale: 0.98 }}
+                      transition={{ duration: 0.15 }}
+                      className="absolute left-0 right-0 z-50 mt-1.5 max-h-64 overflow-y-auto rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-xl backdrop-blur-xl space-y-1"
+                    >
+                      {/* All Batches Row with Square Checkbox */}
+                      <button
+                        type="button"
+                        onClick={toggleAllBatches}
+                        className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-800 hover:bg-emerald-50/70 hover:text-emerald-900 transition cursor-pointer text-left"
+                      >
+                        {isAllBatchesSelected ? (
+                          <CheckSquare size={16} className="text-emerald-600 shrink-0" />
+                        ) : (
+                          <Square size={16} className="text-slate-400 shrink-0" />
+                        )}
+                        <span className="flex-1">All Batches</span>
+                        <span className="text-[10px] font-semibold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
+                          {activityBatches.reduce(
+                            (acc, b) => acc + (Array.isArray(b.student_enrollments) ? b.student_enrollments.length : 0),
+                            0
+                          )}{" "}
+                          students
+                        </span>
+                      </button>
 
-          {/* Subject */}
-          <div>
-            <label className="block h-5 text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center gap-1">
-              <BookOpen size={13} className="text-emerald-600 shrink-0" />
-              Subject
-            </label>
-            <select
-              className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
-              value={form.subject}
-              onChange={(e) => {
-                handlers.setSubject(e.target.value);
-                handlers.onResetConfirmedLocation();
-              }}
-              disabled={!form.department}
-            >
-              <option value="">-- Choose Subject --</option>
-              {filteredSubjects.map((s: any) => (
-                <option key={s._id || s.id} value={s._id || s.id}>
-                  {s.name} ({s.code})
-                </option>
-              ))}
-            </select>
-          </div>
+                      <div className="border-t border-slate-100 my-1" />
 
-          {/* Radius (meters) */}
-          <div>
-            <label className="block h-5 text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center justify-between whitespace-nowrap">
-              <span className="flex items-center gap-1">
-                <Crosshair size={13} className="text-emerald-600 shrink-0" />
-                Radius
-              </span>
+                      {/* Individual Batches Rows with Square Checkboxes */}
+                      {activityBatches.map((batch: any) => {
+                        const bId = String(batch.id);
+                        const isChecked =
+                          activeBatchIds.length === 0 ||
+                          activeBatchIds.includes(bId);
+                        const studentCount = Array.isArray(batch.student_enrollments)
+                          ? batch.student_enrollments.length
+                          : 0;
+
+                        return (
+                          <button
+                            key={bId}
+                            type="button"
+                            onClick={() => toggleBatch(bId)}
+                            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 hover:bg-emerald-50/70 hover:text-emerald-900 transition cursor-pointer text-left"
+                          >
+                            {isChecked ? (
+                              <CheckSquare size={16} className="text-emerald-600 shrink-0" />
+                            ) : (
+                              <Square size={16} className="text-slate-400 shrink-0" />
+                            )}
+                            <span className="flex-1 truncate">
+                              {batch.batch_name || `Batch ${batch.batch_number}`}
+                            </span>
+                            <span className="text-[10px] font-semibold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full shrink-0">
+                              {studentCount} students
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              {/* 3. Radius / Range (meters) */}
+              <div>
+                <label className="block h-5 text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center justify-between whitespace-nowrap">
+                  <span className="flex items-center gap-1">
+                    <Crosshair size={13} className="text-emerald-600 shrink-0" />
+                    Radius
+                  </span>
+                  <select
+                    className="text-[10px] font-bold text-emerald-700 bg-emerald-50/90 border border-emerald-200/80 rounded-md px-1.5 py-0.5 outline-none hover:bg-emerald-100/80 cursor-pointer disabled:opacity-50"
+                    value={["50", "75", "150"].includes(String(form.radius)) ? String(form.radius) : ""}
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        handlers.setRadius(e.target.value);
+                      }
+                    }}
+                    title="Select preset range"
+                  >
+                    <option value="" disabled>Presets</option>
+                    <option value="50">Class 50m</option>
+                    <option value="75">Lab 75m</option>
+                    <option value="150">Aud 150m</option>
+                  </select>
+                </label>
+
+                <input
+                  type="number"
+                  min={5}
+                  max={1000}
+                  className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
+                  value={form.radius}
+                  onChange={(e) => handlers.setRadius(e.target.value)}
+                  placeholder="50"
+                />
+              </div>
+            </div>
+          </div>
+        ) : (
+          /* Academics Input Matrix */
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-7">
+            {/* Department Select */}
+            <div>
+              <label className="block h-5 text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center gap-1">
+                <Building2 size={13} className="text-emerald-600 shrink-0" />
+                Department
+              </label>
               <select
-                className="text-[10px] font-bold text-emerald-700 bg-emerald-50/90 border border-emerald-200/80 rounded-md px-1.5 py-0.5 outline-none hover:bg-emerald-100/80 cursor-pointer disabled:opacity-50"
-                value={["50", "75", "150"].includes(String(form.radius)) ? String(form.radius) : ""}
+                className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300"
+                value={form.department}
                 onChange={(e) => {
-                  if (e.target.value) {
-                    handlers.setRadius(e.target.value);
-                  }
+                  handlers.setDepartment(e.target.value);
+                  handlers.setSubject("");
+                  handlers.onResetConfirmedLocation();
+                }}
+              >
+                <option value="">-- Choose Department --</option>
+                {departments.map((d: any) => (
+                  <option key={d._id || d.id} value={d._id || d.id}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Year */}
+            <div>
+              <label className="block h-5 text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center gap-1">
+                <Calendar size={13} className="text-emerald-600 shrink-0" />
+                Year
+              </label>
+              <select
+                className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
+                value={form.year}
+                onChange={(e) => {
+                  handlers.setYear(e.target.value);
+                  handlers.onResetConfirmedLocation();
                 }}
                 disabled={!form.department}
-                title="Select preset range"
               >
-                <option value="" disabled>Presets</option>
-                <option value="50">Class 50m</option>
-                <option value="75">Lab 75m</option>
-                <option value="150">Aud 150m</option>
+                {YEAR_OPTIONS.map((y) => (
+                  <option key={y} value={y}>
+                    Year {y}
+                  </option>
+                ))}
               </select>
-            </label>
+            </div>
 
-            <input
-              type="number"
-              min={5}
-              max={1000}
-              className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
-              value={form.radius}
-              onChange={(e) => handlers.setRadius(e.target.value)}
-              disabled={!form.department}
-              placeholder="50"
-            />
+            {/* Semester */}
+            <div>
+              <label className="block h-5 text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center gap-1">
+                <Layers size={13} className="text-emerald-600 shrink-0" />
+                Semester
+              </label>
+              <select
+                className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
+                value={form.sem}
+                onChange={(e) => {
+                  handlers.setSem(e.target.value);
+                  handlers.onResetConfirmedLocation();
+                }}
+                disabled={!form.department}
+              >
+                {SEMESTER_OPTIONS.map((s) => (
+                  <option key={s} value={s}>
+                    Semester {s}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Section */}
+            <div>
+              <label className="block h-5 text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center gap-1">
+                <Clock size={13} className="text-emerald-600 shrink-0" />
+                Section
+              </label>
+              <select
+                className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
+                value={form.section}
+                onChange={(e) => {
+                  handlers.setSection(e.target.value);
+                  handlers.onResetConfirmedLocation();
+                }}
+                disabled={!form.department}
+              >
+                {SECTION_OPTIONS.map((sec) => (
+                  <option key={sec} value={sec}>
+                    Section {sec}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Subject */}
+            <div>
+              <label className="block h-5 text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center gap-1">
+                <BookOpen size={13} className="text-emerald-600 shrink-0" />
+                Subject
+              </label>
+              <select
+                className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
+                value={form.subject}
+                onChange={(e) => {
+                  handlers.setSubject(e.target.value);
+                  handlers.onResetConfirmedLocation();
+                }}
+                disabled={!form.department}
+              >
+                <option value="">-- Choose Subject --</option>
+                {filteredSubjects.map((s: any) => (
+                  <option key={s._id || s.id} value={s._id || s.id}>
+                    {s.name} ({s.code})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Batches Field (Square Checkbox Multi-Select, All by default) */}
+            <div className="relative" ref={academicBatchDropdownRef}>
+              <label className="block h-5 text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center justify-between">
+                <span className="flex items-center gap-1">
+                  <Layers size={13} className="text-emerald-600 shrink-0" />
+                  Batches
+                </span>
+                {subjectBatches.length > 0 && activeBatchIds.length > 0 && activeBatchIds.length < subjectBatches.length && (
+                  <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded-md border border-emerald-200">
+                    {activeBatchIds.length} of {subjectBatches.length}
+                  </span>
+                )}
+              </label>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (form.subject && subjectBatches.length > 0) {
+                    setIsAcademicBatchDropdownOpen((prev) => !prev);
+                  }
+                }}
+                disabled={!form.subject || subjectBatches.length === 0}
+                className="w-full flex items-center justify-between rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400 cursor-pointer disabled:cursor-not-allowed text-left"
+              >
+                <span className="truncate">{academicBatchDisplayLabel}</span>
+                <ChevronDown
+                  size={15}
+                  className={`text-slate-400 shrink-0 ml-1 transition-transform duration-200 ${
+                    isAcademicBatchDropdownOpen ? "rotate-180" : ""
+                  }`}
+                />
+              </button>
+
+              {/* Floating Multi-Batch Panel */}
+              <AnimatePresence>
+                {isAcademicBatchDropdownOpen && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -4, scale: 0.98 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -4, scale: 0.98 }}
+                    transition={{ duration: 0.15 }}
+                    className="absolute left-0 right-0 z-50 mt-1.5 max-h-64 overflow-y-auto rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-xl backdrop-blur-xl space-y-1 min-w-[210px]"
+                  >
+                    {/* All Batches Option */}
+                    <button
+                      type="button"
+                      onClick={toggleAllAcademicBatches}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-800 hover:bg-emerald-50/70 hover:text-emerald-900 transition cursor-pointer text-left"
+                    >
+                      {isAllAcademicBatchesSelected ? (
+                        <CheckSquare size={16} className="text-emerald-600 shrink-0" />
+                      ) : (
+                        <Square size={16} className="text-slate-400 shrink-0" />
+                      )}
+                      <span className="flex-1">All Batches</span>
+                      <span className="text-[10px] font-semibold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
+                        {subjectBatches.reduce(
+                          (acc, b) => acc + (Array.isArray(b.student_enrollments) ? b.student_enrollments.length : 0),
+                          0
+                        )}{" "}
+                        stu
+                      </span>
+                    </button>
+
+                    <div className="border-t border-slate-100 my-1" />
+
+                    {/* Individual Batches */}
+                    {subjectBatches.map((b) => {
+                      const bId = String(b.id);
+                      const isSelected = activeBatchIds.includes(bId);
+                      const studentCount = Array.isArray(b.student_enrollments)
+                        ? b.student_enrollments.length
+                        : 0;
+
+                      return (
+                        <button
+                          key={bId}
+                          type="button"
+                          onClick={() => toggleAcademicBatch(bId)}
+                          className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer text-left ${
+                            isSelected
+                              ? "bg-emerald-50 text-emerald-900 font-bold"
+                              : "text-slate-700 hover:bg-slate-50"
+                          }`}
+                        >
+                          {isSelected ? (
+                            <CheckSquare size={16} className="text-emerald-600 shrink-0" />
+                          ) : (
+                            <Square size={16} className="text-slate-400 shrink-0" />
+                          )}
+                          <span className="flex-1 truncate">{b.batch_name || `Batch ${b.batch_number}`}</span>
+                          <span className="text-[10px] font-mono text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
+                            {studentCount} stu
+                          </span>
+                        </button>
+                      );
+                    })}
+
+                    <div className="border-t border-slate-100 pt-1 mt-1 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => setIsAcademicBatchDropdownOpen(false)}
+                        className="text-[10px] font-bold text-slate-500 hover:text-slate-800 px-2 py-1 rounded-md cursor-pointer"
+                      >
+                        Done
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {/* Radius (meters) */}
+            <div>
+              <label className="block h-5 text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center justify-between whitespace-nowrap">
+                <span className="flex items-center gap-1">
+                  <Crosshair size={13} className="text-emerald-600 shrink-0" />
+                  Radius
+                </span>
+                <select
+                  className="text-[10px] font-bold text-emerald-700 bg-emerald-50/90 border border-emerald-200/80 rounded-md px-1.5 py-0.5 outline-none hover:bg-emerald-100/80 cursor-pointer disabled:opacity-50"
+                  value={["50", "75", "150"].includes(String(form.radius)) ? String(form.radius) : ""}
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      handlers.setRadius(e.target.value);
+                    }
+                  }}
+                  disabled={!form.department}
+                  title="Select preset range"
+                >
+                  <option value="" disabled>Presets</option>
+                  <option value="50">Class 50m</option>
+                  <option value="75">Lab 75m</option>
+                  <option value="150">Aud 150m</option>
+                </select>
+              </label>
+
+              <input
+                type="number"
+                min={5}
+                max={1000}
+                className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
+                value={form.radius}
+                onChange={(e) => handlers.setRadius(e.target.value)}
+                disabled={!form.department}
+                placeholder="50"
+              />
+            </div>
           </div>
-        </div>
+        )}
 
         {/* High-Tech Geofence Visualizer Widget with GPS Accuracy Pill */}
         <div className="rounded-3xl border border-slate-200/90 bg-gradient-to-br from-slate-50/90 via-emerald-50/30 to-teal-50/30 p-5 sm:p-6 transition-all shadow-xs">
@@ -577,7 +1093,11 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
                 <CheckCircle2 size={16} /> Ready to broadcast dynamic QR attendance.
               </span>
             ) : (
-              <span>Select department, subject, and lock GPS to activate session launch.</span>
+              <span>
+                {activeCategory === "ACTIVITIES"
+                  ? "Select activity, target batch(es), and lock GPS to activate session launch."
+                  : "Select department, subject, and lock GPS to activate session launch."}
+              </span>
             )}
           </div>
 
@@ -596,7 +1116,7 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
             ) : (
               <>
                 <Play size={18} />
-                Launch Live Session
+                {activeCategory === "ACTIVITIES" ? "Launch Activity Session" : "Launch Live Session"}
               </>
             )}
           </motion.button>

@@ -734,3 +734,76 @@ EXCEPTION
         NULL;
 END;
 $$;
+
+-- ========================================================================
+-- 8. ACTIVITIES AND ACTIVITY BATCHES (CO-CURRICULAR / EVENTS / TRAININGS)
+-- ========================================================================
+
+CREATE TABLE IF NOT EXISTS activities (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    faculty UUID NOT NULL REFERENCES faculties(id) ON DELETE CASCADE,
+    department UUID REFERENCES departments(id) ON DELETE SET NULL,
+    name VARCHAR(200) NOT NULL,
+    type VARCHAR(50) NOT NULL DEFAULT 'EVENT', -- 'EVENT' or 'TRAINING'
+    event_date DATE DEFAULT NULL,
+    start_date DATE DEFAULT NULL,
+    end_date DATE DEFAULT NULL,
+    years INT[] DEFAULT '{}',
+    semesters INT[] DEFAULT '{}',
+    semester SMALLINT DEFAULT NULL,
+    section VARCHAR(50) DEFAULT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE IF EXISTS activities ADD COLUMN IF NOT EXISTS years INT[] DEFAULT '{}';
+ALTER TABLE IF EXISTS activities ADD COLUMN IF NOT EXISTS semesters INT[] DEFAULT '{}';
+
+CREATE TABLE IF NOT EXISTS activity_batches (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    activity_id UUID NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+    batch_number INT NOT NULL DEFAULT 1,
+    batch_name VARCHAR(100) NOT NULL DEFAULT 'Default Batch',
+    student_enrollments JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_activities_faculty ON activities(faculty, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_activities_dept_cohort ON activities(department, semester, section);
+CREATE INDEX IF NOT EXISTS idx_activity_batches_activity ON activity_batches(activity_id, batch_number);
+
+-- Support category = 'ACTIVITY' in sessions
+ALTER TABLE IF EXISTS sessions ADD COLUMN IF NOT EXISTS category VARCHAR(50) DEFAULT 'REGULAR';
+ALTER TABLE IF EXISTS sessions ADD COLUMN IF NOT EXISTS activity_id UUID REFERENCES activities(id) ON DELETE SET NULL;
+ALTER TABLE IF EXISTS sessions DROP CONSTRAINT IF EXISTS sessions_batch_id_fkey;
+ALTER TABLE IF EXISTS sessions ADD COLUMN IF NOT EXISTS batch_id UUID DEFAULT NULL;
+ALTER TABLE IF EXISTS sessions ADD COLUMN IF NOT EXISTS batch_ids UUID[] DEFAULT '{}';
+ALTER TABLE IF EXISTS sessions ALTER COLUMN subject DROP NOT NULL;
+
+-- Support activities and batches in attendances
+ALTER TABLE IF EXISTS attendances ALTER COLUMN subject DROP NOT NULL;
+ALTER TABLE IF EXISTS attendances ADD COLUMN IF NOT EXISTS batch_id UUID DEFAULT NULL;
+ALTER TABLE IF EXISTS attendances ADD COLUMN IF NOT EXISTS category VARCHAR(50) DEFAULT 'REGULAR';
+ALTER TABLE IF EXISTS attendances ADD COLUMN IF NOT EXISTS activity_id UUID REFERENCES activities(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_attendances_batch_id ON attendances(batch_id);
+CREATE INDEX IF NOT EXISTS idx_attendances_activity_id ON attendances(activity_id);
+
+-- 2.10 SUBJECT BATCHES TABLE (For practicals / labs)
+CREATE TABLE IF NOT EXISTS subject_batches (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    subject_id UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+    faculty_id UUID NOT NULL REFERENCES faculties(id) ON DELETE CASCADE,
+    department_id UUID REFERENCES departments(id) ON DELETE SET NULL,
+    year SMALLINT DEFAULT NULL,
+    semester SMALLINT DEFAULT NULL,
+    section VARCHAR(50) DEFAULT NULL,
+    batch_number INT NOT NULL DEFAULT 1,
+    batch_name VARCHAR(100) NOT NULL DEFAULT 'Batch 1',
+    student_enrollments TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_subject_batches_sub_fac ON subject_batches(subject_id, faculty_id);
+
+

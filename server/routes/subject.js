@@ -394,4 +394,130 @@ router.post("/allot", adminAuth, async (req, res) => {
   }
 });
 
+// ======================================================
+// GET SUBJECT BATCHES (FACULTY / ADMIN)
+// GET /api/subjects/:id/batches
+// ======================================================
+router.get("/:id/batches", authMiddleware, async (req, res) => {
+  try {
+    const subjectId = req.params.id;
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
+
+    let query = supabase
+      .from("subject_batches")
+      .select("id, subject_id, faculty_id, department_id, year, semester, section, batch_number, batch_name, student_enrollments, created_at, updated_at")
+      .eq("subject_id", subjectId)
+      .order("batch_number", { ascending: true });
+
+    if (req.userRole === "FACULTY") {
+      const { data: myBatches, error: myErr } = await query.eq("faculty_id", req.userId);
+      if (myErr) throw myErr;
+      if (myBatches && myBatches.length > 0) {
+        return res.json({ ok: true, batches: myBatches });
+      }
+      // Fallback: check if batches exist for the subject created by Admin or co-faculty
+      const { data: allBatches, error: allErr } = await supabase
+        .from("subject_batches")
+        .select("id, subject_id, faculty_id, department_id, year, semester, section, batch_number, batch_name, student_enrollments, created_at, updated_at")
+        .eq("subject_id", subjectId)
+        .order("batch_number", { ascending: true });
+      if (allErr) throw allErr;
+      return res.json({ ok: true, batches: allBatches || [] });
+    } else if (req.query.facultyId) {
+      query = query.eq("faculty_id", req.query.facultyId);
+    }
+
+    const { data: batches, error } = await query;
+    if (error) throw error;
+
+    return res.json({ ok: true, batches: batches || [] });
+  } catch (err) {
+    console.error("Fetch subject batches error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to fetch batches" });
+  }
+});
+
+// ======================================================
+// SAVE SUBJECT BATCHES (FACULTY / ADMIN)
+// POST /api/subjects/:id/batches
+// ======================================================
+router.post("/:id/batches", authMiddleware, async (req, res) => {
+  try {
+    const subjectId = req.params.id;
+    const { batches = [] } = req.body;
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
+
+    // Validate subject
+    const { data: subject, error: subjErr } = await supabase
+      .from("subjects")
+      .select("id, name, code, year, semester, departments, allotted_faculties")
+      .eq("id", subjectId)
+      .single();
+
+    if (subjErr || !subject) {
+      return res.status(404).json({ ok: false, error: "Subject not found" });
+    }
+
+    const targetFacultyId = req.userRole === "FACULTY" ? req.userId : (req.body.facultyId || req.userId);
+
+    if (req.userRole === "FACULTY") {
+      const isAllotted = Array.isArray(subject.allotted_faculties) && subject.allotted_faculties.some((f) => String(f) === String(req.userId));
+      if (!isAllotted) {
+        return res.status(403).json({ ok: false, error: "Forbidden: Not allotted to this subject" });
+      }
+    }
+
+    // Atomically replace batches for this subject & faculty
+    await supabase
+      .from("subject_batches")
+      .delete()
+      .eq("subject_id", subjectId)
+      .eq("faculty_id", targetFacultyId);
+
+    if (Array.isArray(batches) && batches.length > 0) {
+      const rowsToInsert = batches.map((b, idx) => ({
+        subject_id: subjectId,
+        faculty_id: targetFacultyId,
+        department_id: b.department_id || (Array.isArray(subject.departments) ? subject.departments[0] : null),
+        year: b.year ? Number(b.year) : (subject.year ? Number(subject.year) : null),
+        semester: b.semester ? Number(b.semester) : (subject.semester ? Number(subject.semester) : null),
+        section: b.section ? String(b.section).trim().toUpperCase() : null,
+        batch_number: Number(b.batch_number || idx + 1),
+        batch_name: String(b.batch_name || `Batch ${idx + 1}`).trim(),
+        student_enrollments: Array.isArray(b.student_enrollments)
+          ? b.student_enrollments.map((u) => String(u).trim().toUpperCase()).filter(Boolean)
+          : [],
+      }));
+
+      const { data: inserted, error: insertErr } = await supabase
+        .from("subject_batches")
+        .insert(rowsToInsert)
+        .select("*")
+        .order("batch_number", { ascending: true });
+
+      if (insertErr) throw insertErr;
+      try {
+        const { invalidateBatchRosterCache } = require("./attendance");
+        if (typeof invalidateBatchRosterCache === "function") {
+          invalidateBatchRosterCache(subjectId);
+        }
+      } catch {}
+      return res.json({ ok: true, batches: inserted || [] });
+    }
+
+    try {
+      const { invalidateBatchRosterCache } = require("./attendance");
+      if (typeof invalidateBatchRosterCache === "function") {
+        invalidateBatchRosterCache(subjectId);
+      }
+    } catch {}
+    return res.json({ ok: true, batches: [] });
+  } catch (err) {
+    console.error("Save subject batches error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to save batches" });
+  }
+});
+
 module.exports = router;

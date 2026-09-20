@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, GraduationCap, LogOut, Mail, ShieldCheck, UserRound, Edit, Camera } from "lucide-react";
+import { ChevronDown, GraduationCap, LogOut, Mail, ShieldCheck, UserRound, Edit, Camera, BookOpen, Award } from "lucide-react";
 import { useApp } from "../store";
 import apiClient from "../services/apiClient";
 import LivePhotoCapture from "./LivePhotoCapture";
@@ -10,6 +10,9 @@ type ProfileMenuProps = {
   onLogout: () => void | Promise<void>;
   photoUrl?: string | null;
   variant?: "header" | "default" | "avatar";
+  onOpenAcademicAttendance?: () => void;
+  onOpenActivities?: () => void;
+  onOpenProfileModal?: (tab?: "academics" | "activities" | "profile") => void;
 };
 
 const getInitials = (name: string) => {
@@ -31,6 +34,9 @@ const ProfileMenu: React.FC<ProfileMenuProps> = ({
   onLogout,
   photoUrl,
   variant = "default",
+  onOpenAcademicAttendance,
+  onOpenActivities,
+  onOpenProfileModal,
 }) => {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -282,6 +288,39 @@ const ProfileMenu: React.FC<ProfileMenuProps> = ({
                   : `${roleLabel} account`}
               </span>
             </div>
+
+            {isStudent && (
+              <div className="pt-2 pb-1 space-y-1.5 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    onOpenAcademicAttendance?.();
+                  }}
+                  className="flex w-full items-center justify-between gap-2 rounded-xl bg-indigo-50/90 hover:bg-indigo-100/90 px-3 py-2 text-xs font-semibold text-indigo-700 transition cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <BookOpen size={15} className="text-indigo-600" />
+                    <span>Academic Attendance</span>
+                  </div>
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-indigo-500 bg-white/80 px-1.5 py-0.5 rounded-md border border-indigo-200/60">View</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    onOpenActivities?.();
+                  }}
+                  className="flex w-full items-center justify-between gap-2 rounded-xl bg-purple-50/90 hover:bg-purple-100/90 px-3 py-2 text-xs font-semibold text-purple-700 transition cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <Award size={15} className="text-purple-600" />
+                    <span>Activities & Events</span>
+                  </div>
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-purple-500 bg-white/80 px-1.5 py-0.5 rounded-md border border-purple-200/60">View</span>
+                </button>
+              </div>
+            )}
             {isFaculty && editingFacultyPhoto ? (
               <div className="rounded-2xl border border-slate-200 bg-white p-3">
                 <LivePhotoCapture

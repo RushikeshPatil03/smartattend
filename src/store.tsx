@@ -87,13 +87,23 @@ interface AppContextValue {
   ) => Promise<any>;
 
   createSession: (payload: {
-    facultyId: string;
-    subjectId: string;
-    departmentId: string;
+    facultyId?: string;
+    subjectId?: string;
+    departmentId?: string;
     location: any;
-    year: number;
-    semester: number;
-    section: string;
+    year?: number;
+    semester?: number;
+    section?: string;
+    category?: string;
+    activityId?: string;
+    batchId?: string | null;
+    batchIds?: string[];
+    years?: number[];
+    semesters?: number[];
+    activityName?: string;
+    batchName?: string | null;
+    activity?: any;
+    batch?: any;
   }) => Promise<any>;
   stopSession: (sessionId: string) => Promise<any>;
   cancelSession: (sessionId: string) => Promise<any>;
@@ -592,6 +602,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       secretKey: res.secretKey,
       totalStudents,
       totalStrength: totalStudents,
+      category: s.category || payload.category,
+      activityId: s.activity_id || payload.activityId,
+      batchId: s.batch_id || payload.batchId,
+      activity: s.activity || payload.activity,
+      batch: s.batch || payload.batch,
+      activityName: s.activityName || payload.activityName,
+      batchName: s.batchName || payload.batchName,
+      years: s.years || payload.years,
+      semesters: s.semesters || payload.semesters,
     };
 
     createSessionLocal(newSession);

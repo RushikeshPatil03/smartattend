@@ -154,6 +154,131 @@ const FRONT_CAMERA_FALLBACK_CONSTRAINTS: MediaStreamConstraints = {
   video: { facingMode: "user" as const },
 };
 
+let touchPrewarmedStream: MediaStream | null = null;
+let touchPrewarmPromise: Promise<MediaStream | null> | null = null;
+let touchPrewarmExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Releases any touch-prewarmed stream held in memory.
+ * Call this when a touch gesture is aborted, cancelled, or the modal closes.
+ */
+export function releasePrewarmedFrontStream(): void {
+  if (touchPrewarmExpiryTimer != null) {
+    clearTimeout(touchPrewarmExpiryTimer);
+    touchPrewarmExpiryTimer = null;
+  }
+  if (touchPrewarmedStream) {
+    touchPrewarmedStream.getTracks().forEach((track) => {
+      try {
+        track.stop();
+      } catch {
+        // ignore
+      }
+    });
+    touchPrewarmedStream = null;
+  }
+  touchPrewarmPromise = null;
+}
+
+/**
+ * Triggered on pointer down / touch start on the "Mark Attendance" button.
+ * Powers on camera hardware the millisecond the finger touches the screen (50-100ms before click),
+ * so the camera feed is ready the instant the finger lifts.
+ *
+ * Resilient for iOS Safari and Samsung / Android:
+ * - Checks if stream is already live to avoid duplicate acquisition
+ * - Has 6s auto-release timer to turn off camera LED if the student cancels or scrolls away
+ * - Catches all hardware errors silently without throwing
+ */
+export async function touchDownPrewarmFrontCamera(): Promise<MediaStream | null> {
+  if (typeof window === "undefined" || !navigator?.mediaDevices?.getUserMedia) {
+    return null;
+  }
+
+  // 1. If already active and live, reuse it
+  if (
+    touchPrewarmedStream &&
+    touchPrewarmedStream.active &&
+    touchPrewarmedStream.getTracks().some((t) => t.readyState === "live")
+  ) {
+    return touchPrewarmedStream;
+  }
+
+  // 2. If a request is already in-flight, return the existing promise
+  if (touchPrewarmPromise) {
+    return touchPrewarmPromise;
+  }
+
+  // Clear any existing timer
+  if (touchPrewarmExpiryTimer != null) {
+    clearTimeout(touchPrewarmExpiryTimer);
+    touchPrewarmExpiryTimer = null;
+  }
+
+  touchPrewarmPromise = (async () => {
+    try {
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(FRONT_CAMERA_CONSTRAINTS);
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia(FRONT_CAMERA_FALLBACK_CONSTRAINTS);
+      }
+
+      touchPrewarmedStream = stream;
+
+      // 6-second safety timeout: If student touches down but never opens capture modal,
+      // release the hardware camera so device indicator turns off and other apps aren't blocked.
+      touchPrewarmExpiryTimer = setTimeout(() => {
+        releasePrewarmedFrontStream();
+      }, 6000);
+
+      return stream;
+    } catch {
+      touchPrewarmedStream = null;
+      return null;
+    } finally {
+      touchPrewarmPromise = null;
+    }
+  })();
+
+  return touchPrewarmPromise;
+}
+
+/**
+ * Consumes the touch-down prewarmed camera stream for immediate display.
+ * Cancels the expiry timer and transfers ownership to the active capture component.
+ */
+export async function consumePrewarmedFrontStream(): Promise<MediaStream | null> {
+  if (touchPrewarmExpiryTimer != null) {
+    clearTimeout(touchPrewarmExpiryTimer);
+    touchPrewarmExpiryTimer = null;
+  }
+
+  if (
+    touchPrewarmedStream &&
+    touchPrewarmedStream.active &&
+    touchPrewarmedStream.getTracks().some((t) => t.readyState === "live")
+  ) {
+    const stream = touchPrewarmedStream;
+    touchPrewarmedStream = null;
+    return stream;
+  }
+
+  if (touchPrewarmPromise) {
+    try {
+      const stream = await touchPrewarmPromise;
+      touchPrewarmedStream = null;
+      if (stream && stream.active && stream.getTracks().some((t) => t.readyState === "live")) {
+        return stream;
+      }
+    } catch {
+      touchPrewarmedStream = null;
+    }
+  }
+
+  return null;
+}
+
 /**
  * Preloads face verification neural network models and compiles WebGL shaders.
  * Does NOT acquire an exclusive hardware camera stream in the background to prevent
@@ -435,7 +560,7 @@ const LivePhotoCapture: React.FC<{
       }
 
       // 1. Check if an active usable stream is already open to prevent camera tearing
-      let stream: MediaStream;
+      let stream: MediaStream | null = null;
       if (
         streamRef.current &&
         streamRef.current.active &&
@@ -443,42 +568,44 @@ const LivePhotoCapture: React.FC<{
       ) {
         stream = streamRef.current;
       } else {
-        // Clean up previous stream and release video source
-        if (streamRef.current) {
-          streamRef.current.getTracks().forEach((track) => {
-            try {
-              track.stop();
-            } catch {
-              // Ignore track stop errors on older WebViews
-            }
-          });
-          streamRef.current = null;
-        }
-        if (videoRef.current) {
-          try {
-            videoRef.current.pause();
-          } catch {
-            // ignore
+        // 2. Consume touch-down pre-warmed stream if available (powers on during physical tap)
+        stream = await consumePrewarmedFrontStream();
+
+        if (!stream) {
+          // Clean up previous stream and release video source
+          if (streamRef.current) {
+            streamRef.current.getTracks().forEach((track) => {
+              try {
+                track.stop();
+              } catch {
+                // Ignore track stop errors on older WebViews
+              }
+            });
+            streamRef.current = null;
           }
-          videoRef.current.srcObject = null;
-        }
+          if (videoRef.current) {
+            try {
+              videoRef.current.pause();
+            } catch {
+              // ignore
+            }
+            videoRef.current.srcObject = null;
+          }
 
-        if (
-          orientation.supported &&
-          orientation.permissionRequired &&
-          !orientation.permissionGranted
-        ) {
-          void requestOrientationPermission();
-        }
+          if (
+            orientation.supported &&
+            orientation.permissionRequired &&
+            !orientation.permissionGranted
+          ) {
+            void requestOrientationPermission();
+          }
 
-        // 80ms OS HAL buffer to avoid NotReadableError collision
-        await new Promise((res) => setTimeout(res, 80));
-
-        // Request front camera with fallback
-        try {
-          stream = await navigator.mediaDevices.getUserMedia(FRONT_CAMERA_CONSTRAINTS);
-        } catch {
-          stream = await navigator.mediaDevices.getUserMedia(FRONT_CAMERA_FALLBACK_CONSTRAINTS);
+          // Zero-delay direct HAL acquisition (no artificial 80ms sleep)
+          try {
+            stream = await navigator.mediaDevices.getUserMedia(FRONT_CAMERA_CONSTRAINTS);
+          } catch {
+            stream = await navigator.mediaDevices.getUserMedia(FRONT_CAMERA_FALLBACK_CONSTRAINTS);
+          }
         }
       }
 

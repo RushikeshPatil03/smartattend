@@ -10,7 +10,9 @@ export interface RotatingQrPayload {
   index: number;
 }
 
-export const TOTP_BLOCK_DURATION_MS = 2000;
+export const TOTP_BLOCK_DURATION_MS = Number(
+  import.meta.env.VITE_TOTP_BLOCK_DURATION_MS || 1000
+);
 
 function hashToSixDigitToken(value: string): string {
   let hash = 2166136261;
@@ -147,7 +149,7 @@ export function startQrPolling(
   intervalMs: number = TOTP_BLOCK_DURATION_MS
 ): () => void {
   let cancelled = false;
-  let timerId: number | null = null;
+  let timerId: any = null;
   const blockDuration = Math.max(500, Number(intervalMs) || TOTP_BLOCK_DURATION_MS);
 
   // Track the current emitted block index
@@ -166,20 +168,29 @@ export function startQrPolling(
   // Emit 1st token immediately
   emitForIndex(lastEmittedIndex);
 
-  // Synchronize smoothly with wall-clock block transitions every 250ms check
-  timerId = window.setInterval(() => {
+  // Self-correcting drift-free scheduler synchronized with wall-clock time slices
+  const scheduleNext = () => {
     if (cancelled) return;
-    const currentIndex = getCurrentBlockIndex();
+    const now = Date.now();
+    const currentIndex = Math.floor(now / blockDuration);
     if (currentIndex !== lastEmittedIndex) {
       lastEmittedIndex = currentIndex;
       emitForIndex(currentIndex);
     }
-  }, Math.min(250, Math.floor(blockDuration / 4)));
+    const msIntoBlock = now % blockDuration;
+    const msUntilNext = blockDuration - msIntoBlock;
+    // Add 5ms margin so the timer lands cleanly inside the next block
+    timerId = window.setTimeout(scheduleNext, Math.max(10, msUntilNext + 5));
+  };
+
+  const msIntoBlock = Date.now() % blockDuration;
+  const msUntilNext = blockDuration - msIntoBlock;
+  timerId = window.setTimeout(scheduleNext, Math.max(10, msUntilNext + 5));
 
   return () => {
     cancelled = true;
     if (timerId !== null) {
-      window.clearInterval(timerId);
+      window.clearTimeout(timerId);
       timerId = null;
     }
   };

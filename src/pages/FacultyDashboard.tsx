@@ -12,6 +12,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   X,
+  Award,
 } from "lucide-react";
 import apiClient from "../services/apiClient";
 import CollegeHeader from "../components/CollegeHeader";
@@ -32,10 +33,11 @@ import AttendanceRosterTable from "./faculty/AttendanceRosterTable";
 import DeviceRequestsView from "./faculty/DeviceRequestsView";
 import FacultyAnalyticsModal from "./faculty/FacultyAnalyticsModal";
 import ManageSubjectsView from "./faculty/ManageSubjectsView";
+import { ActivitiesTab, ActivitiesView, ActivityItem } from "./faculty/ActivitiesTab";
 
 const QR_REFRESH_MS = Math.max(
-  2000,
-  Number(import.meta.env.VITE_QR_REFRESH_MS || 2000)
+  1000,
+  Number(import.meta.env.VITE_QR_REFRESH_MS || 1000)
 );
 const DEFAULT_SESSION_RADIUS_METERS = Number(
   import.meta.env.VITE_SESSION_RADIUS_METERS || 50
@@ -147,12 +149,24 @@ const FacultyDashboard: React.FC = () => {
   const [manualEnrollment, setManualEnrollment] = useState("");
 
   // Sheet / Manage Attendance States
-  const [sheetFilters, setSheetFilters] = useState({
+  const [sheetFilters, setSheetFilters] = useState<{
+    departmentId: string;
+    year: string;
+    semester: string;
+    section: string;
+    subjectId: string;
+    category?: "ACADEMICS" | "ACTIVITIES";
+    activityId?: string;
+    batchId?: string;
+  }>({
     departmentId: "",
     year: "",
     semester: "",
     section: "",
     subjectId: "",
+    category: "ACADEMICS",
+    activityId: "",
+    batchId: "",
   });
   const [sheetColumns, setSheetColumns] = useState<string[]>([]);
   const [sheetRows, setSheetRows] = useState<
@@ -184,6 +198,34 @@ const FacultyDashboard: React.FC = () => {
   const [analyticsClassCodeFilter, setAnalyticsClassCodeFilter] = useState("");
   const [analyticsAttendanceFilter, setAnalyticsAttendanceFilter] = useState("all");
   const [analyticsSearch, setAnalyticsSearch] = useState("");
+
+  // Activities & Session Category State
+  const [attendanceCategory, setAttendanceCategory] = useState<"ACADEMICS" | "ACTIVITIES">("ACADEMICS");
+  const [activities, setActivities] = useState<any[]>([]);
+  const [selectedActivityId, setSelectedActivityId] = useState<string>("");
+  const [selectedBatchIds, setSelectedBatchIds] = useState<string[]>([]);
+  const [activitiesLoading, setActivitiesLoading] = useState(false);
+
+  const loadActivities = useCallback(async () => {
+    setActivitiesLoading(true);
+    try {
+      const res: any = await apiClient.get("/api/activities");
+      if (res?.ok && Array.isArray(res.activities)) {
+        setActivities(res.activities);
+        if (!selectedActivityId && res.activities.length > 0) {
+          setSelectedActivityId(res.activities[0].id);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to load activities in FacultyDashboard:", err);
+    } finally {
+      setActivitiesLoading(false);
+    }
+  }, [selectedActivityId]);
+
+  useEffect(() => {
+    loadActivities();
+  }, [loadActivities]);
 
   // Optimistic Attendance Rollback Toast Notification State
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -651,8 +693,130 @@ const FacultyDashboard: React.FC = () => {
     mobileLocatePollRef.current = window.setInterval(poll, 6000);
   }, [facultyId, stopMobileLocatePolling]);
 
-  // Launch Session Handler
+  // Start Activity Session Handler
+  const handleStartActivitySession = useCallback(
+    async (act: any, batch?: any, batchIds?: string[]) => {
+      setSessionError("");
+      if (activeSessionId) {
+        setActiveTab("TAKE_ATTENDANCE");
+        setSessionError("A session is already active.");
+        return;
+      }
+
+      let loc = locationState;
+      if (!loc && navigator.geolocation) {
+        try {
+          const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(resolve, reject, {
+              enableHighAccuracy: true,
+              timeout: 8000,
+            });
+          });
+          loc = {
+            lat: Number(pos.coords.latitude),
+            lng: Number(pos.coords.longitude),
+          };
+          setLocationState(loc);
+          setIsLocationConfirmed(true);
+        } catch {
+          // Ignore location fetch error, fallback check follows
+        }
+      }
+
+      if (!loc) {
+        alert("Please capture or confirm your device location before starting attendance.");
+        setActiveTab("TAKE_ATTENDANCE");
+        return;
+      }
+
+      setStartLoading(true);
+      const radiusMeters = Number(formRadius || DEFAULT_SESSION_RADIUS_METERS);
+
+      const targetBatchIds = Array.isArray(batchIds) && batchIds.length > 0
+        ? batchIds
+        : (batch?.id ? [String(batch.id)] : []);
+
+      let targetBatch = batch || null;
+      if (!targetBatch && targetBatchIds.length === 1 && Array.isArray(act.batches)) {
+        targetBatch = act.batches.find((b: any) => String(b.id) === String(targetBatchIds[0])) || null;
+      }
+
+      let batchNameLabel: string | null = null;
+      if (targetBatchIds.length === 0) {
+        batchNameLabel = "All Batches";
+      } else if (targetBatchIds.length === 1 && targetBatch) {
+        batchNameLabel = targetBatch.batch_name || `Batch ${targetBatch.batch_number}`;
+      } else if (targetBatchIds.length > 1) {
+        batchNameLabel = `${targetBatchIds.length} Batches`;
+      }
+
+      const actYears = Array.isArray(act.years) && act.years.length > 0
+        ? act.years
+        : (act.year ? [Number(act.year)] : (act.semester ? [Math.ceil(act.semester / 2)] : [1]));
+      const actSems = Array.isArray(act.semesters) && act.semesters.length > 0
+        ? act.semesters
+        : (act.semester ? [Number(act.semester)] : [1]);
+
+      const res: any = await createSession({
+        facultyId,
+        category: "ACTIVITY",
+        activityId: act.id,
+        batchId: targetBatchIds.length === 1 ? targetBatchIds[0] : null,
+        batchIds: targetBatchIds,
+        departmentId: act.department || formDepartment,
+        years: actYears,
+        semesters: actSems,
+        year: actYears[0] || 1,
+        semester: actSems[0] || 1,
+        section: String(act.section || "ALL").toUpperCase(),
+        activityName: act.name,
+        batchName: batchNameLabel,
+        activity: act,
+        batch: targetBatch,
+        location: {
+          lat: Number(loc.lat),
+          lng: Number(loc.lng),
+          radiusMeters,
+        },
+      });
+
+      if (res?.ok && res.session) {
+        const nextId = String(res.session.id || res.session._id);
+        const secretKey = res.secretKey || res.session?.secretKey;
+        const total = Number(res.totalStudents || res.session?.totalStudents || 0);
+        setActiveSessionSecretKey(secretKey || null);
+        setActiveSessionId(nextId);
+        if (total > 0) {
+          setTotalClassStrength(total);
+        }
+        setActiveTab("TAKE_ATTENDANCE");
+      } else {
+        alert(res?.error || "Failed to start activity session");
+      }
+      setStartLoading(false);
+    },
+    [
+      activeSessionId,
+      locationState,
+      formRadius,
+      facultyId,
+      formDepartment,
+      createSession,
+    ]
+  );
+
+  // Launch Session Handler (Academics or Activities)
   const start = useCallback(async () => {
+    if (attendanceCategory === "ACTIVITIES") {
+      const act = activities.find((a: any) => String(a.id) === String(selectedActivityId));
+      if (!act) {
+        setSessionError("Please choose an activity first.");
+        return;
+      }
+      await handleStartActivitySession(act, null, selectedBatchIds);
+      return;
+    }
+
     setSessionError("");
     if (activeSessionId) {
       setSessionError("A session is already active.");
@@ -722,6 +886,7 @@ const FacultyDashboard: React.FC = () => {
       year: Number(formYear),
       semester: Number(formSem),
       section: String(formSection).toUpperCase(),
+      batchIds: selectedBatchIds && selectedBatchIds.length > 0 ? selectedBatchIds : undefined,
       location: {
         lat: Number(locationState.lat),
         lng: Number(locationState.lng),
@@ -747,6 +912,11 @@ const FacultyDashboard: React.FC = () => {
     }
     setStartLoading(false);
   }, [
+    attendanceCategory,
+    activities,
+    selectedActivityId,
+    selectedBatchIds,
+    handleStartActivitySession,
     activeSessionId,
     formSubject,
     formDepartment,
@@ -1383,10 +1553,20 @@ const FacultyDashboard: React.FC = () => {
   }, [deviceRejectNote, loadDeviceRequests]);
 
   // Manage Attendance Sheet Methods
-  const loadSheet = useCallback(async (force = false) => {
-    if (!sheetFilters.subjectId) return;
+  const loadSheet = useCallback(async (force = false, overrideFilters?: any) => {
+    const activeFilters = overrideFilters || sheetFilters;
+    const isActivity = activeFilters.category === "ACTIVITIES" || Boolean(activeFilters.activityId);
 
-    const filterKey = `${sheetFilters.subjectId}_${sheetFilters.departmentId || ""}_${sheetFilters.year || ""}_${sheetFilters.semester || ""}_${sheetFilters.section || ""}`;
+    if (isActivity) {
+      if (!activeFilters.activityId) return;
+    } else {
+      if (!activeFilters.subjectId) return;
+    }
+
+    const filterKey = isActivity
+      ? `activity_${activeFilters.activityId}_${activeFilters.batchId || "all"}`
+      : `${activeFilters.subjectId}_${activeFilters.departmentId || ""}_${activeFilters.year || ""}_${activeFilters.semester || ""}_${activeFilters.section || ""}_${activeFilters.batchId || "all"}`;
+
     if (force) {
       sheetMatrixCacheRef.current.delete(filterKey);
     }
@@ -1400,13 +1580,38 @@ const FacultyDashboard: React.FC = () => {
 
     setSheetLoading(true);
     try {
-      const res: any = await apiClient.fetchAttendance({
-        subjectId: sheetFilters.subjectId,
-        departmentId: sheetFilters.departmentId || undefined,
-        year: sheetFilters.year || undefined,
-        semester: sheetFilters.semester || undefined,
-        section: sheetFilters.section || undefined,
-      });
+      let res: any;
+      const activeBatchId =
+        activeFilters.batchId &&
+        activeFilters.batchId !== "all" &&
+        activeFilters.batchId !== "ALL"
+          ? String(activeFilters.batchId)
+          : undefined;
+
+      const reqFilters = isActivity
+        ? {
+            activityId: activeFilters.activityId,
+            batchId: activeBatchId,
+          }
+        : {
+            subjectId: activeFilters.subjectId,
+            departmentId: activeFilters.departmentId || undefined,
+            year: activeFilters.year || undefined,
+            semester: activeFilters.semester || undefined,
+            section: activeFilters.section || undefined,
+            batchId: activeBatchId,
+          };
+
+      try {
+        res = await apiClient.getSessionRosterHistory(reqFilters);
+      } catch (err) {
+        console.warn("getSessionRosterHistory failed, falling back to fetchAttendance:", err);
+      }
+
+      if (!res?.ok) {
+        res = await apiClient.fetchAttendance(reqFilters);
+      }
+
       if (!res?.ok) {
         setSheetLoading(false);
         return alert(res?.error || "Failed to load sheet");
@@ -1415,56 +1620,180 @@ const FacultyDashboard: React.FC = () => {
       // Compute matrix asynchronously in an idle frame to avoid blocking the main UI thread
       const { columns, rows } = await new Promise<{ columns: string[]; rows: any[] }>((resolve) => {
         const compute = () => {
-          // Map all conducted sessions into columns:
-          const sessionList = Array.isArray(res.sessions) ? res.sessions : [];
-          const cols = sessionList.map((sess: any) => {
-            const dateObj = new Date(sess.start_time || sess.startTime || sess.created_at || Date.now());
-            const dateLabel = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, "0")}-${String(dateObj.getDate()).padStart(2, "0")} ${String(dateObj.getHours()).padStart(2, "0")}:${String(dateObj.getMinutes()).padStart(2, "0")}`;
-            const facName = sess.fac?.name || sess.faculty?.name || "";
-            const label = facName ? `${dateLabel} (${facName})` : dateLabel;
-            return `${sess.id || sess._id}::${label}`;
+          let sessionList = Array.isArray(res.sessions) ? res.sessions : [];
+          const batchesList = Array.isArray(res.batches) ? res.batches : [];
+          const batchMap = new Map<string, any>(batchesList.map((b: any) => [String(b.id), b]));
+
+          // Map student USN -> Set of batch IDs they belong to
+          const studentBatches = new Map<string, Set<string>>();
+          batchesList.forEach((b: any) => {
+            const bId = String(b.id);
+            if (Array.isArray(b.student_enrollments)) {
+              b.student_enrollments.forEach((u: any) => {
+                const usn = String(u || "").trim().toUpperCase();
+                if (!studentBatches.has(usn)) studentBatches.set(usn, new Set());
+                studentBatches.get(usn)!.add(bId);
+              });
+            }
           });
 
           // Map all enrolled students into rows:
+          const rawAttendanceList = Array.isArray(res.attendances)
+            ? res.attendances
+            : (Array.isArray(res.attendance) ? res.attendance : []);
+
           let studentList = Array.isArray(res.students) ? res.students : [];
-          if (studentList.length === 0 && Array.isArray(res.attendance)) {
-            const stuMap = new Map<string, { name: string; enrollmentNo: string }>();
-            res.attendance.forEach((att: any) => {
-              const eno = String(att.student?.enrollmentNo || att.student?.enrollment_no || "").trim().toUpperCase();
+          if (studentList.length === 0 && rawAttendanceList.length > 0) {
+            const stuMap = new Map<string, { name: string; enrollmentNo: string; batchId?: string; batchName?: string }>();
+            rawAttendanceList.forEach((att: any) => {
+              const eno = String(att.student?.enrollmentNo || att.student?.enrollment_no || att.enrollment_no || "").trim().toUpperCase();
               if (eno && !stuMap.has(eno)) {
-                stuMap.set(eno, { name: att.student?.name || "Student", enrollmentNo: eno });
+                stuMap.set(eno, { name: att.student?.name || att.student_name || "Student", enrollmentNo: eno });
               }
             });
             studentList = Array.from(stuMap.values());
           }
 
-          const presentSet = new Set<string>(); // Stores "enrollmentNo|sessionId"
-          (res.attendance || []).forEach((att: any) => {
-            const eno = String(att.student?.enrollmentNo || att.student?.enrollment_no || "").trim().toUpperCase();
+          // 1. If viewing a specific batch:
+          // Strict roster isolation: display ONLY enrolled batch students
+          // Session continuity: display full-class sessions + this batch's sessions
+          if (activeBatchId) {
+            const targetBatch = batchesList.find((b: any) => String(b.id) === activeBatchId);
+            const targetUsns = new Set<string>();
+            if (targetBatch && Array.isArray(targetBatch.student_enrollments)) {
+              targetBatch.student_enrollments.forEach((u: any) => {
+                const clean = String(u || "").trim().toUpperCase();
+                if (clean) targetUsns.add(clean);
+              });
+            }
+
+            studentList = studentList.filter((s: any) => {
+              const eno = String(s.enrollmentNo || s.enrollment_no || "").trim().toUpperCase();
+              return (
+                targetUsns.has(eno) ||
+                (s.batchId && String(s.batchId) === activeBatchId) ||
+                Boolean(studentBatches.get(eno)?.has(activeBatchId))
+              );
+            });
+
+            sessionList = sessionList.filter((s: any) => {
+              const isFullClass = !s.batch_id && (!s.batch_ids || s.batch_ids.length === 0);
+              const isThisBatch =
+                String(s.batch_id) === activeBatchId ||
+                (Array.isArray(s.batch_ids) && s.batch_ids.some((id: any) => String(id) === activeBatchId));
+              return isFullClass || isThisBatch;
+            });
+          }
+
+          // 2. If batches removed / single default batch:
+          // "date will be assigned based on majority records"
+          const attCountBySession = new Map<string, number>();
+          rawAttendanceList.forEach((att: any) => {
             const sid = String(att.session?._id || att.session || att.sessionId || "").trim();
-            if (eno && sid && String(att.status).toLowerCase() === "present") {
-              presentSet.add(`${eno}|${sid}`);
+            if (sid && String(att.status).toLowerCase() === "present") {
+              attCountBySession.set(sid, (attCountBySession.get(sid) || 0) + 1);
             }
           });
 
+          const aliasMap = new Map<string, string>();
+          if (!activeBatchId && sessionList.length > 0) {
+            const byDate = new Map<string, any[]>();
+            sessionList.forEach((s: any) => {
+              const rawDate = s.start_time || s.startTime || s.created_at || "";
+              const dKey = rawDate ? String(rawDate).slice(0, 10) : `sess_${s.id || s._id}`;
+              if (!byDate.has(dKey)) byDate.set(dKey, []);
+              byDate.get(dKey)!.push(s);
+            });
+
+            const canonicalSessions: any[] = [];
+
+            byDate.forEach((dateSessions) => {
+              if (dateSessions.length === 1) {
+                canonicalSessions.push(dateSessions[0]);
+              } else {
+                let majority = dateSessions[0];
+                let maxCt = attCountBySession.get(String(majority.id || majority._id)) || 0;
+                for (let i = 1; i < dateSessions.length; i++) {
+                  const cur = dateSessions[i];
+                  const curCt = attCountBySession.get(String(cur.id || cur._id)) || 0;
+                  if (curCt > maxCt) {
+                    majority = cur;
+                    maxCt = curCt;
+                  }
+                }
+                canonicalSessions.push(majority);
+                const canonId = String(majority.id || majority._id);
+                dateSessions.forEach((ds: any) => {
+                  aliasMap.set(String(ds.id || ds._id), canonId);
+                });
+              }
+            });
+
+            sessionList = canonicalSessions;
+          }
+
+          const presentSet = new Set<string>(); // Stores "enrollmentNo|sessionId"
+          rawAttendanceList.forEach((att: any) => {
+            const eno = String(att.student?.enrollmentNo || att.student?.enrollment_no || att.enrollment_no || "").trim().toUpperCase();
+            const rawSid = String(att.session?._id || att.session || att.sessionId || "").trim();
+            const effectiveSid = aliasMap.get(rawSid) || rawSid;
+            if (eno && effectiveSid && String(att.status).toLowerCase() === "present") {
+              presentSet.add(`${eno}|${effectiveSid}`);
+            }
+          });
+
+          // Map all conducted sessions into columns with batch metadata
+          const cols = sessionList.map((sess: any) => {
+            const dateObj = new Date(sess.start_time || sess.startTime || sess.created_at || Date.now());
+            const dateLabel = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, "0")}-${String(dateObj.getDate()).padStart(2, "0")} ${String(dateObj.getHours()).padStart(2, "0")}:${String(dateObj.getMinutes()).padStart(2, "0")}`;
+            const facName = sess.fac?.name || sess.faculty?.name || "";
+            const label = facName ? `${dateLabel} (${facName})` : dateLabel;
+            const bId = sess.batch_id || "";
+            let bName = sess.batchName || "";
+            if (!bName && bId && batchMap.has(String(bId))) {
+              const mb = batchMap.get(String(bId));
+              bName = mb?.batch_name || `Batch ${mb?.batch_number}`;
+            }
+            return `${sess.id || sess._id}::${label}::${bId}::${bName}`;
+          });
+
           // Pre-cache split keys to avoid repeated string splitting inside inner cell loop
-          const parsedCols = cols.map((c) => ({
-            colStr: c,
-            colKey: c.split("::")[0],
-          }));
+          const parsedCols = cols.map((c) => {
+            const parts = c.split("::");
+            return {
+              colStr: c,
+              colKey: parts[0],
+              batchId: parts[2] || null,
+            };
+          });
 
           const matrixRows = studentList
             .map((stu: any) => {
               const eno = String(stu.enrollmentNo || stu.enrollment_no || "").trim().toUpperCase();
-              const attRec: Record<string, "P" | "A"> = {};
+              const stuBatchSet = studentBatches.get(eno) || new Set<string>();
+              if (stu.batchId) stuBatchSet.add(String(stu.batchId));
+
+              const attRec: Record<string, "P" | "A" | "—"> = {};
               for (let i = 0; i < parsedCols.length; i++) {
-                const { colStr, colKey } = parsedCols[i];
-                attRec[colStr] = presentSet.has(`${eno}|${colKey}`) ? "P" : "A";
+                const { colStr, colKey, batchId } = parsedCols[i];
+                const isEntireClass = !batchId || batchId === "null" || batchId === "undefined" || batchId === "";
+                const isStudentInBatch = Boolean(batchId && stuBatchSet.has(String(batchId)));
+                const isEligible = isEntireClass || isStudentInBatch || Boolean(activeBatchId);
+
+                if (!isEligible) {
+                  attRec[colStr] = "—";
+                } else if (presentSet.has(`${eno}|${colKey}`)) {
+                  attRec[colStr] = "P";
+                } else {
+                  attRec[colStr] = "A";
+                }
               }
               return {
                 name: stu.name,
                 enrollmentNo: eno,
                 attendance: attRec,
+                batchId: stu.batchId || null,
+                batchName: stu.batchName || null,
               };
             })
             .sort((a, b) => a.enrollmentNo.localeCompare(b.enrollmentNo));
@@ -1503,16 +1832,41 @@ const FacultyDashboard: React.FC = () => {
         : s;
     };
     const lines = [
-      ["Enrollment", "Name", ...sheetColumns.map((c) => c.split("::")[1] || c)].join(
-        ","
-      ),
-      ...sheetRows.map((r) =>
-        [
+      [
+        "Enrollment",
+        "Name",
+        "Quorum %",
+        "Attended",
+        "Eligible Sessions",
+        ...sheetColumns.map((c) => {
+          const parts = c.split("::");
+          const date = parts[1] || c;
+          const bName = parts[3] ? ` [${parts[3]}]` : (parts[2] ? ` [Batch]` : ` [Class]`);
+          return `${date}${bName}`;
+        }),
+      ].join(","),
+      ...sheetRows.map((r: any) => {
+        let attended = 0;
+        let totalEligible = 0;
+        sheetColumns.forEach((c) => {
+          const val = r.attendance[c];
+          if (val === "P") {
+            attended++;
+            totalEligible++;
+          } else if (val === "A") {
+            totalEligible++;
+          }
+        });
+        const pct = totalEligible > 0 ? `${Math.round((attended / totalEligible) * 100)}%` : "0%";
+        return [
           esc(r.enrollmentNo),
           esc(r.name),
+          esc(pct),
+          esc(attended),
+          esc(totalEligible),
           ...sheetColumns.map((c) => esc(r.attendance[c] || "A")),
-        ].join(",")
-      ),
+        ].join(",");
+      }),
     ];
     const blob = new Blob([lines.join("\n")], {
       type: "text/csv;charset=utf-8;",
@@ -1578,6 +1932,12 @@ const FacultyDashboard: React.FC = () => {
       id: "MANAGE_SUBJECTS" as Tab,
       label: "Manage Subjects",
       icon: BookOpen,
+      badge: null,
+    },
+    {
+      id: "ACTIVITIES" as Tab,
+      label: "Activities",
+      icon: Award,
       badge: null,
     },
   ];
@@ -1666,7 +2026,7 @@ const FacultyDashboard: React.FC = () => {
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
                 </span>
                 <span className="truncate max-w-[200px]">
-                  Live: {selectedSubject?.code || activeSession?.section || "Session"}
+                  Live: {activeSession?.category === "ACTIVITY" ? ((activeSession as any)?.batchName || (activeSession as any)?.activityName || (activeSession as any)?.activity?.name || "Activity") : (selectedSubject?.code || activeSession?.section || "Session")}
                 </span>
               </motion.div>
             )}
@@ -1706,6 +2066,13 @@ const FacultyDashboard: React.FC = () => {
                 />
               ) : (
                 <SessionSetupCard
+                  category={attendanceCategory}
+                  onCategoryChange={setAttendanceCategory}
+                  activities={activities}
+                  selectedActivityId={selectedActivityId}
+                  setSelectedActivityId={setSelectedActivityId}
+                  selectedBatchIds={selectedBatchIds}
+                  setSelectedBatchIds={setSelectedBatchIds}
                   departments={departments}
                   mySubjects={mySubjects}
                   filteredSubjects={filteredSubjects}
@@ -1761,6 +2128,7 @@ const FacultyDashboard: React.FC = () => {
 
           {activeTab === "MANAGE_ATTENDANCE" && (
             <AttendanceRosterTable
+              activities={activities}
               departments={departments}
               mySubjects={mySubjects}
               sheetFilters={sheetFilters}
@@ -1792,6 +2160,22 @@ const FacultyDashboard: React.FC = () => {
             <ManageSubjectsView
               mySubjects={mySubjects}
               onOpenSubjectAnalytics={openSubjectAnalytics}
+              departments={departments}
+            />
+          )}
+
+          {activeTab === "ACTIVITIES" && (
+            <ActivitiesView
+              onStartActivitySession={(act, batch) => {
+                setAttendanceCategory("ACTIVITIES");
+                setSelectedActivityId(act.id);
+                if (batch?.id) {
+                  setSelectedBatchIds([batch.id]);
+                } else {
+                  setSelectedBatchIds([]);
+                }
+                setActiveTab("TAKE_ATTENDANCE");
+              }}
             />
           )}
         </motion.div>

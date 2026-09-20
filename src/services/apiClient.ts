@@ -175,7 +175,9 @@ class ApiClient {
       if (!res.ok) {
         // Automatically retry once on cold-start HTTP errors (502 Bad Gateway / 503 Service Unavailable / 504 Gateway Timeout)
         if ((res.status === 502 || res.status === 503 || res.status === 504) && retryOnAuth) {
-          await new Promise((r) => setTimeout(r, 2000));
+          const isAttendance = url.includes("/attendance/");
+          const retryDelay = isAttendance ? 350 : 1500;
+          await new Promise((r) => setTimeout(r, retryDelay));
           return this.request(method, url, body, false, externalSignal);
         }
 
@@ -210,10 +212,12 @@ class ApiClient {
             : `Request timed out after ${timeoutSec}s. Please check your network connection.`,
         };
       }
-      // If network error (e.g. Failed to fetch while server is spinning up), retry once if allowed
+      // If network error (e.g. Failed to fetch while server is spinning up or mobile WiFi blip), retry once rapidly
       if (retryOnAuth && !externalSignal?.aborted && (err?.message?.includes("fetch") || err?.message?.includes("NetworkError"))) {
         try {
-          await new Promise((r) => setTimeout(r, 2000));
+          const isAttendance = url.includes("/attendance/");
+          const retryDelay = isAttendance ? 300 : 1500;
+          await new Promise((r) => setTimeout(r, retryDelay));
           return await this.request(method, url, body, false, externalSignal);
         } catch {
           // fall through to return error
@@ -483,9 +487,48 @@ class ApiClient {
   deleteAttendanceSession = (sessionId: string) =>
     this.delete(`/api/attendance/session/${encodeURIComponent(sessionId)}`);
 
+  getSubjectBatches = (subjectId: string, facultyId?: string) =>
+    this.get(`/api/subjects/${encodeURIComponent(subjectId)}/batches${facultyId ? `?facultyId=${encodeURIComponent(facultyId)}` : ""}`);
+
+  saveSubjectBatches = (subjectId: string, data: { batches: any[] }) =>
+    this.post(`/api/subjects/${encodeURIComponent(subjectId)}/batches`, data);
+
   fetchAttendance = (filters: any) => {
-    const qs = new URLSearchParams(filters || {}).toString();
-    return this.get(`/api/attendance?${qs}`);
+    const cleanFilters: Record<string, any> = {};
+    if (filters && typeof filters === "object") {
+      Object.entries(filters).forEach(([k, v]) => {
+        if (
+          v !== undefined &&
+          v !== null &&
+          v !== "" &&
+          v !== "undefined" &&
+          v !== "null"
+        ) {
+          cleanFilters[k] = v;
+        }
+      });
+    }
+    const qs = new URLSearchParams(cleanFilters).toString();
+    return this.get(`/api/attendance${qs ? `?${qs}` : ""}`);
+  };
+
+  getSessionRosterHistory = (params: any) => {
+    const cleanParams: Record<string, any> = {};
+    if (params && typeof params === "object") {
+      Object.entries(params).forEach(([k, v]) => {
+        if (
+          v !== undefined &&
+          v !== null &&
+          v !== "" &&
+          v !== "undefined" &&
+          v !== "null"
+        ) {
+          cleanParams[k] = v;
+        }
+      });
+    }
+    const qs = new URLSearchParams(cleanParams).toString();
+    return this.get(`/api/faculty/session-roster-history${qs ? `?${qs}` : ""}`);
   };
 
   // ------------------------------------
@@ -514,6 +557,31 @@ class ApiClient {
 
   getStudentAttendanceOverview = () =>
     this.get("/api/student/attendance/overview");
+
+  getActivities = () =>
+    this.get("/api/activities");
+
+  getStudentActivities = () =>
+    this.get("/api/activities/student");
+
+  getCohortStudents = (
+    params: {
+      years?: number[];
+      semesters?: number[];
+      section?: string;
+      departmentId?: string;
+      usns?: string[];
+    },
+    signal?: AbortSignal
+  ) => {
+    const query = new URLSearchParams();
+    if (params.years && params.years.length > 0) query.set("years", params.years.join(","));
+    if (params.semesters && params.semesters.length > 0) query.set("semesters", params.semesters.join(","));
+    if (params.section) query.set("section", params.section);
+    if (params.departmentId) query.set("departmentId", params.departmentId);
+    if (params.usns && params.usns.length > 0) query.set("usns", params.usns.join(","));
+    return this.get(`/api/activities/cohort-students?${query.toString()}`, signal);
+  };
 
   getPublicMobileLocationCapture = (token: string) =>
     this.get(`/api/public/mobile-location/${encodeURIComponent(token)}`);

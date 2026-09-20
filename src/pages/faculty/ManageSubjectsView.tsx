@@ -1,16 +1,21 @@
-import React from "react";
-import { BarChart3, BookOpen, Building2, Sparkles } from "lucide-react";
+import React, { useState } from "react";
+import { BarChart3, BookOpen, Building2, Sparkles, Layers } from "lucide-react";
 import { Button } from "../../components/Common";
+import SubjectBatchModal from "./SubjectBatchModal";
 
 interface ManageSubjectsViewProps {
   mySubjects: any[];
   onOpenSubjectAnalytics: (subject: any) => Promise<void>;
+  departments?: any[];
 }
 
 export const ManageSubjectsView: React.FC<ManageSubjectsViewProps> = React.memo(({
   mySubjects,
   onOpenSubjectAnalytics,
+  departments = [],
 }) => {
+  const [configuringSubject, setConfiguringSubject] = useState<any | null>(null);
+
   return (
     <div className="space-y-6">
       <div className="relative overflow-hidden rounded-3xl border border-slate-200/80 bg-white/80 p-6 sm:p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
@@ -25,7 +30,7 @@ export const ManageSubjectsView: React.FC<ManageSubjectsViewProps> = React.memo(
               Allotted Academic Subjects
             </h2>
             <p className="text-xs text-slate-500 font-normal mt-0.5">
-              Curriculum catalog allocated to your faculty credentials by college administration.
+              Curriculum catalog allocated to your faculty credentials by college administration. Configure lab batches or view performance analytics.
             </p>
           </div>
         </div>
@@ -62,14 +67,25 @@ export const ManageSubjectsView: React.FC<ManageSubjectsViewProps> = React.memo(
                         </h3>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => onOpenSubjectAnalytics(sub)}
-                        className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 hover:border-emerald-400 hover:bg-emerald-50/50 shadow-xs transition shrink-0 cursor-pointer"
-                      >
-                        <BarChart3 size={14} className="text-emerald-600" />
-                        <span>Insights</span>
-                      </button>
+                      <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+                        <button
+                          type="button"
+                          onClick={() => setConfiguringSubject(sub)}
+                          className="inline-flex items-center gap-1.5 rounded-2xl border border-emerald-300 bg-emerald-50/70 hover:bg-emerald-100/80 px-3 py-2 text-xs font-bold text-emerald-800 shadow-2xs transition cursor-pointer"
+                          title="Configure lab and practical batches for this subject"
+                        >
+                          <Layers size={13} className="text-emerald-600" />
+                          <span>+ Batches</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onOpenSubjectAnalytics(sub)}
+                          className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:border-emerald-400 hover:bg-emerald-50/50 shadow-xs transition cursor-pointer"
+                        >
+                          <BarChart3 size={13} className="text-emerald-600" />
+                          <span>Insights</span>
+                        </button>
+                      </div>
                     </div>
                   </div>
 
@@ -88,6 +104,16 @@ export const ManageSubjectsView: React.FC<ManageSubjectsViewProps> = React.memo(
           </div>
         )}
       </div>
+
+      {/* Subject Batch Studio Modal */}
+      {configuringSubject && (
+        <SubjectBatchModal
+          subject={configuringSubject}
+          isOpen={Boolean(configuringSubject)}
+          onClose={() => setConfiguringSubject(null)}
+          departments={departments}
+        />
+      )}
     </div>
   );
 });

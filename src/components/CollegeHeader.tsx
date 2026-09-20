@@ -15,6 +15,9 @@ export interface CollegeHeaderProps {
   isLive?: boolean;
   liveSessionActive?: boolean;
   children?: React.ReactNode;
+  onOpenAcademicAttendance?: () => void;
+  onOpenActivities?: () => void;
+  onOpenProfileModal?: (tab?: "academics" | "activities" | "profile") => void;
 }
 
 const CollegeHeader: React.FC<CollegeHeaderProps> = ({
@@ -31,6 +34,9 @@ const CollegeHeader: React.FC<CollegeHeaderProps> = ({
   isLive = false,
   liveSessionActive = false,
   children,
+  onOpenAcademicAttendance,
+  onOpenActivities,
+  onOpenProfileModal,
 }) => {
   const displayCollege =
     String(collegeName || "Smart Attendance System").trim() ||
@@ -159,6 +165,9 @@ const CollegeHeader: React.FC<CollegeHeaderProps> = ({
                   : profileMenuPhotoUrl ?? profilePhotoUrl
               }
               variant={focusCollegeBrand ? "avatar" : "default"}
+              onOpenAcademicAttendance={onOpenAcademicAttendance}
+              onOpenActivities={onOpenActivities}
+              onOpenProfileModal={onOpenProfileModal}
             />
           </div>
         </div>

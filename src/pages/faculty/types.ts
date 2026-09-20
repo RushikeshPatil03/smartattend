@@ -2,7 +2,8 @@ export type Tab =
   | "TAKE_ATTENDANCE"
   | "MANAGE_ATTENDANCE"
   | "DEVICE_REQUESTS"
-  | "MANAGE_SUBJECTS";
+  | "MANAGE_SUBJECTS"
+  | "ACTIVITIES";
 
 export type RecentClassPreset = {
   key: string;

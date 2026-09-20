@@ -427,8 +427,9 @@ router.get("/session/active", authMiddleware, async (req, res) => {
     const { data: session } = await supabase
       .from("sessions")
       .select(
-        "id, faculty, subject, department, year, semester, section, " +
-        "start_time, end_time, last_activity_at, is_active, location, created_at, updated_at"
+        "id, faculty, subject, category, activity_id, batch_id, batch_ids, department, year, semester, section, " +
+        "start_time, end_time, last_activity_at, is_active, location, created_at, updated_at, " +
+        "activity:activities(id, name, type, years, semesters, semester, section)"
       )
       .eq("faculty", facultyId)
       .eq("is_active", true)
@@ -446,22 +447,99 @@ router.get("/session/active", authMiddleware, async (req, res) => {
       return res.json({ ok: true, session: null });
     }
 
-    // Query exact total enrolled students for this class
-    let countQuery = supabase
-      .from("students")
-      .select("id", { count: "exact", head: true })
-      .eq("year", Number(active.year))
-      .eq("semester", Number(active.semester));
+    // Query exact total enrolled students for this class or activity
+    let totalStudents = 0;
+    let resolvedBatchName = null;
+    const effectiveBatchIds = Array.isArray(active.batch_ids) && active.batch_ids.length > 0
+      ? active.batch_ids
+      : (active.batch_id ? [active.batch_id] : []);
 
-    if (active.department) {
-      countQuery = countQuery.eq("department", String(active.department));
+    if (active.category === "ACTIVITY" || active.activity_id) {
+      if (effectiveBatchIds.length > 0) {
+        const { data: bDataList } = await supabase
+          .from("activity_batches")
+          .select("batch_name, batch_number, student_enrollments")
+          .in("id", effectiveBatchIds);
+        const usns = new Set();
+        (bDataList || []).forEach((b) => {
+          if (b.batch_name && !resolvedBatchName) resolvedBatchName = b.batch_name;
+          if (Array.isArray(b.student_enrollments)) {
+            b.student_enrollments.forEach((u) => usns.add(String(u).trim().toUpperCase()));
+          }
+        });
+        totalStudents = usns.size;
+      } else {
+        const { data: bList } = await supabase
+          .from("activity_batches")
+          .select("batch_name, batch_number, student_enrollments")
+          .eq("activity_id", active.activity_id);
+        const usns = new Set();
+        (bList || []).forEach((b) => {
+          if (Array.isArray(b.student_enrollments)) {
+            b.student_enrollments.forEach((u) => usns.add(String(u).trim().toUpperCase()));
+          }
+        });
+        totalStudents = usns.size;
+      }
+
+      if (totalStudents === 0 && effectiveBatchIds.length === 0 && active.department) {
+        let q = supabase
+          .from("students")
+          .select("id", { count: "exact", head: true })
+          .eq("department", String(active.department));
+        const actYears = Array.isArray(active.activity?.years) && active.activity.years.length > 0
+          ? active.activity.years
+          : (active.year ? [Number(active.year)] : []);
+        if (actYears.length === 1) q = q.eq("year", actYears[0]);
+        else if (actYears.length > 1) q = q.in("year", actYears);
+
+        const actSems = Array.isArray(active.activity?.semesters) && active.activity.semesters.length > 0
+          ? active.activity.semesters
+          : (active.semester ? [Number(active.semester)] : []);
+        if (actSems.length === 1) q = q.eq("semester", actSems[0]);
+        else if (actSems.length > 1) q = q.in("semester", actSems);
+
+        if (active.section && String(active.section).toUpperCase() !== "ALL") {
+          q = q.eq("section", String(active.section).trim().toUpperCase());
+        }
+        const { count } = await q;
+        totalStudents = count || 0;
+      }
+    } else {
+      // Academic Session: Check if specific subject batches were selected
+      if (effectiveBatchIds.length > 0) {
+        const { data: bDataList } = await supabase
+          .from("subject_batches")
+          .select("batch_name, batch_number, student_enrollments")
+          .in("id", effectiveBatchIds);
+        const usns = new Set();
+        (bDataList || []).forEach((b) => {
+          if (b.batch_name && !resolvedBatchName) resolvedBatchName = b.batch_name;
+          if (Array.isArray(b.student_enrollments)) {
+            b.student_enrollments.forEach((u) => usns.add(String(u).trim().toUpperCase()));
+          }
+        });
+        totalStudents = usns.size;
+      }
+
+      if (totalStudents === 0 && effectiveBatchIds.length === 0) {
+        let countQuery = supabase
+          .from("students")
+          .select("id", { count: "exact", head: true })
+          .eq("year", Number(active.year))
+          .eq("semester", Number(active.semester));
+
+        if (active.department) {
+          countQuery = countQuery.eq("department", String(active.department));
+        }
+        const normalizedSection = String(active.section || "").trim().toUpperCase();
+        if (normalizedSection) {
+          countQuery = countQuery.eq("section", normalizedSection);
+        }
+        const { count: totalClassStudents } = await countQuery;
+        totalStudents = totalClassStudents || 0;
+      }
     }
-    const normalizedSection = String(active.section || "").trim().toUpperCase();
-    if (normalizedSection) {
-      countQuery = countQuery.eq("section", normalizedSection);
-    }
-    const { count: totalClassStudents } = await countQuery;
-    const totalStudents = totalClassStudents || 0;
 
     const secretKey = await getOrCreateSessionSecret(active.id);
 
@@ -475,6 +553,10 @@ router.get("/session/active", authMiddleware, async (req, res) => {
       secretKey,
       totalStudents,
       totalStrength: totalStudents,
+      years: active.activity?.years || (active.year ? [active.year] : []),
+      semesters: active.activity?.semesters || (active.semester ? [active.semester] : []),
+      activityName: active.activity?.name,
+      batchName: resolvedBatchName || active.batchName,
     };
 
     return res.json({
@@ -1297,17 +1379,23 @@ router.post("/session/start", authMiddleware, async (req, res) => {
       return res.status(403).json({ ok: false, error: "Forbidden" });
     }
 
-    const { subjectId, departmentId, location, year, semester, section } = req.body || {};
+    const {
+      category,
+      activityId,
+      batchId,
+      batchIds,
+      subjectId,
+      departmentId,
+      location,
+      year,
+      semester,
+      section,
+    } = req.body || {};
+
+    const isActivity = String(category || "").toUpperCase() === "ACTIVITY";
 
     const facultyId =
       req.userRole === "FACULTY" ? req.userId : String(req.body?.facultyId || req.userId);
-
-    if (!facultyId || !subjectId || !departmentId || !year || !semester || !section) {
-      return res.status(400).json({
-        ok: false,
-        error: "facultyId, subjectId, departmentId, year, semester, section required",
-      });
-    }
 
     if (location?.lat == null || location?.lng == null) {
       return res.status(400).json({ ok: false, error: "Session location required" });
@@ -1316,32 +1404,94 @@ router.post("/session/start", authMiddleware, async (req, res) => {
     const supabase = getSupabaseClient();
     if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
 
-    const { data: subject } = await supabase
-      .from("subjects")
-      .select("id, departments, allotted_faculties")
-      .eq("id", subjectId)
-      .single();
+    let resolvedDepartmentId = departmentId;
+    let resolvedYear = year;
+    let resolvedSemester = semester;
+    let resolvedSection = section;
 
-    if (!subject) {
-      return res.status(404).json({ ok: false, error: "Subject not found" });
+    let resolvedBatchIds = [];
+    if (Array.isArray(batchIds) && batchIds.length > 0) {
+      resolvedBatchIds = batchIds.map(String).filter((b) => b && b !== "all" && b !== "ALL");
+    } else if (batchId && batchId !== "all" && batchId !== "ALL") {
+      resolvedBatchIds = [String(batchId)];
     }
 
-    if (req.userRole === "FACULTY") {
-      const isAllotted = (subject.allotted_faculties || []).some((f) => String(f) === String(req.userId));
-      if (!isAllotted) {
-        return res.status(403).json({
+    let academicBatchName = req.body?.batchName || null;
+
+    if (isActivity) {
+      if (!activityId) {
+        return res.status(400).json({
           ok: false,
-          error: "Subject is not allotted to this faculty",
+          error: "activityId is required for activity sessions",
         });
       }
-    }
 
-    const deptAllowed = (subject.departments || []).some((d) => String(d) === String(departmentId));
-    if (!deptAllowed) {
-      return res.status(400).json({
-        ok: false,
-        error: "Selected department is not mapped to this subject",
-      });
+      const { data: activity, error: actErr } = await supabase
+        .from("activities")
+        .select("id, name, type, department, years, semesters, semester, section, faculty")
+        .eq("id", activityId)
+        .single();
+
+      if (actErr || !activity) {
+        return res.status(404).json({ ok: false, error: "Activity not found" });
+      }
+
+      if (req.userRole === "FACULTY" && String(activity.faculty) !== String(req.userId)) {
+        return res.status(403).json({
+          ok: false,
+          error: "Activity is not allotted to this faculty",
+        });
+      }
+
+      resolvedDepartmentId = departmentId || activity.department;
+      const actYears = Array.isArray(activity.years) && activity.years.length > 0
+        ? activity.years
+        : (activity.semester ? [Math.ceil(activity.semester / 2)] : (year ? [Number(year)] : [1]));
+      const actSems = Array.isArray(activity.semesters) && activity.semesters.length > 0
+        ? activity.semesters
+        : (activity.semester ? [Number(activity.semester)] : (semester ? [Number(semester)] : [1]));
+
+      const passedYears = Array.isArray(req.body.years) && req.body.years.length > 0 ? req.body.years.map(Number) : actYears;
+      const passedSems = Array.isArray(req.body.semesters) && req.body.semesters.length > 0 ? req.body.semesters.map(Number) : actSems;
+
+      resolvedYear = passedYears[0] || 1;
+      resolvedSemester = passedSems[0] || 1;
+      resolvedSection = section ? String(section).toUpperCase() : String(activity.section || "ALL").toUpperCase();
+    } else {
+      if (!facultyId || !subjectId || !departmentId || !year || !semester || !section) {
+        return res.status(400).json({
+          ok: false,
+          error: "facultyId, subjectId, departmentId, year, semester, section required",
+        });
+      }
+
+      const { data: subject } = await supabase
+        .from("subjects")
+        .select("id, departments, allotted_faculties")
+        .eq("id", subjectId)
+        .single();
+
+      if (!subject) {
+        return res.status(404).json({ ok: false, error: "Subject not found" });
+      }
+
+      if (req.userRole === "FACULTY") {
+        const isAllotted = (subject.allotted_faculties || []).some((f) => String(f) === String(req.userId));
+        if (!isAllotted) {
+          return res.status(403).json({
+            ok: false,
+            error: "Subject is not allotted to this faculty",
+          });
+        }
+      }
+
+      const deptAllowed = (subject.departments || []).some((d) => String(d) === String(departmentId));
+      if (!deptAllowed) {
+        return res.status(400).json({
+          ok: false,
+          error: "Selected department is not mapped to this subject",
+        });
+      }
     }
 
     // Check for existing active session
@@ -1368,23 +1518,29 @@ router.post("/session/start", authMiddleware, async (req, res) => {
       return res.status(400).json({ ok: false, error: "Allowed radius must be greater than 0" });
     }
 
+    const sessionInsertPayload = {
+      faculty: facultyId,
+      subject: isActivity ? null : subjectId,
+      category: isActivity ? "ACTIVITY" : "REGULAR",
+      activity_id: isActivity ? activityId : null,
+      batch_id: resolvedBatchIds.length > 0 ? resolvedBatchIds[0] : null,
+      batch_ids: resolvedBatchIds,
+      department: isActivity ? resolvedDepartmentId : departmentId,
+      year: isActivity ? Number(resolvedYear) : Number(year),
+      semester: isActivity ? Number(resolvedSemester) : Number(semester),
+      section: isActivity ? resolvedSection : String(section).toUpperCase(),
+      location: {
+        lat: Number(location.lat),
+        lng: Number(location.lng),
+        radiusMeters,
+      },
+      is_active: true,
+      last_activity_at: new Date().toISOString(),
+    };
+
     const { data: session, error: createError } = await supabase
       .from("sessions")
-      .insert({
-        faculty: facultyId,
-        subject: subjectId,
-        department: departmentId,
-        year: Number(year),
-        semester: Number(semester),
-        section: String(section).toUpperCase(),
-        location: {
-          lat: Number(location.lat),
-          lng: Number(location.lng),
-          radiusMeters,
-        },
-        is_active: true,
-        last_activity_at: new Date().toISOString(),
-      })
+      .insert(sessionInsertPayload)
       .select("*")
       .single();
 
@@ -1398,22 +1554,85 @@ router.post("/session/start", authMiddleware, async (req, res) => {
       throw createError || new Error("Failed to start session");
     }
 
-    // Query exact total enrolled students for this class
-    let countQuery = supabase
-      .from("students")
-      .select("id", { count: "exact", head: true })
-      .eq("year", Number(year))
-      .eq("semester", Number(semester));
+    // Query exact total enrolled students for this class or activity
+    let totalStudents = 0;
+    if (isActivity) {
+      if (resolvedBatchIds.length > 0) {
+        const { data: batchesData } = await supabase
+          .from("activity_batches")
+          .select("student_enrollments")
+          .in("id", resolvedBatchIds);
+        const uniqueEnrollments = new Set();
+        (batchesData || []).forEach((b) => {
+          if (Array.isArray(b.student_enrollments)) {
+            b.student_enrollments.forEach((e) => uniqueEnrollments.add(String(e).trim().toUpperCase()));
+          }
+        });
+        totalStudents = uniqueEnrollments.size;
+      } else {
+        const { data: batchesData } = await supabase
+          .from("activity_batches")
+          .select("student_enrollments")
+          .eq("activity_id", activityId);
+        const uniqueEnrollments = new Set();
+        (batchesData || []).forEach((b) => {
+          if (Array.isArray(b.student_enrollments)) {
+            b.student_enrollments.forEach((e) => uniqueEnrollments.add(String(e).trim().toUpperCase()));
+          }
+        });
+        totalStudents = uniqueEnrollments.size;
+      }
 
-    if (departmentId) {
-      countQuery = countQuery.eq("department", String(departmentId));
+      if (totalStudents === 0 && resolvedDepartmentId) {
+        let countQuery = supabase
+          .from("students")
+          .select("id", { count: "exact", head: true })
+          .eq("department", String(resolvedDepartmentId));
+        if (resolvedSemester) countQuery = countQuery.eq("semester", Number(resolvedSemester));
+        if (resolvedSection && resolvedSection !== "ALL") {
+          countQuery = countQuery.eq("section", resolvedSection);
+        }
+        const { count } = await countQuery;
+        totalStudents = count || 0;
+      }
+    } else {
+      // Academic Session: Check if specific subject batches were selected
+      if (!academicBatchName && req.body?.batchName) {
+        academicBatchName = req.body.batchName;
+      }
+      if (resolvedBatchIds.length > 0) {
+        const { data: batchesData } = await supabase
+          .from("subject_batches")
+          .select("batch_name, batch_number, student_enrollments")
+          .in("id", resolvedBatchIds);
+        const uniqueEnrollments = new Set();
+        (batchesData || []).forEach((b) => {
+          if (b.batch_name && !academicBatchName) academicBatchName = b.batch_name;
+          if (Array.isArray(b.student_enrollments)) {
+            b.student_enrollments.forEach((e) => uniqueEnrollments.add(String(e).trim().toUpperCase()));
+          }
+        });
+        totalStudents = uniqueEnrollments.size;
+      }
+
+      if (totalStudents === 0 && resolvedBatchIds.length === 0) {
+        let countQuery = supabase
+          .from("students")
+          .select("id", { count: "exact", head: true })
+          .eq("year", Number(year))
+          .eq("semester", Number(semester));
+
+        if (departmentId) {
+          countQuery = countQuery.eq("department", String(departmentId));
+        }
+        const normalizedSection = String(section || "").trim().toUpperCase();
+        if (normalizedSection) {
+          countQuery = countQuery.eq("section", normalizedSection);
+        }
+        const { count: totalClassStudents } = await countQuery;
+        totalStudents = totalClassStudents || 0;
+      }
     }
-    const normalizedSection = String(section || "").trim().toUpperCase();
-    if (normalizedSection) {
-      countQuery = countQuery.eq("section", normalizedSection);
-    }
-    const { count: totalClassStudents } = await countQuery;
-    const totalStudents = totalClassStudents || 0;
 
     const formattedSession = {
       ...session,
@@ -1423,12 +1642,18 @@ router.post("/session/start", authMiddleware, async (req, res) => {
       lastActivityAt: session.last_activity_at,
       totalStudents,
       totalStrength: totalStudents,
+      years: isActivity ? (Array.isArray(req.body.years) ? req.body.years : [session.year]) : [session.year],
+      semesters: isActivity ? (Array.isArray(req.body.semesters) ? req.body.semesters : [session.semester]) : [session.semester],
+      activityName: req.body.activityName || null,
+      batchName: isActivity ? (req.body.batchName || null) : (academicBatchName || req.body.batchName || null),
+      batch_ids: resolvedBatchIds,
+      batchIds: resolvedBatchIds,
     };
 
     const qrToken = await generateQRToken({
       sessionId: session.id,
       facultyId,
-      subjectId,
+      subjectId: isActivity ? undefined : subjectId,
       location: session.location,
     });
     const secretKey = await getOrCreateSessionSecret(session.id);
@@ -1490,8 +1715,9 @@ router.get(["/sessions/:id/roster-snapshot", "/session/:id/roster-snapshot"], au
     const { data: session, error: sessErr } = await supabase
       .from("sessions")
       .select(`
-        id, faculty, subject, department, year, semester, section, is_active, start_time,
-        subj:subjects(id, name, code, created_by_admin, departments, allotted_faculties)
+        id, faculty, subject, category, activity_id, batch_id, batch_ids, department, year, semester, section, is_active, start_time,
+        subj:subjects(id, name, code, created_by_admin, departments, allotted_faculties),
+        activity:activities(id, name, type, years, semesters, semester, section, department)
       `)
       .eq("id", sessionId)
       .single();
@@ -1505,7 +1731,8 @@ router.get(["/sessions/:id/roster-snapshot", "/session/:id/roster-snapshot"], au
       const isSubjectAllotted =
         Array.isArray(session.subj?.allotted_faculties) &&
         session.subj.allotted_faculties.some((f) => String(f) === String(req.userId));
-      if (!isDirectFaculty && !isSubjectAllotted) {
+      const isActivityOwner = session.category === "ACTIVITY" && isDirectFaculty;
+      if (!isDirectFaculty && !isSubjectAllotted && !isActivityOwner) {
         return res.status(403).json({ ok: false, error: "Forbidden" });
       }
     }
@@ -1564,28 +1791,166 @@ router.get(["/sessions/:id/roster-snapshot", "/session/:id/roster-snapshot"], au
 
     const presentRecords = recordedRecords.filter((r) => r.status === "present");
 
-    // Query enrolled students for this class section
-    let studentQuery = supabase
-      .from("students")
-      .select("id, name, enrollment_no, email, profile_photo_url, department, year, semester, section")
-      .eq("year", Number(session.year))
-      .eq("semester", Number(session.semester));
+    // Query enrolled students for this class section OR activity batch
+    let allRegisteredStudents = [];
 
-    const normalizedSec = String(session.section || "").trim().toUpperCase();
-    if (normalizedSec) {
-      studentQuery = studentQuery.eq("section", normalizedSec);
-    }
-    if (session.department) {
-      studentQuery = studentQuery.eq("department", String(session.department));
-    }
+    if (session.category === "ACTIVITY" || session.activity_id) {
+      let batchEnrollments = [];
+      const effectiveBatchIds = Array.isArray(session.batch_ids) && session.batch_ids.length > 0
+        ? session.batch_ids
+        : (session.batch_id ? [session.batch_id] : []);
 
-    const { data: studentsList } = await studentQuery;
-    let allRegisteredStudents = studentsList || [];
+      if (effectiveBatchIds.length > 0) {
+        const { data: bDataList } = await supabase
+          .from("activity_batches")
+          .select("student_enrollments")
+          .in("id", effectiveBatchIds);
+        const uSet = new Set();
+        (bDataList || []).forEach((b) => {
+          if (Array.isArray(b.student_enrollments)) {
+            b.student_enrollments.forEach((u) => uSet.add(String(u).trim().toUpperCase()));
+          }
+        });
+        batchEnrollments = Array.from(uSet);
+      } else if (session.activity_id) {
+        const { data: batchesData } = await supabase
+          .from("activity_batches")
+          .select("student_enrollments")
+          .eq("activity_id", session.activity_id);
+        const uSet = new Set();
+        (batchesData || []).forEach((b) => {
+          if (Array.isArray(b.student_enrollments)) {
+            b.student_enrollments.forEach((u) => uSet.add(String(u).trim().toUpperCase()));
+          }
+        });
+        batchEnrollments = Array.from(uSet);
+      }
 
-    if (!session.department && Array.isArray(session.subj?.departments) && session.subj.departments.length > 0) {
-      allRegisteredStudents = allRegisteredStudents.filter((stu) =>
-        session.subj.departments.some((d) => String(d) === String(stu.department))
-      );
+      if (batchEnrollments.length > 0) {
+        const cleanUsns = batchEnrollments.map((u) => String(u).trim().toUpperCase()).filter(Boolean);
+        const { data: batchStudents } = await supabase
+          .from("students")
+          .select("id, name, enrollment_no, email, profile_photo_url, department, year, semester, section")
+          .in("enrollment_no", cleanUsns);
+
+        const stuMap = new Map((batchStudents || []).map((s) => [String(s.enrollment_no).trim().toUpperCase(), s]));
+        allRegisteredStudents = cleanUsns.map((usn) => {
+          const found = stuMap.get(usn);
+          if (found) return found;
+          return {
+            id: `ext_${usn}`,
+            name: usn,
+            enrollment_no: usn,
+            email: "",
+            profile_photo_url: "",
+            department: session.department,
+            year: session.year,
+            semester: session.semester,
+            section: session.section,
+          };
+        });
+      } else {
+        // Fallback: Query all students in activity cohort
+        let actQuery = supabase
+          .from("students")
+          .select("id, name, enrollment_no, email, profile_photo_url, department, year, semester, section")
+          .order("enrollment_no", { ascending: true });
+
+        const deptId = session.department || session.activity?.department;
+        if (deptId) {
+          actQuery = actQuery.eq("department", String(deptId));
+        }
+
+        const actYears = Array.isArray(session.activity?.years) && session.activity.years.length > 0
+          ? session.activity.years
+          : (session.year ? [Number(session.year)] : []);
+        if (actYears.length === 1) {
+          actQuery = actQuery.eq("year", actYears[0]);
+        } else if (actYears.length > 1) {
+          actQuery = actQuery.in("year", actYears);
+        }
+
+        const actSems = Array.isArray(session.activity?.semesters) && session.activity.semesters.length > 0
+          ? session.activity.semesters
+          : (session.semester ? [Number(session.semester)] : []);
+        if (actSems.length === 1) {
+          actQuery = actQuery.eq("semester", actSems[0]);
+        } else if (actSems.length > 1) {
+          actQuery = actQuery.in("semester", actSems);
+        }
+
+        const actSec = session.section || session.activity?.section;
+        if (actSec && String(actSec).toUpperCase() !== "ALL") {
+          actQuery = actQuery.eq("section", String(actSec).trim().toUpperCase());
+        }
+
+        const { data: actStudents } = await actQuery;
+        allRegisteredStudents = actStudents || [];
+      }
+    } else {
+      const effectiveBatchIds = Array.isArray(session.batch_ids) && session.batch_ids.length > 0
+        ? session.batch_ids
+        : (session.batch_id ? [session.batch_id] : []);
+
+      if (effectiveBatchIds.length > 0) {
+        const { data: bDataList } = await supabase
+          .from("subject_batches")
+          .select("student_enrollments")
+          .in("id", effectiveBatchIds);
+        const uSet = new Set();
+        (bDataList || []).forEach((b) => {
+          if (Array.isArray(b.student_enrollments)) {
+            b.student_enrollments.forEach((u) => uSet.add(String(u).trim().toUpperCase()));
+          }
+        });
+
+        if (uSet.size > 0) {
+          const cleanUsns = Array.from(uSet);
+          const { data: batchStudents } = await supabase
+            .from("students")
+            .select("id, name, enrollment_no, email, profile_photo_url, department, year, semester, section")
+            .in("enrollment_no", cleanUsns);
+
+          const stuMap = new Map((batchStudents || []).map((s) => [String(s.enrollment_no).trim().toUpperCase(), s]));
+          allRegisteredStudents = cleanUsns.map((usn) => {
+            const found = stuMap.get(usn);
+            if (found) return found;
+            return {
+              id: `ext_${usn}`,
+              name: usn,
+              enrollment_no: usn,
+              year: session.year,
+              semester: session.semester,
+              section: session.section,
+            };
+          });
+        }
+      }
+
+      if (allRegisteredStudents.length === 0 && effectiveBatchIds.length === 0) {
+        let studentQuery = supabase
+          .from("students")
+          .select("id, name, enrollment_no, email, profile_photo_url, department, year, semester, section")
+          .eq("year", Number(session.year))
+          .eq("semester", Number(session.semester));
+
+        const normalizedSec = String(session.section || "").trim().toUpperCase();
+        if (normalizedSec) {
+          studentQuery = studentQuery.eq("section", normalizedSec);
+        }
+        if (session.department) {
+          studentQuery = studentQuery.eq("department", String(session.department));
+        }
+
+        const { data: studentsList } = await studentQuery;
+        allRegisteredStudents = studentsList || [];
+
+        if (!session.department && Array.isArray(session.subj?.departments) && session.subj.departments.length > 0) {
+          allRegisteredStudents = allRegisteredStudents.filter((stu) =>
+            session.subj.departments.some((d) => String(d) === String(stu.department))
+          );
+        }
+      }
     }
 
     const derivedAbsentRecords = [];
@@ -1905,7 +2270,7 @@ router.get("/session/:id/qr", authMiddleware, async (req, res) => {
     const qrTiming = await generateQRTokenWithTiming({
       sessionId: session.id,
       facultyId: String(session.faculty),
-      subjectId: String(session.subject),
+      subjectId: session.subject ? String(session.subject) : undefined,
       location: session.location,
     });
     const secretKey = await getOrCreateSessionSecret(session.id);
@@ -1920,6 +2285,459 @@ router.get("/session/:id/qr", authMiddleware, async (req, res) => {
   } catch (err) {
     console.error("QR fetch error:", err);
     return res.status(500).json({ ok: false, error: "Server error" });
+  }
+});
+
+// ----------------------------------------------------
+// GET /api/faculty/session-roster-history
+// Bidirectional Batch-Merging & Splitting Ledger History
+// ----------------------------------------------------
+router.get("/session-roster-history", authMiddleware, async (req, res) => {
+  try {
+    const {
+      subjectId,
+      activityId,
+      departmentId,
+      year,
+      semester,
+      section,
+      batchId,
+    } = req.query;
+
+    const supabase = getSupabaseClient();
+    if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
+
+    const cleanId = (val) => {
+      if (val === undefined || val === null) return null;
+      const s = String(val).trim();
+      if (!s || s === "undefined" || s === "null" || s === "all" || s === "ALL") return null;
+      return s;
+    };
+    const isUuid = (val) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(val || "").trim());
+
+    const cleanSubjId = cleanId(subjectId);
+    const cleanActId = cleanId(activityId);
+    const cleanDeptId = cleanId(departmentId);
+    const cleanBatchId = cleanId(batchId);
+
+    const isActivity = Boolean(cleanActId);
+
+    let batches = [];
+    let sessions = [];
+    let students = [];
+    let attendances = [];
+
+    if (isActivity) {
+      if (!isUuid(cleanActId)) {
+        return res.status(400).json({ ok: false, error: "Invalid activity ID" });
+      }
+
+      const { data: activity, error: actErr } = await supabase
+        .from("activities")
+        .select("id, name, type, department, years, semesters, semester, section, faculty")
+        .eq("id", cleanActId)
+        .single();
+
+      if (actErr || !activity) {
+        return res.status(404).json({ ok: false, error: "Activity not found" });
+      }
+
+      if (req.userRole === "FACULTY" && String(activity.faculty) !== String(req.userId)) {
+        return res.status(403).json({ ok: false, error: "Forbidden: Not your activity" });
+      }
+
+      // Fetch Batches
+      const { data: actBatches } = await supabase
+        .from("activity_batches")
+        .select("id, batch_number, batch_name, student_enrollments")
+        .eq("activity_id", cleanActId)
+        .order("batch_number", { ascending: true });
+      batches = actBatches || [];
+
+      // Fetch Sessions
+      let sessQuery = supabase
+        .from("sessions")
+        .select("id, year, semester, section, department, start_time, end_time, is_active, faculty, batch_id, batch_ids, fac:faculties(id, name)")
+        .eq("activity_id", cleanActId)
+        .order("start_time", { ascending: true });
+
+      const { data: rawSessions } = await sessQuery;
+      const batchMap = new Map(batches.map((b) => [String(b.id), b]));
+
+      sessions = (rawSessions || []).map((s) => {
+        let bName = null;
+        if (s.batch_id && batchMap.has(String(s.batch_id))) {
+          const b = batchMap.get(String(s.batch_id));
+          bName = b.batch_name || `Batch ${b.batch_number}`;
+        }
+        return {
+          id: s.id,
+          _id: s.id,
+          startTime: s.start_time,
+          endTime: s.end_time,
+          start_time: s.start_time,
+          end_time: s.end_time,
+          isActive: s.is_active,
+          batch_id: s.batch_id || null,
+          batch_ids: s.batch_ids || [],
+          batchName: bName,
+          faculty: s.faculty,
+          fac: s.fac,
+        };
+      });
+
+      // Fetch Students
+      let enrolledUsns = new Set();
+      batches.forEach((b) => {
+        if (Array.isArray(b.student_enrollments)) {
+          b.student_enrollments.forEach((u) => {
+            const clean = String(u || "").trim().toUpperCase();
+            if (clean) enrolledUsns.add(clean);
+          });
+        }
+      });
+
+      if (enrolledUsns.size > 0) {
+        const usnArray = Array.from(enrolledUsns);
+        const { data: matchedStudents } = await supabase
+          .from("students")
+          .select("id, name, enrollment_no, email, profile_photo_url, department, year, semester, section")
+          .in("enrollment_no", usnArray);
+
+        const matchedMap = new Map();
+        (matchedStudents || []).forEach((s) => {
+          matchedMap.set(String(s.enrollment_no || "").trim().toUpperCase(), s);
+        });
+
+        students = usnArray.map((usn) => {
+          const s = matchedMap.get(usn);
+          const assignedBatch = batches.find(
+            (b) => Array.isArray(b.student_enrollments) && b.student_enrollments.some((e) => String(e).trim().toUpperCase() === usn)
+          );
+          return {
+            id: s?.id || `ext_${usn}`,
+            _id: s?.id || `ext_${usn}`,
+            name: s?.name || "Student",
+            enrollmentNo: usn,
+            enrollment_no: usn,
+            email: s?.email || "",
+            profilePhotoUrl: s?.profile_photo_url || "",
+            batchId: assignedBatch?.id || null,
+            batchName: assignedBatch?.batch_name || (assignedBatch?.batch_number ? `Batch ${assignedBatch.batch_number}` : null),
+          };
+        });
+      } else {
+        let stuQuery = supabase
+          .from("students")
+          .select("id, name, enrollment_no, email, profile_photo_url, department, year, semester, section")
+          .order("enrollment_no", { ascending: true });
+
+        if (activity.department) stuQuery = stuQuery.eq("department", activity.department);
+        if (activity.section && String(activity.section).toUpperCase() !== "ALL") {
+          stuQuery = stuQuery.eq("section", String(activity.section).trim().toUpperCase());
+        }
+        const { data: deptStudents } = await stuQuery;
+        students = (deptStudents || []).map((s) => ({
+          id: s.id,
+          _id: s.id,
+          name: s.name || "Student",
+          enrollmentNo: s.enrollment_no || "",
+          enrollment_no: s.enrollment_no || "",
+          email: s.email || "",
+          profilePhotoUrl: s.profile_photo_url || "",
+          batchId: null,
+          batchName: null,
+        }));
+      }
+    } else {
+      if (!cleanSubjId || !isUuid(cleanSubjId)) {
+        return res.status(400).json({ ok: false, error: "Valid subjectId required" });
+      }
+
+      const { data: subjectCheck, error: subjectCheckErr } = await supabase
+        .from("subjects")
+        .select("id, name, code, created_by_admin, departments, allotted_faculties, year, semester")
+        .eq("id", cleanSubjId)
+        .single();
+
+      if (subjectCheckErr || !subjectCheck) {
+        return res.status(404).json({ ok: false, error: "Subject not found" });
+      }
+
+      if (req.userRole === "FACULTY") {
+        const isAllotted =
+          Array.isArray(subjectCheck?.allotted_faculties) &&
+          subjectCheck.allotted_faculties.some((f) => String(f) === String(req.userId));
+        if (!isAllotted) {
+          return res.status(403).json({ ok: false, error: "Forbidden: Not allotted to subject" });
+        }
+      }
+
+      // Fetch Batches
+      const { data: subBatches } = await supabase
+        .from("subject_batches")
+        .select("id, batch_number, batch_name, student_enrollments")
+        .eq("subject_id", cleanSubjId)
+        .order("batch_number", { ascending: true });
+      batches = subBatches || [];
+
+      // Fetch Sessions
+      let sessQuery = supabase
+        .from("sessions")
+        .select("id, year, semester, section, department, start_time, end_time, is_active, faculty, batch_id, batch_ids, fac:faculties(id, name)")
+        .eq("subject", cleanSubjId)
+        .eq("is_active", false)
+        .order("start_time", { ascending: true });
+
+      if (cleanDeptId && isUuid(cleanDeptId)) {
+        sessQuery = sessQuery.eq("department", cleanDeptId);
+      }
+      if (year && !isNaN(Number(year))) {
+        sessQuery = sessQuery.eq("year", Number(year));
+      }
+      if (semester && !isNaN(Number(semester))) {
+        sessQuery = sessQuery.eq("semester", Number(semester));
+      }
+      if (section && String(section).trim() && String(section).toUpperCase() !== "ALL") {
+        sessQuery = sessQuery.eq("section", String(section).trim().toUpperCase());
+      }
+
+      const { data: rawSessions } = await sessQuery;
+      const batchMap = new Map(batches.map((b) => [String(b.id), b]));
+
+      sessions = (rawSessions || []).map((s) => {
+        let bName = null;
+        if (s.batch_id && batchMap.has(String(s.batch_id))) {
+          const b = batchMap.get(String(s.batch_id));
+          bName = b.batch_name || `Batch ${b.batch_number}`;
+        }
+        return {
+          id: s.id,
+          _id: s.id,
+          startTime: s.start_time,
+          endTime: s.end_time,
+          start_time: s.start_time,
+          end_time: s.end_time,
+          isActive: s.is_active,
+          batch_id: s.batch_id || null,
+          batch_ids: s.batch_ids || [],
+          batchName: bName,
+          faculty: s.faculty,
+          fac: s.fac,
+        };
+      });
+
+      // Fetch Students
+      let stuQuery = supabase
+        .from("students")
+        .select("id, name, enrollment_no, email, profile_photo_url, department, year, semester, section")
+        .order("enrollment_no", { ascending: true });
+
+      const adminId = subjectCheck?.created_by_admin || req.user?.created_by_admin;
+      if (adminId) stuQuery = stuQuery.eq("created_by_admin", String(adminId));
+
+      if (cleanDeptId && isUuid(cleanDeptId)) {
+        stuQuery = stuQuery.eq("department", cleanDeptId);
+      } else if (Array.isArray(subjectCheck?.departments) && subjectCheck.departments.length > 0) {
+        stuQuery = stuQuery.in("department", subjectCheck.departments);
+      }
+
+      const targetYear = year && !isNaN(Number(year)) ? Number(year) : (subjectCheck?.year ? Number(subjectCheck.year) : null);
+      if (targetYear) stuQuery = stuQuery.eq("year", targetYear);
+
+      const targetSem = semester && !isNaN(Number(semester)) ? Number(semester) : (subjectCheck?.semester ? Number(subjectCheck.semester) : null);
+      if (targetSem) stuQuery = stuQuery.eq("semester", targetSem);
+
+      if (section && String(section).trim() && String(section).toUpperCase() !== "ALL") {
+        stuQuery = stuQuery.eq("section", String(section).trim().toUpperCase());
+      }
+
+      const { data: rawStudents } = await stuQuery;
+      students = (rawStudents || []).map((s) => {
+        const sUsn = String(s.enrollment_no || "").trim().toUpperCase();
+        const assignedBatch = batches.find(
+          (b) => Array.isArray(b.student_enrollments) && b.student_enrollments.some((e) => String(e).trim().toUpperCase() === sUsn)
+        );
+        return {
+          id: s.id,
+          _id: s.id,
+          name: s.name || "Student",
+          enrollmentNo: s.enrollment_no || "",
+          enrollment_no: s.enrollment_no || "",
+          email: s.email || "",
+          profilePhotoUrl: s.profile_photo_url || "",
+          department: s.department,
+          year: s.year,
+          semester: s.semester,
+          section: s.section,
+          batchId: assignedBatch?.id || null,
+          batchName: assignedBatch?.batch_name || (assignedBatch?.batch_number ? `Batch ${assignedBatch.batch_number}` : null),
+        };
+      });
+    }
+
+    // Fetch recorded attendances for all returned sessions
+    const sessionIds = sessions.map((s) => String(s.id));
+    if (sessionIds.length > 0) {
+      const { data: rawAttendances } = await supabase
+        .from("attendances")
+        .select("id, session, student, faculty, enrollment_no, student_name, student_email, timestamp, status, batch_id")
+        .in("session", sessionIds)
+        .order("timestamp", { ascending: false });
+
+      attendances = (rawAttendances || []).map((att) => ({
+        id: att.id,
+        _id: att.id,
+        attendanceId: att.id,
+        sessionId: att.session,
+        session: att.session,
+        student: att.student,
+        enrollmentNo: att.enrollment_no || "",
+        enrollment_no: att.enrollment_no || "",
+        status: att.status || "present",
+        timestamp: att.timestamp,
+        batch_id: att.batch_id || null,
+      }));
+    }
+
+    if (cleanBatchId) {
+      const targetBatch = batches.find((b) => String(b.id) === String(cleanBatchId));
+      if (targetBatch && Array.isArray(targetBatch.student_enrollments)) {
+        const batchUsnSet = new Set(
+          targetBatch.student_enrollments.map((u) => String(u || "").trim().toUpperCase())
+        );
+
+        // 1. Filter students to ONLY enrolled students of this batch
+        students = students.filter((s) => {
+          const usn = String(s.enrollmentNo || s.enrollment_no || "").trim().toUpperCase();
+          return batchUsnSet.has(usn);
+        });
+
+        // 2. Filter sessions to full-strength class sessions (batch_id is null / empty)
+        // PLUS sessions specifically conducted for this batch (batch_id === cleanBatchId or batch_ids contains cleanBatchId)
+        sessions = sessions.filter((s) => {
+          const isFullClass = !s.batch_id && (!s.batch_ids || s.batch_ids.length === 0);
+          const isThisBatch =
+            String(s.batch_id) === String(cleanBatchId) ||
+            (Array.isArray(s.batch_ids) && s.batch_ids.map(String).includes(String(cleanBatchId)));
+          return isFullClass || isThisBatch;
+        });
+
+        // 3. Filter attendances to only records for this batch's students and sessions
+        const allowedSessionIds = new Set(sessions.map((s) => String(s.id)));
+        attendances = attendances.filter((att) => {
+          const usn = String(att.enrollmentNo || att.enrollment_no || "").trim().toUpperCase();
+          const sid = String(att.sessionId || att.session || "");
+          return batchUsnSet.has(usn) && allowedSessionIds.has(sid);
+        });
+      }
+    } else {
+      // BATCHES REMOVED or NO BATCH SELECTED (Single default batch view for entire class):
+      // "date will be assigned based on majority records"
+      // If multiple sessions occurred on the same calendar date (e.g. historical batch sessions),
+      // collapse them into 1 canonical session having the majority attendance records on that date.
+      if (sessions.length > 0) {
+        // 1. Count attendance per session
+        const sessionAttCount = new Map();
+        attendances.forEach((att) => {
+          const sid = String(att.sessionId || att.session || "");
+          sessionAttCount.set(sid, (sessionAttCount.get(sid) || 0) + 1);
+        });
+
+        // 2. Group sessions by calendar date (YYYY-MM-DD in UTC / local)
+        const sessionsByDate = new Map();
+        sessions.forEach((s) => {
+          const rawDate = s.start_time || s.startTime || "";
+          const dateKey = rawDate ? String(rawDate).slice(0, 10) : `session_${s.id}`;
+          if (!sessionsByDate.has(dateKey)) sessionsByDate.set(dateKey, []);
+          sessionsByDate.get(dateKey).push(s);
+        });
+
+        const canonicalSessions = [];
+        const sessionAliasMap = new Map(); // otherSessionId -> canonicalSessionId
+
+        sessionsByDate.forEach((dateSessions) => {
+          if (dateSessions.length === 1) {
+            canonicalSessions.push(dateSessions[0]);
+          } else {
+            // Find majority session (session with the maximum attendances on this date)
+            let majoritySession = dateSessions[0];
+            let maxCount = sessionAttCount.get(String(majoritySession.id)) || 0;
+
+            for (let i = 1; i < dateSessions.length; i++) {
+              const cur = dateSessions[i];
+              const curCount = sessionAttCount.get(String(cur.id)) || 0;
+              if (curCount > maxCount) {
+                majoritySession = cur;
+                maxCount = curCount;
+              }
+            }
+
+            canonicalSessions.push({
+              ...majoritySession,
+              batch_id: null,
+              batch_ids: [],
+              batchName: null,
+            });
+
+            const canonId = String(majoritySession.id);
+            dateSessions.forEach((s) => {
+              sessionAliasMap.set(String(s.id), canonId);
+            });
+          }
+        });
+
+        sessions = canonicalSessions.sort((a, b) => {
+          const tA = new Date(a.start_time || a.startTime || 0).getTime();
+          const tB = new Date(b.start_time || b.startTime || 0).getTime();
+          return tA - tB;
+        });
+
+        // 3. Remap and deduplicate attendances onto canonical session columns
+        const seenStudentSession = new Set();
+        const mergedAttendances = [];
+
+        attendances.forEach((att) => {
+          const originalSid = String(att.sessionId || att.session || "");
+          const canonicalSid = sessionAliasMap.get(originalSid) || originalSid;
+          const usn = String(att.enrollmentNo || att.enrollment_no || att.student || "").trim().toUpperCase();
+          const dedupeKey = `${usn}|${canonicalSid}`;
+
+          if (!seenStudentSession.has(dedupeKey)) {
+            seenStudentSession.add(dedupeKey);
+            mergedAttendances.push({
+              ...att,
+              session: canonicalSid,
+              sessionId: canonicalSid,
+            });
+          } else if (String(att.status).toLowerCase() === "present") {
+            const existing = mergedAttendances.find(
+              (m) =>
+                String(m.enrollmentNo || m.enrollment_no || "").trim().toUpperCase() === usn &&
+                String(m.sessionId || m.session) === canonicalSid
+            );
+            if (existing) {
+              existing.status = "present";
+            }
+          }
+        });
+
+        attendances = mergedAttendances;
+      }
+    }
+
+    return res.json({
+      ok: true,
+      sessions,
+      batches,
+      students,
+      attendance: attendances,
+      attendances,
+      count: attendances.length,
+    });
+  } catch (err) {
+    console.error("Session roster history error:", err);
+    return res.status(500).json({ ok: false, error: err.message || "Failed to fetch session roster history" });
   }
 });
 

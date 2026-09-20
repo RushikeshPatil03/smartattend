@@ -7,6 +7,7 @@ const { getStudentTodayAttendance } = require("../services/studentTodayAttendanc
 const { normalizeFingerprint } = require("../services/deviceFingerprint");
 const auth = require("../middleware/auth");
 const env = require("../config/env");
+const { getCachedBatches } = require("./attendance");
 
 function validateRegistrationToken(reg, expectedType) {
   if (!reg) return "Invalid registration token";
@@ -306,6 +307,10 @@ router.get("/session/active", auth(["STUDENT"]), async (req, res) => {
         location,
         start_time,
         is_active,
+        batch_id,
+        batch_ids,
+        category,
+        activity_id,
         subj:subjects(id, name, code),
         fac:faculties(id, name)
       `)
@@ -316,11 +321,40 @@ router.get("/session/active", auth(["STUDENT"]), async (req, res) => {
 
     if (error) throw error;
 
-    const matchingSession = (rawSessions || []).find((s) => {
+    const studentUsn = String(student.enrollment_no || "").trim().toUpperCase();
+
+    let matchingSession = null;
+    for (const s of (rawSessions || [])) {
       const sSec = String(s.section || "").trim().toUpperCase();
-      if (sSec && normalizedSection && sSec !== normalizedSection) return false;
-      return true;
-    });
+      if (sSec && normalizedSection && sSec !== normalizedSection && sSec !== "ALL") {
+        continue;
+      }
+
+      // Check batch eligibility if session is held for a specific batch
+      const sessionBatchIds = Array.isArray(s.batch_ids) && s.batch_ids.length > 0
+        ? s.batch_ids.map(String).filter((b) => b && b !== "all" && b !== "ALL")
+        : (s.batch_id && s.batch_id !== "all" && s.batch_id !== "ALL" ? [String(s.batch_id)] : []);
+
+      if (sessionBatchIds.length > 0) {
+        const isActivity = s.category === "ACTIVITY" || Boolean(s.activity_id);
+        const targetId = isActivity ? s.activity_id : s.subject;
+        const type = isActivity ? "act" : "sub";
+        if (targetId) {
+          const batches = await getCachedBatches(type, targetId, supabase);
+          const allowedBatches = (batches || []).filter((b) => sessionBatchIds.includes(String(b.id)));
+          const isInBatch = allowedBatches.some((b) =>
+            Array.isArray(b.student_enrollments) &&
+            b.student_enrollments.some((u) => String(u).trim().toUpperCase() === studentUsn)
+          );
+          if (!isInBatch) {
+            continue; // Not enrolled in this batch session
+          }
+        }
+      }
+
+      matchingSession = s;
+      break;
+    }
 
     if (!matchingSession) {
       return res.json({ ok: true, hasActiveSession: false, session: null });
@@ -440,9 +474,11 @@ const handleStudentAttendanceOverview = async (req, res) => {
       });
     }
 
+    const studentUsn = String(student.enrollment_no || "").trim().toUpperCase();
+
     const { data: rawSessions } = await supabase
       .from("sessions")
-      .select("id, subject, faculty, department, start_time, end_time, is_active")
+      .select("id, subject, faculty, department, start_time, end_time, is_active, batch_id, batch_ids")
       .in("subject", subjectIds)
       .eq("year", Number(student.year))
       .eq("semester", Number(student.semester))
@@ -469,13 +505,41 @@ const handleStudentAttendanceOverview = async (req, res) => {
 
     const presentBySession = new Map(attendanceRows.map((row) => [String(row.session), row]));
 
+    // High-performance batch roster retrieval with 60s in-memory caching & inflight deduplication
+    const batchPromises = subjectIds.map((sId) =>
+      getCachedBatches("sub", sId, supabase).catch(() => [])
+    );
+    const subjectBatchLists = await Promise.all(batchPromises);
+
+    const studentBatchesBySubject = new Map();
+    const studentBatchNamesBySubject = new Map();
+
+    subjects.forEach((subj, idx) => {
+      const bList = subjectBatchLists[idx] || [];
+      const enrolledSet = new Set();
+      const enrolledNames = [];
+      bList.forEach((b) => {
+        if (
+          Array.isArray(b.student_enrollments) &&
+          b.student_enrollments.some((u) => String(u).trim().toUpperCase() === studentUsn)
+        ) {
+          enrolledSet.add(String(b.id));
+          enrolledNames.push(b.batch_name || `Batch ${b.batch_number}`);
+        }
+      });
+      studentBatchesBySubject.set(String(subj.id), enrolledSet);
+      studentBatchNamesBySubject.set(String(subj.id), enrolledNames.join(", ") || null);
+    });
+
     const subjectMap = new Map();
     subjects.forEach((subject) => {
-      subjectMap.set(String(subject.id), {
+      const sId = String(subject.id);
+      subjectMap.set(sId, {
         subjectId: subject.id,
         _id: subject.id,
         subjectName: subject.name,
         subjectCode: subject.code,
+        batchName: studentBatchNamesBySubject.get(sId) || null,
         totalClassesConducted: 0,
         classesAttended: 0,
         classesMissed: 0,
@@ -483,14 +547,80 @@ const handleStudentAttendanceOverview = async (req, res) => {
       });
     });
 
+    // PASS 1: Index dates where student attended (Absolute Attendance Preservation)
+    const attendedDatesBySubject = new Map();
     sessions.forEach((session) => {
-      const entry = subjectMap.get(String(session.subject));
-      if (entry) {
+      if (presentBySession.has(String(session.id))) {
+        const sId = String(session.subject);
+        const rawDate = session.start_time || "";
+        const dateKey = rawDate ? String(rawDate).slice(0, 10) : "";
+        if (dateKey) {
+          if (!attendedDatesBySubject.has(sId)) attendedDatesBySubject.set(sId, new Set());
+          attendedDatesBySubject.get(sId).add(dateKey);
+        }
+      }
+    });
+
+    // PASS 2: Aggregate conducted & attended counts accurately
+    const unassignedBatchDatesSeen = new Set();
+
+    sessions.forEach((session) => {
+      const sId = String(session.subject);
+      const entry = subjectMap.get(sId);
+      if (!entry) return;
+
+      const isPresent = presentBySession.has(String(session.id));
+
+      // CASE A: ABSOLUTE ATTENDANCE PRESERVATION
+      // Any attendance the student earned is ALWAYS preserved as conducted + attended,
+      // even if batches were later modified, removed, or the student was reassigned.
+      if (isPresent) {
         entry.totalClassesConducted += 1;
-        if (presentBySession.has(String(session.id))) {
-          entry.classesAttended += 1;
-        } else {
+        entry.classesAttended += 1;
+        return;
+      }
+
+      // CASE B: UNATTENDED SESSIONS
+      const sessionBatchIds = Array.isArray(session.batch_ids) && session.batch_ids.length > 0
+        ? session.batch_ids.map(String).filter((b) => b && b !== "all" && b !== "ALL")
+        : (session.batch_id && session.batch_id !== "all" && session.batch_id !== "ALL" ? [String(session.batch_id)] : []);
+
+      const isGeneralSession = sessionBatchIds.length === 0;
+
+      if (isGeneralSession) {
+        // General whole-class session: student was expected to attend
+        entry.totalClassesConducted += 1;
+        entry.classesMissed += 1;
+        return;
+      }
+
+      // Batch-specific session:
+      const enrolledBatches = studentBatchesBySubject.get(sId) || new Set();
+
+      if (enrolledBatches.size > 0) {
+        // Student is enrolled in a batch for this subject:
+        const isStudentBatch = sessionBatchIds.some((bId) => enrolledBatches.has(bId));
+        if (isStudentBatch) {
+          // Assigned batch session missed
+          entry.totalClassesConducted += 1;
           entry.classesMissed += 1;
+        }
+        // If session was for a different batch, it is not counted against this student.
+      } else {
+        // Student has no assigned batch (e.g. batches removed or pending assignment):
+        const rawDate = session.start_time || "";
+        const dateKey = rawDate ? String(rawDate).slice(0, 10) : String(session.id);
+        const attendedOnDate = attendedDatesBySubject.get(sId)?.has(dateKey);
+
+        if (!attendedOnDate) {
+          // Collapse multiple batch sessions on the same date so unassigned students
+          // aren't penalized multiple times for concurrent batch slots
+          const dedupeKey = `${sId}_${dateKey}`;
+          if (!unassignedBatchDatesSeen.has(dedupeKey)) {
+            unassignedBatchDatesSeen.add(dedupeKey);
+            entry.totalClassesConducted += 1;
+            entry.classesMissed += 1;
+          }
         }
       }
     });

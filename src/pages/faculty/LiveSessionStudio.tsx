@@ -29,6 +29,7 @@ import {
   serializeQrPayload,
   generateRotatingQrPayload,
   RotatingQrPayload,
+  TOTP_BLOCK_DURATION_MS,
 } from "../../utils/totpQrGenerator";
 import apiClient from "../../services/apiClient";
 
@@ -51,6 +52,15 @@ export interface ActiveSession {
   totalStudents?: number;
   totalStrength?: number;
   classCode?: string;
+  category?: string;
+  activityId?: string;
+  batchId?: string | null;
+  years?: number[];
+  semesters?: number[];
+  activity?: any;
+  batch?: any;
+  activityName?: string;
+  batchName?: string | null;
 }
 
 export interface SessionSubject {
@@ -389,42 +399,73 @@ export const AttendanceDonutChart: React.FC<AttendanceDonutChartProps> = React.m
 AttendanceDonutChart.displayName = "AttendanceDonutChart";
 
 interface LinearTotpCountdownBarProps {
-  progressPercent: number;
-  timeLeft: number;
+  progressPercent?: number;
+  timeLeft?: number;
   isProjector?: boolean;
+  currentToken?: string;
 }
 
 export const LinearTotpCountdownBar: React.FC<LinearTotpCountdownBarProps> = React.memo(({
-  progressPercent,
-  timeLeft,
   isProjector = false,
 }) => {
-  const validPct = Math.min(100, Math.max(0, progressPercent));
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const timeTextRef = useRef<HTMLSpanElement | null>(null);
+
+  useEffect(() => {
+    let animId: number;
+    const duration = TOTP_BLOCK_DURATION_MS || 1000;
+    const tick = () => {
+      const ms = Date.now() % duration;
+      const progress = ms / duration;
+      const remainingSec = Math.ceil((duration - ms) / 1000);
+
+      if (barRef.current) {
+        barRef.current.style.transform = `scaleX(${progress})`;
+      }
+      if (timeTextRef.current) {
+        const text = `${remainingSec}s`;
+        if (timeTextRef.current.textContent !== text) {
+          timeTextRef.current.textContent = text;
+        }
+      }
+
+      animId = requestAnimationFrame(tick);
+    };
+
+    animId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animId);
+  }, []);
+
+  const durationSec = Math.max(1, Math.round((TOTP_BLOCK_DURATION_MS || 1000) / 1000));
 
   return (
     <div className={`w-full ${isProjector ? "max-w-[460px]" : "max-w-[330px]"}`}>
-      {/* Top Text Row (matches image: [dot] Rotating Token (2s) ... 2s) */}
+      {/* Top Text Row */}
       <div className={`flex items-center justify-between font-mono text-xs font-semibold tracking-tight ${
         isProjector ? "text-emerald-400" : "text-emerald-700"
       }`}>
         <div className="flex items-center gap-2">
           <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
           <span className={isProjector ? "text-emerald-300 font-bold" : "text-emerald-800 font-bold"}>
-            Rotating Token (2s)
+            Rotating Token ({durationSec}s)
           </span>
         </div>
-        <span className={isProjector ? "text-slate-300 font-mono text-xs font-semibold" : "text-slate-600 font-mono text-xs font-semibold"}>
-          {timeLeft}s
+        <span
+          ref={timeTextRef}
+          className={isProjector ? "text-slate-300 font-mono text-xs font-semibold" : "text-slate-600 font-mono text-xs font-semibold"}
+        >
+          {durationSec}s
         </span>
       </div>
 
-      {/* Modern Slim Line Progress Bar (exactly matching the user screenshot) */}
+      {/* Modern Slim Line Progress Bar (hardware-accelerated GPU scaleX) */}
       <div className={`mt-2 h-2.5 w-full overflow-hidden rounded-full ${
         isProjector ? "bg-slate-800 border border-slate-700/80" : "bg-slate-100 border border-slate-200/80"
       } shadow-inner`}>
         <div
-          className="h-full rounded-full bg-[#059669] transition-all duration-100 ease-linear shadow-[0_0_8px_rgba(5,150,105,0.4)]"
-          style={{ width: `${validPct}%` }}
+          ref={barRef}
+          className="h-full w-full rounded-full bg-[#059669] shadow-[0_0_8px_rgba(5,150,105,0.4)] origin-left will-change-transform"
+          style={{ transform: "scaleX(0)" }}
         />
       </div>
     </div>
@@ -511,6 +552,28 @@ export const RecentCheckInsTicker: React.FC<RecentCheckInsTickerProps> = React.m
 });
 RecentCheckInsTicker.displayName = "RecentCheckInsTicker";
 
+const MemoizedQrDisplay = React.memo<{
+  value: string;
+  size: number;
+  isProjector?: boolean;
+}>(({ value, size, isProjector }) => {
+  return (
+    <div
+      className={`rounded-2xl border-4 border-white bg-white p-4 shadow-2xl transition duration-200 ${
+        isProjector ? "ring-8 ring-emerald-500/20 shadow-[0_0_60px_rgba(16,185,129,0.35)]" : "shadow-[0_0_30px_rgba(0,0,0,0.3)]"
+      }`}
+    >
+      <QRCode
+        value={value}
+        size={size}
+        level="M"
+        className="h-auto max-w-full"
+      />
+    </div>
+  );
+});
+MemoizedQrDisplay.displayName = "MemoizedQrDisplay";
+
 const IsolatedRotatingQrEngine: React.FC<IsolatedRotatingQrEngineProps> = React.memo(({
   sessionId,
   sessionSecretKey,
@@ -521,8 +584,6 @@ const IsolatedRotatingQrEngine: React.FC<IsolatedRotatingQrEngineProps> = React.
   onSessionExpired,
 }) => {
   const [currentToken, setCurrentToken] = useState<string>("");
-  const [timeLeft, setTimeLeft] = useState<number>(2);
-  const [progressPercent, setProgressPercent] = useState<number>(0);
   const secretKeyRef = useRef<string | null>(sessionSecretKey || null);
   const prevTokenRef = useRef<string>("");
 
@@ -575,7 +636,7 @@ const IsolatedRotatingQrEngine: React.FC<IsolatedRotatingQrEngineProps> = React.
               }
             }
           },
-          2000
+          TOTP_BLOCK_DURATION_MS
         );
       } catch (err) {
         console.error("Isolated TOTP Engine init error:", err);
@@ -592,18 +653,6 @@ const IsolatedRotatingQrEngine: React.FC<IsolatedRotatingQrEngineProps> = React.
       }
     };
   }, [sessionId, sessionSecretKey, classCode, isActive]);
-
-  useEffect(() => {
-    if (!isActive) return;
-    const interval = setInterval(() => {
-      const msIntoCurrentBlock = Date.now() % 2000;
-      const remainingSec = Math.ceil((2000 - msIntoCurrentBlock) / 1000);
-      const pct = (msIntoCurrentBlock / 2000) * 100;
-      setTimeLeft(remainingSec);
-      setProgressPercent(pct);
-    }, 100);
-    return () => clearInterval(interval);
-  }, [isActive]);
 
   useEffect(() => {
     if (!isActive || !sessionId) return;
@@ -640,24 +689,16 @@ const IsolatedRotatingQrEngine: React.FC<IsolatedRotatingQrEngineProps> = React.
 
   return (
     <div className="flex flex-col items-center">
-      <div
-        className={`rounded-2xl border-4 border-white bg-white p-4 shadow-2xl transition duration-200 ${
-          isProjector ? "ring-8 ring-emerald-500/20 shadow-[0_0_60px_rgba(16,185,129,0.35)]" : "shadow-[0_0_30px_rgba(0,0,0,0.3)]"
-        }`}
-      >
-        <QRCode
-          value={currentToken}
-          size={size}
-          level="M"
-          className="h-auto max-w-full"
-        />
-      </div>
+      <MemoizedQrDisplay
+        value={currentToken}
+        size={size}
+        isProjector={isProjector}
+      />
 
       {/* Modern Clean Linear Countdown Bar (matches exact line type timer) */}
       <div className={`mt-5 w-full flex justify-center ${isProjector ? "max-w-[420px]" : "max-w-[330px]"}`}>
         <LinearTotpCountdownBar
-          progressPercent={progressPercent}
-          timeLeft={timeLeft}
+          currentToken={currentToken}
           isProjector={isProjector}
         />
       </div>
@@ -721,7 +762,50 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
   }, []);
 
   const sessionId = String(activeSession?.id || activeSession?._id || "");
-  const classCode = String(selectedSubject?.code || selectedSubject?.name || sessionId).slice(0, 12);
+  const isActivity =
+    activeSession?.category === "ACTIVITY" ||
+    Boolean(
+      activeSession?.activityId ||
+      (activeSession as any)?.activity_id ||
+      (activeSession as any)?.activity ||
+      (activeSession as any)?.activityName
+    );
+
+  const activityObj = (activeSession as any)?.activity;
+  const batchObj = (activeSession as any)?.batch;
+
+  const displayTitle = isActivity
+    ? (activityObj?.name || (activeSession as any)?.activityName || "Activity Attendance")
+    : (selectedSubject?.name || "Class Session");
+
+  const batchLabel = (activeSession as any)?.batchName || (activeSession as any)?.batch?.batch_name;
+
+  const displayCodeBadge = isActivity
+    ? (batchObj?.batch_name || (activeSession as any)?.batchName || activityObj?.type || "ACTIVITY")
+    : (batchLabel || selectedSubject?.code || "LIVE");
+
+  const displayYears = isActivity
+    ? (Array.isArray(activeSession?.years) && activeSession.years.length > 0
+        ? activeSession.years.join(", ")
+        : Array.isArray(activityObj?.years) && activityObj.years.length > 0
+        ? activityObj.years.join(", ")
+        : activeSession?.year || "-")
+    : (activeSession?.year || "-");
+
+  const displaySems = isActivity
+    ? (Array.isArray(activeSession?.semesters) && activeSession.semesters.length > 0
+        ? activeSession.semesters.join(", ")
+        : Array.isArray(activityObj?.semesters) && activityObj.semesters.length > 0
+        ? activityObj.semesters.join(", ")
+        : activeSession?.semester || "-")
+    : (activeSession?.semester || "-");
+
+  const displaySection = activeSession?.section || activityObj?.section || "ALL";
+  const displayDepartment = selectedDepartment?.name || activityObj?.dept?.name || "Department";
+
+  const displaySubtitle = `${displayDepartment} • Year ${displayYears} • Sem ${displaySems} • Sec ${displaySection}${batchLabel ? ` • ${batchLabel}` : ""}`;
+
+  const classCode = String(isActivity ? displayCodeBadge : (selectedSubject?.code || selectedSubject?.name || sessionId)).slice(0, 12);
   const effectiveTotalStudents = Number(
     totalClassStrength ||
     activeSession?.totalStudents ||
@@ -930,7 +1014,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
       presentCount: pCount,
       totalStudents: tStudents,
       durationMinutes,
-      subjectName: selectedSubject?.name || "Session",
+      subjectName: isActivity ? displayTitle : (selectedSubject?.name || "Session"),
     });
   };
 
@@ -1040,7 +1124,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
     setShowCancelConfirm(false);
 
     // Non-blocking concurrent background fetch for At-Risk (<75%) students in this subject
-    const subjectId = String(selectedSubject?.id || selectedSubject?._id || activeSession?.subject || "");
+    const subjectId = isActivity ? "" : String(selectedSubject?.id || selectedSubject?._id || activeSession?.subject || "");
     if (subjectId) {
       setAtRiskLoading(true);
       apiClient.getFacultySubjectAnalytics(subjectId, {
@@ -1328,14 +1412,14 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
               <div>
                 <div className="flex items-center gap-2.5">
                   <span className="text-xl font-black text-white tracking-tight">
-                    {selectedSubject?.name || "Class Session"}
+                    {displayTitle}
                   </span>
                   <span className="rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-0.5 text-xs font-mono font-bold text-emerald-300">
-                    {selectedSubject?.code || "LIVE"}
+                    {displayCodeBadge}
                   </span>
                 </div>
                 <p className="text-xs text-slate-400 font-medium mt-0.5">
-                  {selectedDepartment?.name || "Department"} • Section {activeSession?.section || "A"} • Started {formattedStartTime}
+                  {displaySubtitle} • Started {formattedStartTime}
                 </p>
               </div>
             </div>
@@ -1468,7 +1552,7 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                     Attendance Final Review & Audit
                   </h2>
                   <p className="text-xs text-slate-500 font-medium mt-0.5">
-                    {selectedSubject?.name || "Subject"} ({selectedSubject?.code || "Code"}) • Sec {activeSession?.section || "A"} • Year {activeSession?.year || "-"} Sem {activeSession?.semester || "-"}
+                    {displayTitle} ({displayCodeBadge}) • {displaySubtitle}
                   </p>
                 </div>
               </div>
@@ -1939,10 +2023,10 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                   </div>
 
                   <h2 className="mt-1.5 text-2xl font-black tracking-tight text-white sm:text-3xl">
-                    {selectedSubject?.name || "Live Session"}
+                    {displayTitle}
                   </h2>
                   <p className="text-xs text-slate-300 font-medium">
-                    {selectedDepartment?.name || "Department"} • Year {activeSession?.year || "-"} • Sem {activeSession?.semester || "-"} • Sec {activeSession?.section || "A"}
+                    {displaySubtitle}
                   </p>
                 </div>
               </div>

@@ -23,6 +23,8 @@ import {
   Check,
   Save,
   X,
+  Award,
+  BookOpen,
 } from "lucide-react";
 import { Badge, Button, Skeleton } from "../../components/Common";
 import apiClient from "../../services/apiClient";
@@ -42,13 +44,15 @@ export interface AssignedClassOption {
   label: string;
 }
 
-interface SheetRow {
+export interface SheetRow {
   name: string;
   enrollmentNo: string;
-  attendance: Record<string, "P" | "A">;
+  attendance: Record<string, "P" | "A" | "—">;
+  batchId?: string | null;
+  batchName?: string | null;
 }
 
-interface EnrichedSheetRow extends SheetRow {
+export interface EnrichedSheetRow extends SheetRow {
   attended: number;
   totalSessions: number;
   percent: number;
@@ -66,6 +70,9 @@ interface AttendanceRosterTableProps {
     semester: string;
     section: string;
     subjectId: string;
+    category?: "ACADEMICS" | "ACTIVITIES";
+    activityId?: string;
+    batchId?: string;
   };
   sheetColumns: string[];
   sheetRows: SheetRow[];
@@ -77,10 +84,14 @@ interface AttendanceRosterTableProps {
       semester: string;
       section: string;
       subjectId: string;
+      category?: "ACADEMICS" | "ACTIVITIES";
+      activityId?: string;
+      batchId?: string;
     }>
   >;
-  onLoadSheet: (force?: boolean) => Promise<void>;
+  onLoadSheet: (force?: boolean, overrideFilters?: any) => Promise<void>;
   onExportCsv: () => void;
+  activities?: any[];
 }
 
 const ROW_HEIGHT = 48; // Constant row height in px for 60fps windowing
@@ -101,7 +112,7 @@ function useVirtualScroll({
   containerRef: React.RefObject<HTMLDivElement | null>;
 }) {
   const [scrollTop, setScrollTop] = useState(0);
-  const [containerHeight, setContainerHeight] = useState(560);
+  const [containerHeight, setContainerHeight] = useState(532);
   const rafIdRef = useRef<number | null>(null);
 
   // ResizeObserver to dynamically adapt to parent container height
@@ -156,6 +167,18 @@ function useVirtualScroll({
   }, [containerRef]);
 
   const totalHeight = itemCount * itemHeight;
+
+  // When student records <= 10, display natural rows without windowing spacers
+  if (itemCount <= 10) {
+    return {
+      startIndex: 0,
+      endIndex: itemCount,
+      paddingTop: 0,
+      paddingBottom: 0,
+      totalHeight,
+    };
+  }
+
   const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan);
   const endIndex = Math.min(
     itemCount,
@@ -174,6 +197,10 @@ function useVirtualScroll({
   };
 }
 
+import useAttendanceLedger, { UseAttendanceLedgerParams } from "./useAttendanceLedger";
+export { useAttendanceLedger };
+export type { UseAttendanceLedgerParams };
+
 /**
  * Memoized single row component to prevent unnecessary re-renders of off-screen or unchanged rows
  */
@@ -186,10 +213,16 @@ const AttendanceTableRow = React.memo<{
 }>(({ row, sheetColumns, tableMode, stagedChanges, toggleCell }) => {
   // Row background + left accent border by risk tier
   const rowBg = row.isCritical
-    ? "bg-rose-50 border-l-4 border-rose-500"
+    ? "bg-rose-50"
     : row.isWarning
-    ? "bg-amber-50 border-l-4 border-amber-400"
+    ? "bg-amber-50"
     : "bg-white";
+
+  const rowAccentBorder = row.isCritical
+    ? "border-l-4 border-rose-500"
+    : row.isWarning
+    ? "border-l-4 border-amber-400"
+    : "border-l-4 border-transparent";
 
   const rowHover = row.isCritical
     ? "hover:bg-rose-100/60"
@@ -204,27 +237,30 @@ const AttendanceTableRow = React.memo<{
     ? "bg-amber-100 text-amber-800 border border-amber-400"
     : "bg-emerald-100 text-emerald-800 border border-emerald-300";
 
-  const getEffectiveStatus = (enrollmentNo: string, colStr: string): "P" | "A" => {
+  const getEffectiveStatus = (enrollmentNo: string, colStr: string): "P" | "A" | "—" => {
     const sid = colStr.split("::")[0];
     const key = `${enrollmentNo}|${sid}`;
     if (stagedChanges.has(key)) {
       return stagedChanges.get(key)!;
     }
-    return row.attendance[colStr] || "A";
+    return (row.attendance[colStr] as "P" | "A" | "—") || "A";
   };
 
   return (
     <tr
       style={{ height: `${ROW_HEIGHT}px` }}
-      className={`transition-colors border-b border-slate-100 ${rowBg} ${rowHover}`}
+      className={`group transition-colors border-b border-slate-100 ${rowBg} ${rowHover}`}
     >
-      {/* Enrollment No */}
-      <td className="px-5 py-2.5 font-mono font-bold text-slate-900 whitespace-nowrap">
+      {/* 1. Sticky Enrollment USN (left: 0) */}
+      <td
+        className={`sticky left-0 z-20 min-w-[150px] w-[150px] max-w-[150px] px-5 py-2.5 font-mono font-bold text-slate-900 whitespace-nowrap border-b border-slate-100 ${rowAccentBorder} ${rowBg} group-hover:bg-slate-100/90 transition-colors`}
+      >
         {row.enrollmentNo}
       </td>
-
-      {/* Student Name + risk icon */}
-      <td className="px-5 py-2.5 font-semibold text-slate-800 whitespace-nowrap">
+      {/* 2. Sticky Student Name (left: 150px) */}
+      <td
+        className={`sticky left-[150px] z-20 min-w-[200px] w-[200px] max-w-[200px] px-5 py-2.5 font-semibold text-slate-800 whitespace-nowrap border-b border-slate-100 ${rowBg} group-hover:bg-slate-100/90 transition-colors`}
+      >
         <div className="flex items-center gap-2">
           {row.isCritical && (
             <AlertTriangle
@@ -240,14 +276,15 @@ const AttendanceTableRow = React.memo<{
               aria-label="Warning: 60–74%"
             />
           )}
-          <span className="truncate max-w-[160px]" title={row.name}>
+          <span className="truncate max-w-[170px]" title={row.name}>
             {row.name}
           </span>
         </div>
       </td>
-
-      {/* Quorum % badge */}
-      <td className="px-4 py-2.5 text-center whitespace-nowrap">
+      {/* 3. Sticky Quorum Score (left: 350px) + Right Divider Shadow */}
+      <td
+        className={`sticky left-[350px] z-20 min-w-[140px] w-[140px] max-w-[140px] px-4 py-2.5 text-center whitespace-nowrap border-b border-slate-100 border-r-2 border-slate-300 shadow-[4px_0_10px_-2px_rgba(0,0,0,0.08)] ${rowBg} group-hover:bg-slate-100/90 transition-colors`}
+      >
         <span
           className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-bold font-mono shadow-2xs ${pctBadge}`}
         >
@@ -257,8 +294,7 @@ const AttendanceTableRow = React.memo<{
           </span>
         </span>
       </td>
-
-      {/* Per-session heatmap cells */}
+      {/* 4+. Horizontally Scrollable Session/Date Heatmap Cells */}
       {sheetColumns.map((col) => {
         const effectiveStatus = getEffectiveStatus(row.enrollmentNo, col);
         const sid = col.split("::")[0];
@@ -268,25 +304,29 @@ const AttendanceTableRow = React.memo<{
             key={col}
             onClick={() => {
               if (tableMode !== "edit") return;
+              if (effectiveStatus === "—" || (effectiveStatus as any) === "-") return;
               const next = effectiveStatus === "P" ? "A" : "P";
               toggleCell(row.enrollmentNo, sid, next);
             }}
             onDoubleClick={() => {
               if (tableMode !== "edit") return;
+              if (effectiveStatus === "—" || (effectiveStatus as any) === "-") return;
               const next = effectiveStatus === "P" ? "A" : "P";
               toggleCell(row.enrollmentNo, sid, next);
             }}
-            className={`text-center font-mono font-bold text-xs select-none transition-colors duration-100 ${
-              tableMode === "edit" ? "cursor-pointer hover:bg-slate-100/80 active:scale-95" : ""
+            className={`text-center font-mono font-bold text-xs select-none transition-colors duration-100 border-b border-l border-slate-100 ${
+              tableMode === "edit" && effectiveStatus !== "—" ? "cursor-pointer hover:bg-slate-100/80 active:scale-95" : ""
             } ${
               isStaged ? "ring-2 ring-amber-400 ring-inset" : ""
             }`}
-            title={tableMode === "edit" ? "Double-click to flip P/A" : undefined}
+            title={tableMode === "edit" && effectiveStatus !== "—" ? "Double-click to flip P/A" : effectiveStatus === "—" ? "Exempt (session conducted for another batch)" : undefined}
           >
             {effectiveStatus === "P" ? (
-              <span className="inline-block px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">P</span>
+              <span className="inline-block px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">P</span>
+            ) : effectiveStatus === "—" || (effectiveStatus as any) === "-" ? (
+              <span className="inline-block px-1.5 py-0.5 rounded bg-slate-100 text-slate-400 font-medium" title="Exempt / Session conducted for another batch">—</span>
             ) : (
-              <span className="inline-block px-1.5 py-0.5 rounded bg-rose-100 text-rose-800">A</span>
+              <span className="inline-block px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">A</span>
             )}
           </td>
         );
@@ -307,10 +347,153 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
   setSheetFilters,
   onLoadSheet,
   onExportCsv,
+  activities,
 }) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [filterAtRiskOnly, setFilterAtRiskOnly] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Category Selector: "ACADEMICS" | "ACTIVITIES"
+  const [category, setCategory] = useState<"ACADEMICS" | "ACTIVITIES">(
+    sheetFilters.category || (sheetFilters.activityId ? "ACTIVITIES" : "ACADEMICS")
+  );
+
+  // Activities States
+  const [activitiesList, setActivitiesList] = useState<any[]>(activities || []);
+  const [activitiesLoading, setActivitiesLoading] = useState(false);
+  const [selectedActivityId, setSelectedActivityId] = useState<string>(sheetFilters.activityId || "");
+  const [selectedBatchId, setSelectedBatchId] = useState<string>(
+    sheetFilters.batchId && sheetFilters.batchId !== "ALL" && sheetFilters.batchId !== "all"
+      ? sheetFilters.batchId
+      : ""
+  );
+
+  // Academic Batches States (single batch selection per subject)
+  const [academicBatches, setAcademicBatches] = useState<any[]>([]);
+  const [academicBatchesLoading, setAcademicBatchesLoading] = useState(false);
+  const [selectedAcademicBatchId, setSelectedAcademicBatchId] = useState<string>(
+    sheetFilters.batchId && sheetFilters.batchId !== "ALL" && sheetFilters.batchId !== "all"
+      ? sheetFilters.batchId
+      : ""
+  );
+
+  // Keep category state in sync if sheetFilters.category changes externally
+  useEffect(() => {
+    if (sheetFilters.category && sheetFilters.category !== category) {
+      setCategory(sheetFilters.category);
+    }
+  }, [sheetFilters.category, category]);
+
+  // Keep activitiesList in sync with incoming activities prop
+  useEffect(() => {
+    if (Array.isArray(activities) && activities.length > 0) {
+      setActivitiesList(activities);
+    }
+  }, [activities]);
+
+  // Load activities on mount if not provided via props
+  useEffect(() => {
+    if (Array.isArray(activities) && activities.length > 0) return;
+    let isMounted = true;
+    const loadActivities = async () => {
+      setActivitiesLoading(true);
+      try {
+        const res: any = await apiClient.getActivities();
+        if (isMounted && res?.ok && Array.isArray(res.activities)) {
+          setActivitiesList(res.activities);
+        }
+      } catch (err) {
+        console.error("Failed to load activities in attendance sheet:", err);
+      } finally {
+        if (isMounted) setActivitiesLoading(false);
+      }
+    };
+
+    loadActivities();
+    return () => {
+      isMounted = false;
+    };
+  }, [activities]);
+
+  const activeActivity = useMemo(() => {
+    return activitiesList.find((a) => String(a.id) === String(selectedActivityId)) || null;
+  }, [activitiesList, selectedActivityId]);
+
+  const activeActivityBatches = useMemo(() => {
+    return Array.isArray(activeActivity?.batches) ? activeActivity.batches : [];
+  }, [activeActivity]);
+
+  // Keep selectedBatchId default to first batch or empty if no batches
+  useEffect(() => {
+    if (activeActivityBatches.length > 0) {
+      if (!selectedBatchId || selectedBatchId === "ALL" || selectedBatchId === "all" || !activeActivityBatches.some((b) => String(b.id) === String(selectedBatchId))) {
+        setSelectedBatchId(String(activeActivityBatches[0].id));
+      }
+    } else {
+      setSelectedBatchId("");
+    }
+  }, [activeActivityBatches, selectedBatchId]);
+
+  // Fetch subject batches when in ACADEMICS mode
+  useEffect(() => {
+    if (category !== "ACADEMICS" || !sheetFilters.subjectId) {
+      setAcademicBatches([]);
+      setSelectedAcademicBatchId("");
+      return;
+    }
+
+    let isMounted = true;
+    setAcademicBatchesLoading(true);
+    apiClient
+      .getSubjectBatches(sheetFilters.subjectId)
+      .then((res: any) => {
+        if (!isMounted) return;
+        if (res?.ok && Array.isArray(res.batches) && res.batches.length > 0) {
+          setAcademicBatches(res.batches);
+          setSelectedAcademicBatchId((prev) => {
+            if (!prev || prev === "ALL" || prev === "all") return String(res.batches[0].id);
+            const exists = res.batches.some((b: any) => String(b.id) === String(prev));
+            return exists ? prev : String(res.batches[0].id);
+          });
+        } else {
+          setAcademicBatches([]);
+          setSelectedAcademicBatchId("");
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to load subject batches:", err);
+        if (isMounted) {
+          setAcademicBatches([]);
+          setSelectedAcademicBatchId("");
+        }
+      })
+      .finally(() => {
+        if (isMounted) setAcademicBatchesLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [category, sheetFilters.subjectId]);
+
+  const handleCategoryChange = (newCat: "ACADEMICS" | "ACTIVITIES") => {
+    setCategory(newCat);
+    setSheetFilters((prev) => ({
+      ...prev,
+      category: newCat,
+    }));
+  };
+
+  const handleSelectActivity = (actId: string) => {
+    setSelectedActivityId(actId);
+    const act = activitiesList.find((a) => String(a.id) === String(actId));
+    const batches = Array.isArray(act?.batches) ? act.batches : [];
+    if (batches.length > 0) {
+      setSelectedBatchId(String(batches[0].id));
+    } else {
+      setSelectedBatchId("");
+    }
+  };
 
   // Extract all admin-assigned class code presets across faculty subjects
   const assignedClassPresets = useMemo<AssignedClassOption[]>(() => {
@@ -414,6 +597,7 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
     // Atomically update all underlying sheet filters
     setSheetFilters((prev) => ({
       ...prev,
+      category: "ACADEMICS",
       subjectId: selected.subjectId,
       departmentId: selected.departmentId,
       year: String(selected.year || ""),
@@ -424,12 +608,13 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
 
   // Auto-select first assigned class preset if no filter is currently active
   useEffect(() => {
-    if (!sheetFilters.subjectId && assignedClassPresets.length > 0) {
+    if (category === "ACADEMICS" && !sheetFilters.subjectId && assignedClassPresets.length > 0) {
       const first = assignedClassPresets[0];
       if (first) {
         setSelectedPresetKey(first.key);
         setSheetFilters((prev) => ({
           ...prev,
+          category: "ACADEMICS",
           subjectId: first.subjectId,
           departmentId: first.departmentId,
           year: String(first.year || ""),
@@ -438,7 +623,7 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
         }));
       }
     }
-  }, [assignedClassPresets, sheetFilters.subjectId, setSheetFilters]);
+  }, [category, assignedClassPresets, sheetFilters.subjectId, setSheetFilters]);
 
   // Keep selectedPresetKey in sync if sheetFilters changes externally
   useEffect(() => {
@@ -480,12 +665,42 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
     return () => document.removeEventListener("click", handleClickOutside);
   }, [activeHeaderMenuSessionId]);
 
-  // Reset staged edits whenever subject changes or baseline sheet rows are reloaded
+  // Reset staged edits whenever subject/activity changes or baseline sheet rows are reloaded
   useEffect(() => {
     setStagedChanges(new Map());
     setActiveHeaderMenuSessionId(null);
     setShowDiscardWarning(false);
-  }, [sheetFilters.subjectId, sheetRows]);
+  }, [sheetFilters.subjectId, selectedActivityId, selectedBatchId, selectedAcademicBatchId, sheetRows]);
+
+  // Handler to generate matrix based on category selection
+  const handleGenerateMatrix = async () => {
+    if (category === "ACADEMICS") {
+      const bId = academicBatches.length > 0
+        ? (selectedAcademicBatchId || String(academicBatches[0]?.id || ""))
+        : undefined;
+      const nextFilters = {
+        ...sheetFilters,
+        category: "ACADEMICS" as const,
+        batchId: bId,
+      };
+      setSheetFilters(nextFilters);
+      await onLoadSheet(true, nextFilters);
+    } else {
+      if (!selectedActivityId) return;
+      const bId = activeActivityBatches.length > 0
+        ? (selectedBatchId || String(activeActivityBatches[0]?.id || ""))
+        : undefined;
+      const nextFilters = {
+        ...sheetFilters,
+        category: "ACTIVITIES" as const,
+        activityId: selectedActivityId,
+        batchId: bId,
+        subjectId: "",
+      };
+      setSheetFilters(nextFilters);
+      await onLoadSheet(true, nextFilters);
+    }
+  };
 
   // Toggle cell handler:
   const toggleCell = useCallback(
@@ -548,7 +763,20 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
       setDeleteConfirmSession(null);
       setDeleteError(null);
       // Re-fetch fresh sheet data bypassing any client-side cache
-      await onLoadSheet(true);
+      const currentFilters = category === "ACTIVITIES"
+        ? {
+            ...sheetFilters,
+            category: "ACTIVITIES" as const,
+            activityId: selectedActivityId,
+            batchId: activeActivityBatches.length > 0 ? selectedBatchId : undefined,
+            subjectId: "",
+          }
+        : {
+            ...sheetFilters,
+            category: "ACADEMICS" as const,
+            batchId: academicBatches.length > 0 ? selectedAcademicBatchId : undefined,
+          };
+      await onLoadSheet(true, currentFilters);
     } catch (err: any) {
       setDeleteError(err?.message || "Failed to delete session. Please try again.");
     } finally {
@@ -572,13 +800,26 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
     const batchStartedAt = new Date().toISOString();
     try {
       const res: any = await apiClient.batchUpdateMatrixAttendance({
-        subjectId: sheetFilters.subjectId,
+        subjectId: category === "ACADEMICS" ? sheetFilters.subjectId : undefined,
         updates,
         batchStartedAt,
       });
       if (!res?.ok) throw new Error(res?.error || "Batch update failed");
       // Auto refresh matrix with force=true to bypass client cache and pull fresh database state
-      await onLoadSheet(true);
+      const currentFilters = category === "ACTIVITIES"
+        ? {
+            ...sheetFilters,
+            category: "ACTIVITIES" as const,
+            activityId: selectedActivityId,
+            batchId: activeActivityBatches.length > 0 ? selectedBatchId : undefined,
+            subjectId: "",
+          }
+        : {
+            ...sheetFilters,
+            category: "ACADEMICS" as const,
+            batchId: academicBatches.length > 0 ? selectedAcademicBatchId : undefined,
+          };
+      await onLoadSheet(true, currentFilters);
       // Clear staged changes after fresh sheet is loaded
       setStagedChanges(new Map());
 
@@ -624,22 +865,29 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
     }
   }, [deferredSearchTerm, filterAtRiskOnly, sheetFilters.subjectId]);
 
-  // Compute student summary percentages + risk tier (single pass, O(n·cols))
+  // Compute student summary percentages + risk tier (single pass, O(n·cols)) with eligibility-aware quorum
   const enrichedRows = useMemo<EnrichedSheetRow[]>(() => {
-    const totalCols = sheetColumns.length;
     return localRows.map((row) => {
       let attended = 0;
+      let totalEligible = 0;
       for (let i = 0; i < sheetColumns.length; i++) {
-        if (row.attendance[sheetColumns[i]] === "P") attended++;
+        const val = row.attendance[sheetColumns[i]];
+        if (val === "P") {
+          attended++;
+          totalEligible++;
+        } else if (val === "A") {
+          totalEligible++;
+        }
+        // If val === "—", session was conducted for another batch and is exempt from denominator!
       }
-      const percent = totalCols > 0 ? (attended / totalCols) * 100 : 0;
-      const isCritical = totalCols > 0 && percent < 60; // < 60%  → rose row
-      const isWarning = totalCols > 0 && percent >= 60 && percent < 75; // 60–74% → amber row
+      const percent = totalEligible > 0 ? (attended / totalEligible) * 100 : 0;
+      const isCritical = totalEligible > 0 && percent < 60; // < 60%  → rose row
+      const isWarning = totalEligible > 0 && percent >= 60 && percent < 75; // 60–74% → amber row
       const isAtRisk = isCritical || isWarning;
       return {
         ...row,
         attended,
-        totalSessions: totalCols,
+        totalSessions: totalEligible,
         percent,
         isCritical,
         isWarning,
@@ -806,54 +1054,223 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
           </div>
         )}
 
-        {/* Sleek Assigned Class Code Preset Bar */}
+        {/* Sleek Category & Filter Preset Bar */}
         <div className="rounded-2xl border border-slate-200/90 bg-slate-50/70 p-4 sm:p-5 shadow-2xs backdrop-blur-md mb-6">
-          <div className="flex flex-col md:flex-row md:items-end gap-3.5">
-            {/* Assigned Class Code Preset Dropdown */}
-            <div className="flex-1">
-              <label className="block text-[11px] font-extrabold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center gap-1.5">
-                <Sparkles size={13} className="text-emerald-600" />
-                Filter by Class Code (Assigned by Admin)
-              </label>
-              
-              {assignedClassPresets.length === 0 ? (
-                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 font-medium">
-                  No assigned class codes found. Please confirm subject allocations with your administrator.
-                </div>
-              ) : (
-                <select
-                  value={selectedPresetKey}
-                  onChange={(e) => handleSelectPreset(e.target.value)}
-                  className="w-full rounded-xl border border-slate-300/90 bg-white px-4 py-2.5 text-xs font-bold text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs transition hover:border-slate-400 cursor-pointer"
-                >
-                  <option value="" disabled>-- Select Assigned Class --</option>
-                  {assignedClassPresets.map((preset) => (
-                    <option key={preset.key} value={preset.key}>
-                      {preset.label}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-            {/* Generate Ledger Button */}
-            <div className="shrink-0">
-              <button
-                type="button"
-                onClick={() => onLoadSheet(true)}
-                disabled={sheetLoading || !sheetFilters.subjectId}
-                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 px-6 py-2.5 text-xs font-extrabold text-white shadow-[0_8px_20px_-4px_rgba(16,185,129,0.35)] hover:shadow-[0_12px_24px_-4px_rgba(16,185,129,0.45)] hover:brightness-105 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed active:scale-98"
-              >
-                {sheetLoading ? (
-                  <RefreshCw size={15} className="animate-spin" />
-                ) : (
-                  <List size={15} />
-                )}
-                <span>Generate Matrix</span>
-              </button>
-            </div>
+          {/* Category Selector Tabs: Academics vs Activities */}
+          <div className="flex items-center gap-1.5 p-1 bg-slate-200/70 rounded-2xl w-fit mb-4 shadow-inner">
+            <button
+              type="button"
+              onClick={() => handleCategoryChange("ACADEMICS")}
+              className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+                category === "ACADEMICS"
+                  ? "bg-white text-emerald-800 shadow-xs ring-1 ring-slate-200/80"
+                  : "text-slate-600 hover:text-slate-900 hover:bg-white/50"
+              }`}
+            >
+              <BookOpen size={14} className={category === "ACADEMICS" ? "text-emerald-600" : "text-slate-500"} />
+              Academics
+            </button>
+            <button
+              type="button"
+              onClick={() => handleCategoryChange("ACTIVITIES")}
+              className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+                category === "ACTIVITIES"
+                  ? "bg-white text-emerald-800 shadow-xs ring-1 ring-slate-200/80"
+                  : "text-slate-600 hover:text-slate-900 hover:bg-white/50"
+              }`}
+            >
+              <Award size={14} className={category === "ACTIVITIES" ? "text-emerald-600" : "text-slate-500"} />
+              Activities
+            </button>
           </div>
+
+          {category === "ACADEMICS" ? (
+            <div className="flex flex-col md:flex-row md:items-end gap-3.5">
+              {/* Assigned Class Code Preset Dropdown */}
+              <div className="flex-1">
+                <label className="block text-[11px] font-extrabold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center gap-1.5">
+                  <Sparkles size={13} className="text-emerald-600" />
+                  Filter by Class Code (Assigned by Admin)
+                </label>
+                
+                {assignedClassPresets.length === 0 ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 font-medium">
+                    No assigned class codes found. Please confirm subject allocations with your administrator.
+                  </div>
+                ) : (
+                  <select
+                    value={selectedPresetKey}
+                    onChange={(e) => handleSelectPreset(e.target.value)}
+                    className="w-full rounded-xl border border-slate-300/90 bg-white px-4 py-2.5 text-xs font-bold text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs transition hover:border-slate-400 cursor-pointer"
+                  >
+                    <option value="" disabled>-- Select Assigned Class --</option>
+                    {assignedClassPresets.map((preset) => (
+                      <option key={preset.key} value={preset.key}>
+                        {preset.label}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              {/* Single Batch Selection for Academics */}
+              <div className="w-full md:w-64">
+                <label className="block text-[11px] font-extrabold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center gap-1.5">
+                  <Users size={13} className="text-emerald-600" />
+                  Select Batch
+                </label>
+                {academicBatches.length > 0 ? (
+                  <select
+                    value={selectedAcademicBatchId || (academicBatches[0]?.id ? String(academicBatches[0].id) : "")}
+                    onChange={(e) => {
+                      const nextBatchId = e.target.value;
+                      setSelectedAcademicBatchId(nextBatchId);
+                      const nextFilters = {
+                        ...sheetFilters,
+                        category: "ACADEMICS" as const,
+                        batchId: nextBatchId,
+                      };
+                      setSheetFilters(nextFilters);
+                      void onLoadSheet(true, nextFilters);
+                    }}
+                    className="w-full rounded-xl border border-slate-300/90 bg-white px-4 py-2.5 text-xs font-bold text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs transition hover:border-slate-400 cursor-pointer"
+                  >
+                    {academicBatches.map((b: any, idx: number) => (
+                      <option key={b.id || idx} value={b.id}>
+                        Batch {b.batch_number || idx + 1}: {b.batch_name} ({b.student_enrollments?.length || 0} students)
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <select
+                    value=""
+                    disabled
+                    className="w-full rounded-xl border border-slate-300/90 bg-slate-100 px-4 py-2.5 text-xs font-bold text-slate-600 cursor-not-allowed"
+                  >
+                    <option value="">All Students (Full Class Strength)</option>
+                  </select>
+                )}
+              </div>
+
+              {/* Generate Matrix Button */}
+              <div className="shrink-0">
+                <button
+                  type="button"
+                  onClick={handleGenerateMatrix}
+                  disabled={sheetLoading || !sheetFilters.subjectId}
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 px-6 py-2.5 text-xs font-extrabold text-white shadow-[0_8px_20px_-4px_rgba(16,185,129,0.35)] hover:shadow-[0_12px_24px_-4px_rgba(16,185,129,0.45)] hover:brightness-105 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed active:scale-98"
+                >
+                  {sheetLoading ? (
+                    <RefreshCw size={15} className="animate-spin" />
+                  ) : (
+                    <List size={15} />
+                  )}
+                  <span>Generate Matrix</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            /* ACTIVITIES CONTROLS */
+            <div className="flex flex-col md:flex-row md:items-end gap-3.5">
+              {/* Dropdown 1: Select Activity */}
+              <div className="flex-1">
+                <label className="block text-[11px] font-extrabold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center gap-1.5">
+                  <Award size={13} className="text-emerald-600" />
+                  Select Activity
+                </label>
+                {activitiesLoading ? (
+                  <div className="h-10 rounded-xl bg-slate-200 animate-pulse flex items-center px-4 text-xs text-slate-400 font-semibold">
+                    Loading activities...
+                  </div>
+                ) : activitiesList.length === 0 ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 font-medium">
+                    No activities found. Create training or event activities in the Activities tab first.
+                  </div>
+                ) : (
+                  <select
+                    value={selectedActivityId}
+                    onChange={(e) => handleSelectActivity(e.target.value)}
+                    className="w-full rounded-xl border border-slate-300/90 bg-white px-4 py-2.5 text-xs font-bold text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs transition hover:border-slate-400 cursor-pointer"
+                  >
+                    <option value="" disabled>-- Select Activity --</option>
+                    {activitiesList.map((act) => {
+                      const typeLabel = act.type === "TRAINING" ? "Training" : "Event";
+                      const dept = act.dept?.code || "";
+                      const sem = act.semester ? `Sem ${act.semester}` : "";
+                      const meta = [typeLabel, dept, sem].filter(Boolean).join(" • ");
+                      return (
+                        <option key={act.id} value={act.id}>
+                          {act.name} {meta ? `(${meta})` : ""}
+                        </option>
+                      );
+                    })}
+                  </select>
+                )}
+              </div>
+
+              {/* Dropdown 2: Select Batch for Activities */}
+              <div className="w-full md:w-64">
+                <label className="block text-[11px] font-extrabold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center gap-1.5">
+                  <Users size={13} className="text-emerald-600" />
+                  Select Batch
+                </label>
+                {activeActivityBatches.length > 0 ? (
+                  <select
+                    value={selectedBatchId || (activeActivityBatches[0]?.id ? String(activeActivityBatches[0].id) : "")}
+                    onChange={(e) => {
+                      const nextBatchId = e.target.value;
+                      setSelectedBatchId(nextBatchId);
+                      const nextFilters = {
+                        ...sheetFilters,
+                        category: "ACTIVITIES" as const,
+                        activityId: selectedActivityId,
+                        batchId: nextBatchId,
+                        subjectId: "",
+                      };
+                      setSheetFilters(nextFilters);
+                      void onLoadSheet(true, nextFilters);
+                    }}
+                    disabled={!selectedActivityId}
+                    className="w-full rounded-xl border border-slate-300/90 bg-white px-4 py-2.5 text-xs font-bold text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs transition hover:border-slate-400 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {activeActivityBatches.map((b: any, idx: number) => (
+                      <option key={b.id || idx} value={b.id}>
+                        Batch {b.batch_number || idx + 1}: {b.batch_name} ({b.student_enrollments?.length || 0} students)
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <select
+                    value=""
+                    disabled
+                    className="w-full rounded-xl border border-slate-300/90 bg-slate-100 px-4 py-2.5 text-xs font-bold text-slate-600 cursor-not-allowed"
+                  >
+                    <option value="">All Students (Full Class Strength)</option>
+                  </select>
+                )}
+              </div>
+
+              {/* Generate Matrix Button */}
+              <div className="shrink-0">
+                <button
+                  type="button"
+                  onClick={handleGenerateMatrix}
+                  disabled={sheetLoading || !selectedActivityId || activitiesLoading}
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 px-6 py-2.5 text-xs font-extrabold text-white shadow-[0_8px_20px_-4px_rgba(16,185,129,0.35)] hover:shadow-[0_12px_24px_-4px_rgba(16,185,129,0.45)] hover:brightness-105 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed active:scale-98"
+                >
+                  {sheetLoading ? (
+                    <RefreshCw size={15} className="animate-spin" />
+                  ) : (
+                    <List size={15} />
+                  )}
+                  <span>Generate Matrix</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Active Selection Metadata Preview Badge */}
-          {selectedPresetKey && (
+          {category === "ACADEMICS" && selectedPresetKey && (
             <div className="mt-3 pt-3 border-t border-slate-200/60 flex flex-wrap items-center gap-2 text-[11px] text-slate-500 font-medium">
               <span className="text-slate-400">Active Parameters:</span>
               <span className="bg-white px-2 py-0.5 rounded-md border border-slate-200 font-mono font-bold text-slate-700">
@@ -874,6 +1291,26 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
                   Year: {sheetFilters.year}
                 </span>
               )}
+              {academicBatches.length > 0 && selectedAcademicBatchId && (
+                <span className="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-md border border-emerald-200 font-bold">
+                  Batch: {academicBatches.find((b: any) => String(b.id) === String(selectedAcademicBatchId))?.batch_name || selectedAcademicBatchId}
+                </span>
+              )}
+            </div>
+          )}
+
+          {category === "ACTIVITIES" && activeActivity && (
+            <div className="mt-3 pt-3 border-t border-slate-200/60 flex flex-wrap items-center gap-2 text-[11px] text-slate-500 font-medium">
+              <span className="text-slate-400">Active Parameters:</span>
+              <span className="bg-white px-2 py-0.5 rounded-md border border-slate-200 font-bold text-slate-700">
+                Activity: {activeActivity.name}
+              </span>
+              <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-md font-extrabold text-[10px]">
+                {activeActivity.type}
+              </span>
+              <span className="bg-white px-2 py-0.5 rounded-md border border-slate-200 font-bold text-slate-700">
+                Batch: {activeActivityBatches.find((b: any) => String(b.id) === String(selectedBatchId))?.batch_name || (activeActivityBatches.length > 0 ? "Single Batch" : "Entire Cohort")}
+              </span>
             </div>
           )}
         </div>
@@ -993,45 +1430,71 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
               </div>
             )}
 
-            {/* Scroll Container for Windowed / Virtualized Table */}
+            {/* Scroll Container: Dynamically scrolls vertically ONLY if filteredRows > 10 */}
             <div
               ref={scrollContainerRef}
-              className="w-full overflow-auto max-h-[560px] relative scroll-smooth will-change-scroll"
+              className={`w-full overflow-x-auto relative scroll-smooth will-change-scroll ${
+                filteredRows.length > 10
+                  ? "max-h-[532px] overflow-y-auto"
+                  : "max-h-none overflow-y-visible"
+              }`}
             >
-              <table className="min-w-full text-left text-xs border-collapse">
-                <thead className="bg-slate-50/95 border-b border-slate-200 text-[11px] font-extrabold uppercase tracking-wider text-slate-600 sticky top-0 z-10 backdrop-blur-md shadow-xs">
+              <table className="min-w-full text-left text-xs border-separate border-spacing-0">
+                <thead className="bg-slate-50 border-b border-slate-200 text-[11px] font-extrabold uppercase tracking-wider text-slate-600 sticky top-0 z-30 shadow-xs">
                   <tr>
-                    <th className="px-5 py-4 whitespace-nowrap bg-slate-50/95">Enrollment USN</th>
-                    <th className="px-5 py-4 whitespace-nowrap bg-slate-50/95">Student Name</th>
-                    <th className="px-4 py-4 text-center whitespace-nowrap bg-slate-50/95">Quorum Score</th>
+                    {/* Sticky USN Header (both top & left: 0) */}
+                    <th className="sticky top-0 left-0 z-40 min-w-[150px] w-[150px] max-w-[150px] px-5 py-4 whitespace-nowrap bg-slate-50 border-b border-slate-200">
+                      Enrollment USN
+                    </th>
+                    {/* Sticky Student Name Header (both top & left: 150px) */}
+                    <th className="sticky top-0 left-[150px] z-40 min-w-[200px] w-[200px] max-w-[200px] px-5 py-4 whitespace-nowrap bg-slate-50 border-b border-slate-200">
+                      Student Name
+                    </th>
+                    {/* Sticky Quorum Score Header (both top & left: 350px) + Divider Shadow */}
+                    <th className="sticky top-0 left-[350px] z-40 min-w-[140px] w-[140px] max-w-[140px] px-4 py-4 text-center whitespace-nowrap bg-slate-50 border-b border-slate-200 border-r-2 border-slate-300 shadow-[4px_0_10px_-2px_rgba(0,0,0,0.08)]">
+                      Quorum Score
+                    </th>
+                    {/* Horizontally scrollable Session Date Headers */}
                     {sheetColumns.map((colStr) => {
-                      const [sessionId, dateLabel] = colStr.split("::");
+                      const [sessionId, dateLabel, batchId, batchName] = colStr.split("::");
                       const isMenuOpen = activeHeaderMenuSessionId === sessionId;
+                      const isBatchSession = Boolean(batchId && batchId !== "null" && batchId !== "undefined" && batchId !== "");
                       return (
                         <th
                           key={colStr}
-                          className={`relative px-3 py-4 text-center font-mono font-semibold whitespace-nowrap bg-slate-50/95 transition border-l border-slate-200/50 ${
+                          className={`sticky top-0 z-10 px-3 py-3 text-center font-mono font-semibold whitespace-nowrap bg-slate-50 transition border-b border-slate-200 border-l border-slate-200/60 ${
                             tableMode === "edit" ? "hover:bg-slate-100/90" : ""
                           }`}
                           title={colStr}
                         >
-                          <div className="flex items-center justify-center gap-1.5">
-                            <span>{dateLabel || sessionId}</span>
-                            {tableMode === "edit" && (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setActiveHeaderMenuSessionId((prev) =>
-                                    prev === sessionId ? null : sessionId
-                                  );
-                                }}
-                                className="rounded-lg p-1 text-slate-400 hover:text-slate-800 hover:bg-slate-200/80 transition cursor-pointer"
-                                title="Session actions"
-                              >
-                                <MoreVertical size={13} />
-                              </button>
-                            )}
+                          <div className="flex flex-col items-center justify-center gap-1">
+                            <div className="flex items-center justify-center gap-1.5">
+                              {isBatchSession ? (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 shadow-2xs">
+                                  [{batchName || "Batch"}]
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-300 shadow-2xs">
+                                  [Class]
+                                </span>
+                              )}
+                              <span className="text-xs text-slate-800 font-medium">{dateLabel || sessionId}</span>
+                              {tableMode === "edit" && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setActiveHeaderMenuSessionId((prev) =>
+                                      prev === sessionId ? null : sessionId
+                                    );
+                                  }}
+                                  className="rounded-lg p-1 text-slate-400 hover:text-slate-800 hover:bg-slate-200/80 transition cursor-pointer"
+                                  title="Session actions"
+                                >
+                                  <MoreVertical size={13} />
+                                </button>
+                              )}
+                            </div>
                           </div>
 
                           {/* Session Actions Dropdown Menu */}

@@ -22,6 +22,7 @@ const attendanceRoutes = require("./routes/attendance");
 const departmentRoutes = require("./routes/department");
 const subjectRoutes = require("./routes/subject");
 const publicRoutes = require("./routes/public");
+const activityRoutes = require("./routes/activities");
 
 const app = express();
 
@@ -209,7 +210,9 @@ app.use("/api/faculty", facultyRoutes);
 app.use("/api/attendance", attendanceRoutes);
 app.use("/api/department", departmentRoutes);
 app.use("/api/subject", subjectRoutes);
+app.use("/api/subjects", subjectRoutes);
 app.use("/api/public", publicRoutes);
+app.use("/api/activities", activityRoutes);
 
 // ----------------------------------------------------
 // Health Check (Lightweight for fast Render cold start)
@@ -321,6 +324,12 @@ app.use((err, _req, res, _next) => {
 const PORT = env.PORT || 4000;
 const HOST = env.HOST || "0.0.0.0";
 const LAN_IP = getLocalIP();
+
+// High-concurrency HTTP socket reuse & keep-alive tuning
+// 65s keepAliveTimeout ensures TCP sockets remain warm across requests and proxies (Cloudflare/Nginx/Render)
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
+server.requestTimeout = 30000;
 
 server.listen(PORT, HOST, () => {
   console.log("=================================================");

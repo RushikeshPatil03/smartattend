@@ -16,7 +16,7 @@ type LiveLocationOptions = {
 };
 
 export const MAX_ACCEPTABLE_ACCURACY_METERS = 30; // Strict < 30m accuracy threshold for geo-fence security
-export const ATTENDANCE_GPS_MAX_AGE_MS = 10_000; // 10 seconds fresh cache window
+export const ATTENDANCE_GPS_MAX_AGE_MS = 60_000; // 60 seconds fresh cache window (eliminates indoor GPS re-query latency)
 export const DISPLAY_GPS_MAX_AGE_MS = 60_000; // 1 minute window for initial dashboard display / pre-warming
 export const ROLLING_CACHE_MAX_AGE_MS = ATTENDANCE_GPS_MAX_AGE_MS;
 const GPS_FALLBACK_TIMEOUT_MS = 4000; // 4-second timeout fallback for getCurrentPosition

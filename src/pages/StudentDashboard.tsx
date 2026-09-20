@@ -6,7 +6,7 @@ import CollegeHeader from "../components/CollegeHeader";
 import {
   Scan, MapPin, CheckCircle, XCircle, History, Camera, LoaderCircle, X,
   BookOpen, TrendingUp, AlertTriangle, RefreshCw, ChevronDown,
-  Award, Clock, ShieldAlert
+  Award, Clock, ShieldAlert, Calendar, Users, UserRound, Mail, GraduationCap, ShieldCheck
 } from "lucide-react";
 import { markAttendanceTwoStep, getFingerprint } from "../services/attendanceClient";
 import apiClient from "../services/apiClient";
@@ -24,14 +24,18 @@ import { parseQrPayload, RotatingQrPayload } from "../utils/totpQrGenerator";
 import { preloadForStudent } from "../utils/faceApiLoader";
 import { prewarmMediaPipe } from "../utils/mediaPipeFaceQuality";
 
+import {
+  touchDownPrewarmFrontCamera,
+  releasePrewarmedFrontStream,
+  prewarmFrontCamera,
+} from "../components/LivePhotoCapture";
+
 const CameraQrScanner = React.lazy(() => import("../components/CameraQrScanner"));
 const LivePhotoCapture = React.lazy(() => import("../components/LivePhotoCapture"));
 
 const preloadCameraQrScanner = () => import("../components/CameraQrScanner");
 const preloadLivePhotoCapture = () => import("../components/LivePhotoCapture");
-
 const prewarmQrCamera = () => import("../components/CameraQrScanner").then((m) => m.prewarmQrCamera());
-const prewarmFrontCamera = () => import("../components/LivePhotoCapture").then((m) => m.prewarmFrontCamera());
 
 type IdleCapableWindow = Window &
   typeof globalThis & {
@@ -44,8 +48,8 @@ type IdleCapableWindow = Window &
 
 const DYNAMIC_SECOND_SCAN_TIMEOUT_MS = 8000;
 const MIN_DYNAMIC_ROTATION_WAIT_MS = Math.max(
-  800,
-  Number(import.meta.env.VITE_MIN_SECOND_SCAN_DELAY_MS || 1500)
+  300,
+  Number(import.meta.env.VITE_MIN_SECOND_SCAN_DELAY_MS || 500)
 );
 const MAX_DYNAMIC_SEQUENCE_GAP_SECONDS = Math.max(
   4,
@@ -78,6 +82,7 @@ type SubjectAttendanceRow = {
   subjectId: string;
   subjectName: string;
   subjectCode: string;
+  batchName?: string | null;
   totalClassesConducted: number;
   classesAttended: number;
   classesMissed: number;
@@ -331,6 +336,11 @@ const SubjectProgressBar: React.FC<{ subject: SubjectAttendanceRow; animDelay: n
           <span className="hidden sm:inline shrink-0 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-500">
             {subject.subjectCode}
           </span>
+          {subject.batchName && (
+            <span className="shrink-0 rounded-md bg-indigo-50 border border-indigo-200/70 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">
+              {subject.batchName}
+            </span>
+          )}
         </div>
 
         {/* Right: percentage + emoji */}
@@ -709,6 +719,255 @@ const MyAttendanceCard: React.FC = () => {
   );
 };
 
+interface StudentAssignedActivity {
+  id: string;
+  name: string;
+  type: "TRAINING" | "EVENT";
+  event_date?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  semester?: number | null;
+  section?: string | null;
+  batchCode: string;
+  assignedBatch?: {
+    id: string;
+    batch_number: number;
+    batch_name: string;
+    student_enrollments: string[];
+  };
+  hasActiveSession?: boolean;
+  activeSessionId?: string | null;
+  isAlreadyMarked?: boolean;
+  totalSessionsConducted?: number;
+  sessionsAttended?: number;
+  sessionsMissed?: number;
+  attendancePercentage?: number;
+}
+
+const AssignedActivitiesSection: React.FC<{
+  activities: StudentAssignedActivity[];
+  loading: boolean;
+  onRefresh: () => void;
+  onScanActivity: (activity: StudentAssignedActivity) => void;
+}> = React.memo(({ activities, loading, onRefresh, onScanActivity }) => {
+  const [expanded, setExpanded] = useState(true);
+
+  const activeCount = useMemo(() => {
+    return activities.filter((a) => a.hasActiveSession && !a.isAlreadyMarked).length;
+  }, [activities]);
+
+  const formatDate = (dateStr?: string | null) => {
+    if (!dateStr) return null;
+    try {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr;
+      return d.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+    } catch {
+      return dateStr;
+    }
+  };
+
+  return (
+    <div className="w-full">
+      <div className="rounded-[24px] border border-slate-200/90 bg-white/90 p-5 shadow-[0_8px_30px_rgb(0,0,0,0.04)] backdrop-blur-xl">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-200 text-amber-600">
+              <Award size={20} />
+            </div>
+            <div className="min-w-0 text-left">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                Cohorts & Workshops
+              </p>
+              <h3 className="text-sm font-bold tracking-tight text-slate-900">
+                My Assigned Activities & Trainings
+              </h3>
+            </div>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-2">
+            {activeCount > 0 && (
+              <span className="flex items-center gap-1.5 rounded-full bg-rose-50 border border-rose-200 px-2.5 py-1 text-[11px] font-mono font-bold text-rose-600 shadow-2xs animate-pulse">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500" />
+                </span>
+                {activeCount} Live
+              </span>
+            )}
+            {activities.length > 0 && (
+              <span className="rounded-full bg-slate-100 border border-slate-200 px-2.5 py-0.5 text-xs font-bold text-slate-700 font-mono">
+                {activities.length}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={onRefresh}
+              className="p-1 text-slate-400 hover:text-slate-600 transition cursor-pointer"
+              title="Refresh activities"
+            >
+              <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setExpanded((prev) => !prev)}
+              className="p-1 text-slate-400 hover:text-slate-600 transition cursor-pointer"
+              aria-label="Toggle activities section"
+            >
+              <ChevronDown
+                size={18}
+                className="transition-transform duration-200"
+                style={{ transform: expanded ? "rotate(180deg)" : "rotate(0deg)" }}
+              />
+            </button>
+          </div>
+        </div>
+
+        {/* Collapsible Content */}
+        {expanded && (
+          <div className="mt-4 pt-4 border-t border-slate-100 space-y-3">
+            {loading && activities.length === 0 ? (
+              <div className="space-y-3">
+                {[1, 2].map((i) => (
+                  <div key={i} className="animate-pulse rounded-2xl border border-slate-200/80 bg-slate-50 p-4 space-y-2">
+                    <div className="h-4 w-3/4 rounded bg-slate-200" />
+                    <div className="h-3 w-1/2 rounded bg-slate-200" />
+                  </div>
+                ))}
+              </div>
+            ) : activities.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 p-6 text-center">
+                <Award size={28} className="mx-auto mb-2 text-slate-300" />
+                <p className="text-xs font-semibold text-slate-600">No activities currently assigned</p>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Trainings and event sessions for your section and batch will appear here.
+                </p>
+              </div>
+            ) : (
+              activities.map((act) => {
+                const isTraining = act.type === "TRAINING";
+                const isLive = Boolean(act.hasActiveSession && !act.isAlreadyMarked);
+                const isMarked = Boolean(act.isAlreadyMarked);
+
+                const eventDateFormatted = formatDate(act.event_date);
+                const startDateFormatted = formatDate(act.start_date);
+                const endDateFormatted = formatDate(act.end_date);
+                const dateDisplay = isTraining
+                  ? startDateFormatted && endDateFormatted
+                    ? `${startDateFormatted} – ${endDateFormatted}`
+                    : startDateFormatted || endDateFormatted || "Ongoing Training"
+                  : eventDateFormatted || "Scheduled Event";
+
+                return (
+                  <div
+                    key={act.id}
+                    className={`relative overflow-hidden rounded-2xl border transition-all ${
+                      isLive
+                        ? "border-rose-300 bg-gradient-to-br from-rose-50/70 via-white to-orange-50/40 shadow-[0_4px_20px_-4px_rgba(244,63,94,0.18)] ring-1 ring-rose-400/40"
+                        : "border-slate-200/90 bg-white hover:border-slate-300 shadow-2xs"
+                    } p-4`}
+                  >
+                    {/* Top Row: Type Badge + Batch Tag + Live Indicator */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {/* Type Badge */}
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wide border shadow-2xs ${
+                            isTraining
+                              ? "bg-amber-50 text-amber-800 border-amber-200"
+                              : "bg-purple-50 text-purple-800 border-purple-200"
+                          }`}
+                        >
+                          {isTraining ? <Award size={11} /> : <Calendar size={11} />}
+                          {isTraining ? "Training" : "Event"}
+                        </span>
+
+                        {/* Batch Tag: department_code - [batch_number] */}
+                        <span className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-2.5 py-0.5 text-[11px] font-mono font-bold text-white shadow-2xs">
+                          <Users size={11} className="text-slate-300" />
+                          {act.batchCode}
+                        </span>
+
+                        {act.assignedBatch?.batch_name && act.assignedBatch.batch_name !== "Default Batch" && (
+                          <span className="text-[11px] text-slate-500 font-medium truncate max-w-[130px]" title={act.assignedBatch.batch_name}>
+                            ({act.assignedBatch.batch_name})
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Live or Marked Status Pill */}
+                      {isLive && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-rose-500 text-white px-2.5 py-0.5 text-[10px] font-black uppercase shadow-xs animate-pulse">
+                          <span className="h-1.5 w-1.5 rounded-full bg-white animate-ping" />
+                          ● LIVE
+                        </span>
+                      )}
+
+                      {isMarked && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 text-[10px] font-bold">
+                          <CheckCircle size={11} className="text-emerald-600" />
+                          Present
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Activity Name */}
+                    <h4 className="text-sm font-extrabold text-slate-900 tracking-tight leading-snug">
+                      {act.name}
+                    </h4>
+
+                    {/* Scheduled Date */}
+                    <div className="mt-1.5 flex items-center gap-1.5 text-xs text-slate-500 font-medium">
+                      <Clock size={12} className="text-slate-400 shrink-0" />
+                      <span>{dateDisplay}</span>
+                    </div>
+
+                    {typeof act.totalSessionsConducted === "number" && act.totalSessionsConducted > 0 && (
+                      <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
+                        <span className="text-slate-500 font-medium">
+                          Attendance: <span className="font-bold text-slate-800">{act.sessionsAttended || 0}/{act.totalSessionsConducted}</span> sessions
+                        </span>
+                        <span className="font-bold font-mono text-indigo-600 bg-indigo-50 border border-indigo-200/60 px-2 py-0.5 rounded-full text-[11px]">
+                          {act.attendancePercentage ?? 0}%
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Live Action CTA: Tap to Scan & Mark Attendance */}
+                    {isLive && (
+                      <div className="mt-3 pt-3 border-t border-rose-100/80 flex items-center justify-between gap-3">
+                        <div className="text-[11px] font-semibold text-rose-700 leading-tight">
+                          Attendance session is currently active!
+                        </div>
+                        <button
+                          type="button"
+                          onPointerDown={() => void touchDownPrewarmFrontCamera()}
+                          onTouchStart={() => void touchDownPrewarmFrontCamera()}
+                          onClick={() => onScanActivity(act)}
+                          className="shrink-0 inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-rose-600 via-rose-500 to-amber-500 px-4 py-2 text-xs font-extrabold text-white shadow-md shadow-rose-900/20 hover:brightness-110 active:scale-98 transition cursor-pointer"
+                        >
+                          <Camera size={14} />
+                          <span>Scan QR</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
+
+AssignedActivitiesSection.displayName = "AssignedActivitiesSection";
+
 const StudentDashboard: React.FC = () => {
   const { currentUser, departments = [], fetchDepartments, logout } = useApp();
 
@@ -716,6 +975,7 @@ const StudentDashboard: React.FC = () => {
   const [statusMsg, setStatusMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [recentSessions, setRecentSessions] = useState<any[]>([]);
+  const [profileModalTab, setProfileModalTab] = useState<"academics" | "activities" | "profile" | null>(null);
   const [todayPanelOpen, setTodayPanelOpen] = useState(false);
   const [todayPanelLoading, setTodayPanelLoading] = useState(false);
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -732,6 +992,30 @@ const StudentDashboard: React.FC = () => {
   const [faceVerifiedUntil, setFaceVerifiedUntil] = useState(0);
   const [sessionExpiredToast, setSessionExpiredToast] = useState(false);
   const [showInstallBanner, setShowInstallBanner] = useState(false);
+  const [studentActivities, setStudentActivities] = useState<StudentAssignedActivity[]>([]);
+  const [studentActivitiesLoading, setStudentActivitiesLoading] = useState(true);
+
+  const fetchStudentActivities = useCallback(async (silent = false) => {
+    if (!silent) setStudentActivitiesLoading(true);
+    try {
+      const res: any = await apiClient.getStudentActivities();
+      if (!mountedRef.current) return;
+      if (res?.ok && Array.isArray(res.activities)) {
+        setStudentActivities(res.activities);
+      }
+    } catch (err) {
+      console.error("Failed to fetch student activities:", err);
+    } finally {
+      if (mountedRef.current && !silent) {
+        setStudentActivitiesLoading(false);
+      }
+    }
+  }, []);
+
+  // Fetch student assigned activities on mount
+  useEffect(() => {
+    void fetchStudentActivities();
+  }, [fetchStudentActivities]);
 
   useEffect(() => {
     navigator.storage?.persisted?.().then((persisted) => {
@@ -805,15 +1089,19 @@ const StudentDashboard: React.FC = () => {
     return { present, absent, total: todaysClasses.length };
   }, [todaysClasses]);
 
-  // Derived live session status from already-loaded recentSessions
+  // Derived live session status from already-loaded recentSessions and studentActivities
   const hasActiveLiveSession = useMemo(() => {
-    return (recentSessions || []).some((s: any) => {
+    const fromClasses = (recentSessions || []).some((s: any) => {
       const isActive = s?.isActive === true || s?.is_active === true;
       if (!isActive) return false;
       const isPresent = String(s?.status || "").toLowerCase() === "present" || s?.attendanceCode === "P";
       return !isPresent;
     });
-  }, [recentSessions]);
+    const fromActivities = (studentActivities || []).some(
+      (act) => act.hasActiveSession && !act.isAlreadyMarked
+    );
+    return fromClasses || fromActivities;
+  }, [recentSessions, studentActivities]);
   /**
    * Schedule a callback during browser idle time with a deadline fallback.
    * Uses requestIdleCallback when available (Chrome/Android), falls back
@@ -830,48 +1118,23 @@ const StudentDashboard: React.FC = () => {
   useEffect(() => {
     mountedRef.current = true;
 
-    // TIER 1 (t=0ms): Nothing heavy — let the page paint and become interactive first.
+    // 1. EAGER COMPONENT PRELOAD: Preload LivePhotoCapture & CameraQrScanner immediately
+    // so JS chunks are parsed and compiled in mobile RAM before student taps anything.
+    void preloadCameraQrScanner();
+    void preloadLivePhotoCapture();
 
-    // TIER 2 (t=100ms): Start GPS watcher first, lowest GPU cost.
-    // GPS chip needs the most time to warm up so it gets priority.
-    const gpsTimer = window.setTimeout(() => {
-      if (!mountedRef.current) return;
-      const stopGpsWatcher = startRollingGpsWatcher((_loc) => {
-        if (mountedRef.current) setLocationReady(true);
-      });
-      // Store cleanup reference via closure
-      gpsStopRef.current = stopGpsWatcher;
-    }, 100);
+    // 2. IMMEDIATE GPS WATCHER: Start rolling GPS watcher at t=0ms so location fix is ready within 60s window
+    const stopGpsWatcher = startRollingGpsWatcher((_loc) => {
+      if (mountedRef.current) setLocationReady(true);
+    });
+    gpsStopRef.current = stopGpsWatcher;
 
-    // TIER 3 (t=300ms idle): Preload QR scanner JS chunk — pure network/parse, no GPU
-    scheduleIdle(() => {
-      if (!mountedRef.current) return;
-      void preloadCameraQrScanner();
-    }, 300);
+    // 3. IMMEDIATE WEBGL & MODEL PRE-WARMING: Warmup neural networks and WebGL shaders on mount
+    void preloadForStudent(registeredFacePhoto);
+    void prewarmMediaPipe();
+    void prewarmQrCamera();
 
-    // TIER 4 (t=600ms idle): Preload face capture chunk
-    scheduleIdle(() => {
-      if (!mountedRef.current) return;
-      void preloadLivePhotoCapture();
-    }, 600);
-
-    // TIER 5 (t=900ms idle): Warmup face-api.js models + reference descriptor.
-    // Face-api gets GPU first before MediaPipe to prevent WebGL context contention.
-    scheduleIdle(() => {
-      if (!mountedRef.current) return;
-      void preloadForStudent(registeredFacePhoto);
-    }, 900);
-
-    // TIER 6 (t=1300ms idle): MediaPipe and QR decoder warmup last.
-    // MediaPipe WASM init is the heaviest, starts after face-api has GPU context.
-    scheduleIdle(() => {
-      if (!mountedRef.current) return;
-      void prewarmMediaPipe();
-      // QR decoder prewarm only (loads BarcodeDetector, zero camera hardware lock)
-      void prewarmQrCamera();
-    }, 1300);
-
-    // TIER 7 (t=1600ms idle): Camera permissions query — lowest priority
+    // 4. Background permission query & department list sync
     scheduleIdle(() => {
       if (!mountedRef.current) return;
       if (typeof navigator !== "undefined" && navigator?.permissions?.query) {
@@ -880,11 +1143,11 @@ const StudentDashboard: React.FC = () => {
       if (!departments.length) {
         void fetchDepartments();
       }
-    }, 1600);
+    }, 1000);
 
     return () => {
       mountedRef.current = false;
-      window.clearTimeout(gpsTimer);
+      releasePrewarmedFrontStream();
       gpsStopRef.current?.();
       gpsStopRef.current = null;
       if (resetTimerRef.current) {
@@ -1272,7 +1535,7 @@ const StudentDashboard: React.FC = () => {
       })();
 
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Server response timed out. Please scan again.")), 12000)
+        setTimeout(() => reject(new Error("Server response timed out. Please scan again.")), 9000)
       );
 
       let result: any = null;
@@ -1282,7 +1545,14 @@ const StudentDashboard: React.FC = () => {
         result = { ok: false, error: err?.message || "Failed to submit attendance" };
       }
 
-      if (result?.ok) {
+      const isSuccess = Boolean(result?.ok);
+      const isAlreadyMarked = Boolean(
+        result?.already ||
+        result?.alreadyMarked ||
+        String(result?.error || result?.message || "").toLowerCase().includes("already marked")
+      );
+
+      if (isSuccess || isAlreadyMarked) {
         const targetSessionId =
           pendingQrPairRef.current?.kind === "totp"
             ? pendingQrPairRef.current.sequence?.[0]?.classId || (pendingQrPairRef.current.sequence?.[0] as any)?.sessionId
@@ -1294,7 +1564,7 @@ const StudentDashboard: React.FC = () => {
         setScanStep("SUCCESS");
         try { navigator.vibrate?.([80, 40, 160]); } catch {}
         playSuccessChime();
-        setStatusMsg(result.already || result.alreadyMarked ? "Attendance already marked." : "Attendance confirmed ✓");
+        setStatusMsg(isAlreadyMarked ? "Attendance already recorded ✓" : "Attendance confirmed ✓");
 
         // 1. Optimistic Local State Update (Instant 0ms UI Feedback)
         const markedSessionId = String(
@@ -1352,6 +1622,7 @@ const StudentDashboard: React.FC = () => {
         // 2. Silent background sync without blocking UI
         lastStudentDataFetchMs.current = 0;
         void loadStudentData().catch(() => {});
+        void fetchStudentActivities(true).catch(() => {});
 
         if (resetTimerRef.current) window.clearTimeout(resetTimerRef.current);
         resetTimerRef.current = window.setTimeout(() => {
@@ -1502,6 +1773,7 @@ const StudentDashboard: React.FC = () => {
                   setScanStep("IDLE");
                   setStatusMsg("");
                   setBusy(false);
+                  releasePrewarmedFrontStream();
                 }}
                 className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-800 text-slate-400 hover:text-white transition cursor-pointer"
                 title="Cancel"
@@ -1575,7 +1847,7 @@ const StudentDashboard: React.FC = () => {
                   return true;
                 }
                 setScannerStatusTone("success");
-                setScannerHint("Block 1 of 2 captured ✓ Keep camera focused...");
+                setScannerHint("Block 1 of 2 captured ✓ Next rotation in 1s...");
                 return false;
               }
 
@@ -1597,89 +1869,6 @@ const StudentDashboard: React.FC = () => {
         </React.Suspense>
         </>
       )}
-      {todayPanelOpen && (
-        <div className="fixed inset-0 z-[65] flex items-end justify-center bg-slate-950/55 p-3 backdrop-blur-sm sm:items-center sm:p-4">
-          <div className="max-h-[86vh] w-full max-w-lg overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_28px_90px_-36px_rgba(15,23,42,0.65)]">
-            <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
-              <div className="flex min-w-0 items-center gap-2 font-semibold tracking-tight text-slate-900">
-                <History size={18} />
-                <span className="truncate">Today's Attendance</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setTodayPanelOpen(false)}
-                aria-label="Close today's attendance"
-                className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-              >
-                <X size={17} />
-              </button>
-            </div>
-
-            <div className="max-h-[calc(86vh-58px)] overflow-y-auto px-4 py-4">
-              {todayPanelLoading ? (
-                <div className="flex min-h-[260px] flex-col items-center justify-center text-center">
-                  <LoaderCircle size={28} className="animate-spin text-teal-600" />
-                  <p className="mt-3 text-sm font-semibold text-slate-800">Fetching today's attendance</p>
-                </div>
-              ) : (
-                <>
-                  <div className="mb-3 flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-600">
-                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-700">P Present</span>
-                    <span className="rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-rose-700">A Absent</span>
-                    <span className="ml-auto text-slate-500">{todayAttendanceSummary.total} class{todayAttendanceSummary.total === 1 ? "" : "es"}</span>
-                  </div>
-
-                  {todaysClasses.length === 0 ? (
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 py-9 text-center text-slate-500">
-                      <p className="font-medium">No classes found for today</p>
-                      <p className="mt-1 text-xs text-slate-400">Started class sessions will appear here with P or A status.</p>
-                    </div>
-                  ) : (
-                    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-                      <div className="grid grid-cols-[minmax(0,1fr)_minmax(72px,0.8fr)_56px] bg-slate-900 px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-200">
-                        <span>Sub Code</span>
-                        <span>Time</span>
-                        <span className="text-center">P/A</span>
-                      </div>
-                      {todaysClasses.map((record) => {
-                        const time = new Date(record.startTime).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        });
-
-                        return (
-                          <div
-                            key={record.sessionId}
-                            className="grid grid-cols-[minmax(0,1fr)_minmax(72px,0.8fr)_56px] items-center border-t border-slate-100 px-4 py-3 text-sm"
-                          >
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2">
-                                <p className="truncate font-mono font-bold text-slate-900">
-                                  {record.subjectCode}
-                                </p>
-                                {record.isActive ? <Badge color="blue">Live</Badge> : null}
-                              </div>
-                              <p className="mt-0.5 truncate text-xs text-slate-500">
-                                {record.subjectName} | {record.facultyName}
-                              </p>
-                            </div>
-                            <p className="font-semibold text-slate-800">{time}</p>
-                            <div className="flex justify-center">
-                              <Badge color={record.attendanceCode === "P" ? "green" : "red"}>
-                                {record.attendanceCode}
-                              </Badge>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
       <CollegeHeader
         className="mx-auto mb-4 max-w-lg !top-0 rounded-t-none sm:rounded-t-[24px]"
         collegeName={currentUser?.collegeName}
@@ -1691,6 +1880,9 @@ const StudentDashboard: React.FC = () => {
         user={currentUser}
         roleLabel="Student"
         onLogout={logout}
+        onOpenAcademicAttendance={() => setProfileModalTab("academics")}
+        onOpenActivities={() => setProfileModalTab("activities")}
+        onOpenProfileModal={(tab) => setProfileModalTab(tab || "profile")}
       />
 
       <div className="mx-auto mb-4 relative flex min-h-[310px] w-full max-w-lg items-center justify-center rounded-[24px] border border-slate-800 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-900 p-6 sm:p-8 text-white shadow-[0_24px_50px_-20px_rgba(15,23,42,0.85)]">
@@ -1728,6 +1920,8 @@ const StudentDashboard: React.FC = () => {
               </span>
             </div>
             <Button
+              onPointerDown={() => void touchDownPrewarmFrontCamera()}
+              onTouchStart={() => void touchDownPrewarmFrontCamera()}
               onClick={() => void handleStartAttendance()}
               className="bg-teal-600 hover:bg-teal-500 active:bg-teal-700 w-full py-4 text-base sm:text-lg font-bold text-white shadow-lg shadow-teal-950/50 rounded-xl cursor-pointer flex items-center justify-center gap-2"
               disabled={busy}
@@ -1815,24 +2009,301 @@ const StudentDashboard: React.FC = () => {
         )}
       </div>
 
-      {/* ── My Attendance Card ─────────────────────────────────────────── */}
-      <div className="mx-auto mb-3 w-full max-w-lg">
-        <MyAttendanceCard />
+      {/* ── Today's Attendance & Timetable Section (Direct Dashboard View) ── */}
+      <div className="mx-auto mb-4 w-full max-w-lg">
+        <div className="rounded-[24px] border border-slate-200/90 bg-white/95 p-5 shadow-[0_12px_36px_-12px_rgba(15,23,42,0.08)] backdrop-blur-xl">
+          {/* Header */}
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-teal-50 border border-teal-200/80 text-teal-700">
+                <Calendar size={18} />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 leading-tight">Today's Attendance</h3>
+                <p className="text-[11px] font-medium text-slate-400">
+                  {new Date().toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => void loadStudentData()}
+              className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition cursor-pointer shadow-2xs"
+              title="Refresh today's attendance"
+            >
+              <RefreshCw size={12} className={loadingRecentRef.current ? "animate-spin text-teal-600" : "text-slate-400"} />
+              <span>Refresh</span>
+            </button>
+          </div>
+
+          {/* Summary Badges */}
+          <div className="mb-3.5 flex flex-wrap items-center gap-2 text-xs font-semibold">
+            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-0.5 text-emerald-700 font-mono">
+              {todayAttendanceSummary.present} Present
+            </span>
+            <span className="rounded-full border border-rose-200 bg-rose-50 px-3 py-0.5 text-rose-700 font-mono">
+              {todayAttendanceSummary.absent} Absent
+            </span>
+            <span className="ml-auto text-[11px] font-medium text-slate-400 font-mono">
+              {todayAttendanceSummary.total} class{todayAttendanceSummary.total === 1 ? "" : "es"}
+            </span>
+          </div>
+
+          {/* Sessions List */}
+          {todaysClasses.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 py-8 text-center text-slate-500">
+              <Clock size={28} className="mx-auto mb-2 text-slate-300" />
+              <p className="text-xs font-semibold text-slate-600">No sessions recorded yet today</p>
+              <p className="mt-0.5 text-[11px] text-slate-400">Classes will appear here as faculty begins sessions.</p>
+            </div>
+          ) : (
+            <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
+              <div className="grid grid-cols-[minmax(0,1fr)_minmax(72px,0.8fr)_56px] bg-slate-900 px-3.5 py-2.5 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-200">
+                <span>Subject</span>
+                <span>Time</span>
+                <span className="text-center">Status</span>
+              </div>
+              <div className="divide-y divide-slate-100">
+                {todaysClasses.map((record) => {
+                  const time = new Date(record.startTime).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  });
+                  const isPresent = record.attendanceCode === "P";
+
+                  return (
+                    <div
+                      key={record.sessionId}
+                      className="grid grid-cols-[minmax(0,1fr)_minmax(72px,0.8fr)_56px] items-center px-3.5 py-2.5 text-xs transition hover:bg-slate-50/60"
+                    >
+                      <div className="min-w-0 pr-2">
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate font-mono font-bold text-slate-900">
+                            {record.subjectCode}
+                          </span>
+                          {record.isActive ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 border border-rose-200 px-1.5 py-0.5 text-[9px] font-extrabold text-rose-600 uppercase animate-pulse">
+                              Live
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="mt-0.5 truncate text-[11px] text-slate-500">
+                          {record.subjectName} · {record.facultyName}
+                        </p>
+                      </div>
+
+                      <div className="min-w-0">
+                        <span className="font-mono text-slate-700 font-medium">{time}</span>
+                      </div>
+
+                      <div className="flex justify-center">
+                        <span
+                          className={`inline-flex items-center justify-center rounded-lg px-2.5 py-1 text-xs font-black font-mono shadow-2xs ${
+                            isPresent
+                              ? "bg-emerald-500 text-white border border-emerald-600"
+                              : "bg-rose-500 text-white border border-rose-600"
+                          }`}
+                        >
+                          {record.attendanceCode}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* ── Today's Attendance Quick Access ────────────────────────────── */}
-      <div className="mx-auto flex w-full max-w-lg justify-center pb-8">
+      {/* ── Quick Profile & Extended Attendance Shortcuts ── */}
+      <div className="mx-auto mb-6 flex w-full max-w-lg items-center justify-between gap-2.5 px-1">
         <button
           type="button"
-          onClick={openTodayPanel}
-          className="min-w-[170px] rounded-2xl bg-slate-900 px-5 py-3 text-center text-white shadow-[0_18px_42px_-28px_rgba(15,23,42,0.8)] transition hover:-translate-y-0.5 hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2"
+          onClick={() => setProfileModalTab("academics")}
+          className="flex-1 flex items-center justify-center gap-2 rounded-2xl border border-indigo-200/80 bg-white/90 hover:bg-indigo-50/60 p-3 text-xs font-bold text-indigo-700 shadow-xs transition cursor-pointer"
         >
-          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-300">Today</p>
-          <p className="mt-1 text-sm font-semibold tracking-tight">
-            View Attendance
-          </p>
+          <BookOpen size={15} />
+          <span>Academic Attendance</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setProfileModalTab("activities")}
+          className="flex-1 flex items-center justify-center gap-2 rounded-2xl border border-purple-200/80 bg-white/90 hover:bg-purple-50/60 p-3 text-xs font-bold text-purple-700 shadow-xs transition cursor-pointer"
+        >
+          <Award size={15} />
+          <span>Activities & Events</span>
+          {studentActivities.length > 0 && (
+            <span className="rounded-full bg-purple-100 text-purple-800 px-1.5 py-0.2 text-[10px] font-mono">
+              {studentActivities.length}
+            </span>
+          )}
         </button>
       </div>
+
+      {/* ── Unified Profile & Records Modal (Pop-up upon clicking Profile) ── */}
+      {profileModalTab !== null && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/60 p-2 sm:p-4 backdrop-blur-sm sm:items-center animate-in fade-in duration-200"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setProfileModalTab(null);
+          }}
+        >
+          <div className="max-h-[88vh] w-full max-w-lg flex flex-col rounded-[26px] border border-slate-200 bg-white shadow-[0_28px_90px_-36px_rgba(15,23,42,0.65)] overflow-hidden">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 bg-slate-50/80">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-2xl bg-indigo-600 text-white font-bold flex items-center justify-center text-sm shadow-sm overflow-hidden shrink-0">
+                  {currentUser?.profilePhotoUrl || currentUser?.studentProfilePhotoUrl ? (
+                    <img
+                      src={currentUser?.studentProfilePhotoUrl || currentUser?.profilePhotoUrl}
+                      alt="Profile"
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    currentUser?.name?.slice(0, 2).toUpperCase() || "ST"
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-bold text-slate-900 leading-tight truncate">
+                    {currentUser?.name || "Student Records"}
+                  </h3>
+                  <p className="text-[11px] font-mono text-slate-500">
+                    {currentUser?.enrollmentNo || "USN"} · Sec {currentUser?.section || "A"}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setProfileModalTab(null)}
+                aria-label="Close profile modal"
+                className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:bg-slate-100 transition cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Segmented Tab Navigation */}
+            <div className="px-4 pt-2.5 pb-2 bg-white border-b border-slate-100 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setProfileModalTab("academics")}
+                className={`flex-1 py-2 px-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                  profileModalTab === "academics"
+                    ? "bg-indigo-600 text-white shadow-xs"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                }`}
+              >
+                <BookOpen size={14} />
+                <span>Academics</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setProfileModalTab("activities")}
+                className={`flex-1 py-2 px-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                  profileModalTab === "activities"
+                    ? "bg-purple-600 text-white shadow-xs"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                }`}
+              >
+                <Award size={14} />
+                <span>Activities</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setProfileModalTab("profile")}
+                className={`flex-1 py-2 px-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                  profileModalTab === "profile"
+                    ? "bg-slate-900 text-white shadow-xs"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                }`}
+              >
+                <UserRound size={14} />
+                <span>Details</span>
+              </button>
+            </div>
+
+            {/* Modal Scrollable Content */}
+            <div className="flex-1 overflow-y-auto p-4">
+              {profileModalTab === "academics" && (
+                <div className="space-y-3">
+                  <MyAttendanceCard />
+                </div>
+              )}
+
+              {profileModalTab === "activities" && (
+                <div className="space-y-3">
+                  <AssignedActivitiesSection
+                    activities={studentActivities}
+                    loading={studentActivitiesLoading}
+                    onRefresh={() => void fetchStudentActivities(false)}
+                    onScanActivity={() => {
+                      setProfileModalTab(null);
+                      void handleStartAttendance();
+                    }}
+                  />
+                </div>
+              )}
+
+              {profileModalTab === "profile" && (
+                <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="h-12 w-12 rounded-2xl bg-slate-900 text-white font-bold flex items-center justify-center text-base shadow-sm overflow-hidden shrink-0">
+                      {currentUser?.profilePhotoUrl || currentUser?.studentProfilePhotoUrl ? (
+                        <img
+                          src={currentUser?.studentProfilePhotoUrl || currentUser?.profilePhotoUrl}
+                          alt="Profile"
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        currentUser?.name?.slice(0, 2).toUpperCase() || "ST"
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <h4 className="font-bold text-slate-900 text-base leading-tight truncate">
+                        {currentUser?.name || "Student"}
+                      </h4>
+                      <p className="text-xs font-mono font-semibold text-slate-500 mt-0.5">
+                        {currentUser?.enrollmentNo || "USN not assigned"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200/60 text-xs">
+                    <div className="rounded-xl bg-white p-2.5 border border-slate-200/60 shadow-2xs">
+                      <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-400">Department</p>
+                      <p className="font-bold text-slate-800 mt-0.5 truncate">{currentUser?.department?.name || currentUser?.department || "General"}</p>
+                    </div>
+                    <div className="rounded-xl bg-white p-2.5 border border-slate-200/60 shadow-2xs">
+                      <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-400">Section & Sem</p>
+                      <p className="font-bold text-slate-800 mt-0.5">Sec {currentUser?.section || "A"} · Sem {currentUser?.semester || 1}</p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl bg-white p-2.5 border border-slate-200/60 shadow-2xs text-xs">
+                    <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-400">Email Address</p>
+                    <p className="font-semibold text-slate-700 mt-0.5 truncate">{currentUser?.email || "Not specified"}</p>
+                  </div>
+
+                  <div className="rounded-xl bg-white p-2.5 border border-slate-200/60 shadow-2xs text-xs flex items-center justify-between">
+                    <div>
+                      <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-400">Biometric Verification</p>
+                      <p className="font-bold text-emerald-700 mt-0.5 flex items-center gap-1">
+                        <CheckCircle size={13} className="text-emerald-600" /> Face Biometrics Enrolled
+                      </p>
+                    </div>
+                    <span className="text-[10px] font-mono bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-0.5 rounded-full font-bold">Active</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
     </div>
   );
