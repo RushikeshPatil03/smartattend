@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, GraduationCap, LogOut, Mail, ShieldCheck, UserRound, Edit, Camera, BookOpen, Award } from "lucide-react";
+import { ChevronDown, GraduationCap, LogOut, Mail, ShieldCheck, UserRound, Edit, Camera, BookOpen, Award, Building2, TrendingUp } from "lucide-react";
 import { useApp } from "../store";
 import apiClient from "../services/apiClient";
 import LivePhotoCapture from "./LivePhotoCapture";
@@ -54,7 +54,38 @@ const ProfileMenu: React.FC<ProfileMenuProps> = ({
       : photoUrl || user?.profilePhotoUrl || user?.studentProfilePhotoUrl || ""
   ).trim();
   const initials = useMemo(() => getInitials(displayName), [displayName]);
-  const { updateCurrentUser } = useApp();
+  const { updateCurrentUser, departments = [] } = useApp();
+
+  const deptCode = useMemo(() => {
+    if (user?.departmentCode) return String(user.departmentCode).toUpperCase();
+    const rawDept = String(user?.departmentName || user?.department?.name || user?.department?.code || user?.department || "").trim();
+    if (!rawDept) return "";
+    const matched = departments.find(
+      (d: any) =>
+        String(d.id) === rawDept ||
+        String(d.code).toUpperCase() === rawDept.toUpperCase() ||
+        String(d.name).toUpperCase() === rawDept.toUpperCase()
+    );
+    if (matched?.code) return String(matched.code).toUpperCase();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawDept)) {
+      if (rawDept.length <= 8) return rawDept.toUpperCase();
+      const words = rawDept.replace(/[()]/g, "").split(/\s+/).filter(Boolean);
+      if (words.length > 1) {
+        return words.map(w => w[0]).join("").toUpperCase();
+      }
+      return rawDept.slice(0, 6).toUpperCase();
+    }
+    return "";
+  }, [user?.departmentCode, user?.departmentName, user?.department, departments]);
+
+  const studentCohortSummary = useMemo(() => {
+    const sem = user?.semester != null ? user.semester : 1;
+    const sec = user?.section || "A";
+    if (deptCode) {
+      return `${deptCode} · Sem ${sem} · Sec ${sec}`;
+    }
+    return `Sem ${sem} · Sec ${sec}`;
+  }, [deptCode, user?.semester, user?.section]);
 
   // Local editor state for college profile (admin-only)
   const [editingCampus, setEditingCampus] = useState(false);
@@ -290,7 +321,16 @@ const ProfileMenu: React.FC<ProfileMenuProps> = ({
             </div>
 
             {isStudent && (
-              <div className="pt-2 pb-1 space-y-1.5 border-t border-slate-100">
+              <div className="flex min-w-0 items-center gap-3 rounded-xl bg-slate-50 px-3 py-2.5 text-sm text-slate-700">
+                <Building2 size={16} className="shrink-0 text-slate-400" />
+                <span className="truncate font-medium">
+                  {studentCohortSummary}
+                </span>
+              </div>
+            )}
+
+            {isStudent && (
+              <div className="pt-2 pb-1 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => {
@@ -300,24 +340,12 @@ const ProfileMenu: React.FC<ProfileMenuProps> = ({
                   className="flex w-full items-center justify-between gap-2 rounded-xl bg-indigo-50/90 hover:bg-indigo-100/90 px-3 py-2 text-xs font-semibold text-indigo-700 transition cursor-pointer"
                 >
                   <div className="flex items-center gap-2">
-                    <BookOpen size={15} className="text-indigo-600" />
-                    <span>Academic Attendance</span>
+                    <TrendingUp size={15} className="text-indigo-600" />
+                    <span>My Attendance</span>
                   </div>
-                  <span className="text-[10px] uppercase font-bold tracking-wider text-indigo-500 bg-white/80 px-1.5 py-0.5 rounded-md border border-indigo-200/60">View</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOpen(false);
-                    onOpenActivities?.();
-                  }}
-                  className="flex w-full items-center justify-between gap-2 rounded-xl bg-purple-50/90 hover:bg-purple-100/90 px-3 py-2 text-xs font-semibold text-purple-700 transition cursor-pointer"
-                >
-                  <div className="flex items-center gap-2">
-                    <Award size={15} className="text-purple-600" />
-                    <span>Activities & Events</span>
-                  </div>
-                  <span className="text-[10px] uppercase font-bold tracking-wider text-purple-500 bg-white/80 px-1.5 py-0.5 rounded-md border border-purple-200/60">View</span>
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-indigo-500 bg-white/80 px-1.5 py-0.5 rounded-md border border-indigo-200/60">
+                    View
+                  </span>
                 </button>
               </div>
             )}

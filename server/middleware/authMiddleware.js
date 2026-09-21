@@ -66,6 +66,9 @@ module.exports = async function authMiddleware(req, res, next) {
     user.deviceFingerprint = user.device_fingerprint || null;
     user.deviceLockEnabled = user.device_lock_enabled !== false;
     user.allottedSubjects = user.allotted_subjects || [];
+    user.year = user.year != null ? Number(user.year) : null;
+    user.semester = user.semester != null ? Number(user.semester) : null;
+    user.section = user.section || null;
 
     req.user = user;
     req.userRole = decoded.role;

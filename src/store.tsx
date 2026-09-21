@@ -388,6 +388,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           name: res.user.name,
           email: res.user.email,
           createdByAdmin: res.user.createdByAdmin,
+          department: res.user.department,
+          departmentName: res.user.departmentName,
+          departmentCode: res.user.departmentCode,
+          departmentId: res.user.departmentId,
+          year: res.user.year,
+          semester: res.user.semester,
+          section: res.user.section,
         });
         return res.user;
       }

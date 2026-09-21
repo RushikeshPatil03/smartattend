@@ -487,15 +487,9 @@ FaceVerificationProgressBar.displayName = "FaceVerificationProgressBar";
 const MyAttendanceCard: React.FC = () => {
   const [overviewData, setOverviewData] = useState<AttendanceOverviewData | null>(null);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "loaded" | "error">("idle");
-  const [expanded, setExpanded] = useState(false);
   const [lastFetchedAt, setLastFetchedAt] = useState<Date | null>(null);
   const fetchingRef = useRef(false);
   const mountedRef = useRef(true);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => { mountedRef.current = false; };
-  }, []);
 
   const fetchOverview = useCallback(async (silent = false) => {
     if (fetchingRef.current) return;
@@ -526,15 +520,11 @@ const MyAttendanceCard: React.FC = () => {
     }
   }, []);
 
-  const handleToggleExpand = () => {
-    setExpanded((prev) => {
-      const next = !prev;
-      if (next && loadState === "idle") {
-        void fetchOverview(false);
-      }
-      return next;
-    });
-  };
+  useEffect(() => {
+    mountedRef.current = true;
+    void fetchOverview(false);
+    return () => { mountedRef.current = false; };
+  }, [fetchOverview]);
 
   const sorted = useMemo(() => {
     if (!overviewData) return [];
@@ -548,173 +538,124 @@ const MyAttendanceCard: React.FC = () => {
 
   // Subjects at risk (< 75%)
   const atRisk = sorted.filter((s) => s.attendancePercentage < ATTENDANCE_THRESHOLDS.SAFE);
-  const hasData = loadState === "loaded" && overviewData;
+  const hasData = (loadState === "loaded" || loadState === "idle") && !!overviewData;
 
   return (
     <div className="mx-auto w-full max-w-lg">
-      {/* Card header — always visible, acts as toggle */}
-      <button
-        type="button"
-        onClick={handleToggleExpand}
-        className="w-full rounded-[20px] border border-slate-200 bg-white px-5 py-4 shadow-[0_8px_28px_-12px_rgba(15,23,42,0.18)] transition hover:-translate-y-0.5 hover:shadow-[0_12px_32px_-12px_rgba(15,23,42,0.22)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2"
-        aria-expanded={expanded}
-        aria-label="Toggle My Attendance overview"
-      >
-        <div className="flex items-center justify-between gap-3">
-          {/* Left: icon + title + badge */}
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-50 to-sky-50 border border-indigo-100 text-indigo-600">
-              <TrendingUp size={18} />
-            </div>
-            <div className="min-w-0 text-left">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
-                Cumulative
-              </p>
-              <p className="text-sm font-bold tracking-tight text-slate-900">My Attendance</p>
-            </div>
-          </div>
-
-          {/* Right: quick overall % or loading state */}
-          <div className="flex shrink-0 items-center gap-2">
-            {hasData && (
-              <div className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-bold ${overallTier.bgColor} ${overallTier.borderColor} ${overallTier.textColor}`}>
-                <Award size={11} />
-                {overallPct.toFixed(overallPct % 1 === 0 ? 0 : 1)}%
+      <div className="overflow-hidden rounded-[20px] border border-slate-200 bg-white shadow-[0_8px_28px_-12px_rgba(15,23,42,0.18)]">
+        {/* Loading skeleton */}
+        {loadState === "loading" && !overviewData && (
+          <div className="space-y-4 p-5">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="animate-pulse space-y-2">
+                <div className="flex justify-between">
+                  <div className="h-3.5 w-40 rounded-full bg-slate-200" />
+                  <div className="h-3.5 w-10 rounded-full bg-slate-200" />
+                </div>
+                <div className="h-2 w-full rounded-full bg-slate-200" />
               </div>
-            )}
-            {loadState === "idle" && (
-              <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-medium text-slate-500">
-                Tap to view
-              </span>
-            )}
-            {loadState === "loading" && (
-              <LoaderCircle size={16} className="animate-spin text-slate-400" />
-            )}
-            <div className="text-slate-400 transition-transform duration-200" style={{ transform: expanded ? "rotate(180deg)" : "rotate(0deg)" }}>
-              <ChevronDown size={18} />
-            </div>
-          </div>
-        </div>
-
-        {/* Risk alert strip — always visible if loaded and there are at-risk subjects */}
-        {hasData && atRisk.length > 0 && (
-          <div className="mt-3 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-left">
-            <AlertTriangle size={13} className="shrink-0 text-amber-600" />
-            <p className="text-[12px] font-semibold text-amber-700">
-              {atRisk.length === 1
-                ? `${atRisk[0].subjectName} is below 75%`
-                : `${atRisk.length} subjects are below 75% attendance`}
-            </p>
+            ))}
           </div>
         )}
-      </button>
 
-      {/* Expanded panel */}
-      {expanded && (
-        <div className="mt-2 overflow-hidden rounded-[20px] border border-slate-200 bg-white shadow-[0_12px_32px_-12px_rgba(15,23,42,0.18)]">
+        {/* Error state */}
+        {loadState === "error" && !overviewData && (
+          <div className="flex flex-col items-center gap-3 py-10 text-center px-6">
+            <XCircle size={32} className="text-rose-400" />
+            <p className="text-sm font-semibold text-slate-700">Could not load attendance data</p>
+            <p className="text-xs text-slate-400">Check your connection and try again.</p>
+            <button
+              type="button"
+              onClick={() => void fetchOverview(false)}
+              className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-white transition cursor-pointer"
+            >
+              <RefreshCw size={13} /> Retry
+            </button>
+          </div>
+        )}
 
-          {/* Loading skeleton */}
-          {loadState === "loading" && (
-            <div className="space-y-4 p-5">
-              {[1, 2, 3].map((i) => (
-                <div key={i} className="animate-pulse space-y-2">
-                  <div className="flex justify-between">
-                    <div className="h-3.5 w-40 rounded-full bg-slate-200" />
-                    <div className="h-3.5 w-10 rounded-full bg-slate-200" />
-                  </div>
-                  <div className="h-2 w-full rounded-full bg-slate-200" />
-                </div>
-              ))}
-            </div>
-          )}
+        {/* Loaded data */}
+        {hasData && (
+          <>
+            {/* Risk alert strip — visible if there are at-risk subjects */}
+            {atRisk.length > 0 && (
+              <div className="border-b border-amber-200 bg-amber-50 px-4 py-2.5 flex items-center gap-2">
+                <AlertTriangle size={14} className="shrink-0 text-amber-600" />
+                <p className="text-[12px] font-semibold text-amber-800">
+                  {atRisk.length === 1
+                    ? `${atRisk[0].subjectName} is below 75%`
+                    : `${atRisk.length} subjects are below 75% attendance`}
+                </p>
+              </div>
+            )}
 
-          {/* Error state */}
-          {loadState === "error" && (
-            <div className="flex flex-col items-center gap-3 py-10 text-center px-6">
-              <XCircle size={32} className="text-rose-400" />
-              <p className="text-sm font-semibold text-slate-700">Could not load attendance data</p>
-              <p className="text-xs text-slate-400">Check your connection and try again.</p>
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); void fetchOverview(false); }}
-                className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-white transition cursor-pointer"
-              >
-                <RefreshCw size={13} /> Retry
-              </button>
-            </div>
-          )}
-
-          {/* Loaded data */}
-          {hasData && (
-            <>
-              {/* Overall summary strip */}
-              <div className="border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white px-5 py-4">
-                <div className="flex items-center gap-5">
-                  <OverallRingGauge pct={overallPct} />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 mb-1">
-                      Overall Attendance
-                    </p>
-                    <p className={`text-2xl font-black tabular-nums tracking-tight ${overallTier.textColor}`}>
-                      <CountUp value={overallPct} decimals={overallPct % 1 === 0 ? 0 : 1} suffix="%" />
-                    </p>
-                    <div className="mt-1.5 flex flex-wrap gap-2 text-[11px] font-medium text-slate-500">
-                      <span className="flex items-center gap-1 text-emerald-700">
-                        <span className="h-2 w-2 rounded-full bg-emerald-500 inline-block" />
-                        <CountUp value={overviewData.overview.classesAttended} /> Present
-                      </span>
-                      <span className="flex items-center gap-1 text-rose-600">
-                        <span className="h-2 w-2 rounded-full bg-rose-500 inline-block" />
-                        <CountUp value={overviewData.overview.classesMissed} /> Absent
-                      </span>
-                      <span className="text-slate-400">
-                        / <CountUp value={overviewData.overview.totalClassesConducted} /> Total
-                      </span>
-                    </div>
+            {/* Overall summary strip */}
+            <div className="border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white px-5 py-4">
+              <div className="flex items-center gap-5">
+                <OverallRingGauge pct={overallPct} />
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 mb-1">
+                    Overall Attendance
+                  </p>
+                  <p className={`text-2xl font-black tabular-nums tracking-tight ${overallTier.textColor}`}>
+                    <CountUp value={overallPct} decimals={overallPct % 1 === 0 ? 0 : 1} suffix="%" />
+                  </p>
+                  <div className="mt-1.5 flex flex-wrap gap-2 text-[11px] font-medium text-slate-500">
+                    <span className="flex items-center gap-1 text-emerald-700">
+                      <span className="h-2 w-2 rounded-full bg-emerald-500 inline-block" />
+                      <CountUp value={overviewData.overview.classesAttended} /> Present
+                    </span>
+                    <span className="flex items-center gap-1 text-rose-600">
+                      <span className="h-2 w-2 rounded-full bg-rose-500 inline-block" />
+                      <CountUp value={overviewData.overview.classesMissed} /> Absent
+                    </span>
+                    <span className="text-slate-400">
+                      / <CountUp value={overviewData.overview.totalClassesConducted} /> Total
+                    </span>
                   </div>
                 </div>
               </div>
+            </div>
 
-              {/* Subject list */}
-              <div className="px-4 pb-4 pt-3">
-                {sorted.length === 0 ? (
-                  <div className="py-8 text-center">
-                    <Clock size={28} className="mx-auto mb-3 text-slate-300" />
-                    <p className="text-sm font-medium text-slate-500">No completed sessions yet</p>
-                    <p className="mt-1 text-xs text-slate-400">
-                      Subject-wise stats appear once faculty ends a session.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="divide-y divide-slate-100/80">
-                    {sorted.map((subj, idx) => (
-                      <SubjectProgressBar key={subj.subjectId} subject={subj} animDelay={idx * 60} />
-                    ))}
-                  </div>
-                )}
-
-                {/* Legend + last updated */}
-                <div className="mt-4 flex items-center justify-between gap-3">
-                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-semibold text-slate-400">
-                    <span className="flex items-center gap-1"><span className="h-1.5 w-3 rounded-full bg-emerald-500 inline-block" />≥75% Safe</span>
-                    <span className="flex items-center gap-1"><span className="h-1.5 w-3 rounded-full bg-amber-400 inline-block" />60–74% Warn</span>
-                    <span className="flex items-center gap-1"><span className="h-1.5 w-3 rounded-full bg-rose-500 inline-block" />&lt;60% Risk</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); void fetchOverview(true); }}
-                    className="flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition cursor-pointer"
-                    title="Refresh attendance data"
-                  >
-                    <RefreshCw size={11} />
-                    {lastFetchedAt ? `Updated ${lastFetchedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Refresh"}
-                  </button>
+            {/* Subject list */}
+            <div className="px-4 pb-4 pt-3">
+              {sorted.length === 0 ? (
+                <div className="py-8 text-center">
+                  <Clock size={28} className="mx-auto mb-3 text-slate-300" />
+                  <p className="text-sm font-medium text-slate-500">No completed sessions yet</p>
+                  <p className="mt-1 text-xs text-slate-400">
+                    Subject-wise stats appear once faculty ends a session.
+                  </p>
                 </div>
+              ) : (
+                <div className="divide-y divide-slate-100/80">
+                  {sorted.map((subj, idx) => (
+                    <SubjectProgressBar key={subj.subjectId} subject={subj} animDelay={idx * 60} />
+                  ))}
+                </div>
+              )}
+
+              {/* Legend + last updated */}
+              <div className="mt-4 flex items-center justify-between gap-3">
+                <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-semibold text-slate-400">
+                  <span className="flex items-center gap-1"><span className="h-1.5 w-3 rounded-full bg-emerald-500 inline-block" />≥75% Safe</span>
+                  <span className="flex items-center gap-1"><span className="h-1.5 w-3 rounded-full bg-amber-400 inline-block" />60–74% Warn</span>
+                  <span className="flex items-center gap-1"><span className="h-1.5 w-3 rounded-full bg-rose-500 inline-block" />&lt;60% Risk</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void fetchOverview(true)}
+                  className="flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition cursor-pointer"
+                  title="Refresh attendance data"
+                >
+                  <RefreshCw size={11} className={loadState === "loading" ? "animate-spin" : ""} />
+                  {lastFetchedAt ? `Updated ${lastFetchedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Refresh"}
+                </button>
               </div>
-            </>
-          )}
-        </div>
-      )}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 };
@@ -750,8 +691,6 @@ const AssignedActivitiesSection: React.FC<{
   onRefresh: () => void;
   onScanActivity: (activity: StudentAssignedActivity) => void;
 }> = React.memo(({ activities, loading, onRefresh, onScanActivity }) => {
-  const [expanded, setExpanded] = useState(true);
-
   const activeCount = useMemo(() => {
     return activities.filter((a) => a.hasActiveSession && !a.isAlreadyMarked).length;
   }, [activities]);
@@ -812,24 +751,11 @@ const AssignedActivitiesSection: React.FC<{
             >
               <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
             </button>
-            <button
-              type="button"
-              onClick={() => setExpanded((prev) => !prev)}
-              className="p-1 text-slate-400 hover:text-slate-600 transition cursor-pointer"
-              aria-label="Toggle activities section"
-            >
-              <ChevronDown
-                size={18}
-                className="transition-transform duration-200"
-                style={{ transform: expanded ? "rotate(180deg)" : "rotate(0deg)" }}
-              />
-            </button>
           </div>
         </div>
 
-        {/* Collapsible Content */}
-        {expanded && (
-          <div className="mt-4 pt-4 border-t border-slate-100 space-y-3">
+        {/* Content directly visible */}
+        <div className="mt-4 pt-4 border-t border-slate-100 space-y-3">
             {loading && activities.length === 0 ? (
               <div className="space-y-3">
                 {[1, 2].map((i) => (
@@ -960,7 +886,6 @@ const AssignedActivitiesSection: React.FC<{
               })
             )}
           </div>
-        )}
       </div>
     </div>
   );
@@ -1088,6 +1013,16 @@ const StudentDashboard: React.FC = () => {
     const absent = todaysClasses.filter((record) => record.attendanceCode === "A").length;
     return { present, absent, total: todaysClasses.length };
   }, [todaysClasses]);
+
+  const studentCohortText = useMemo(() => {
+    const sem = currentUser?.semester ?? 1;
+    const sec = currentUser?.section || "A";
+    const year = currentUser?.year;
+    if (year) {
+      return `Sem ${sem} · Sec ${sec} (Yr ${year})`;
+    }
+    return `Sem ${sem} · Sec ${sec}`;
+  }, [currentUser?.semester, currentUser?.section, currentUser?.year]);
 
   // Derived live session status from already-loaded recentSessions and studentActivities
   const hasActiveLiveSession = useMemo(() => {
@@ -1345,9 +1280,9 @@ const StudentDashboard: React.FC = () => {
   const lastStudentDataFetchMs = useRef<number>(0);
   const STUDENT_DATA_FETCH_DEBOUNCE_MS = 30_000; // 30 seconds
 
-  const loadStudentData = useCallback(async () => {
+  const loadStudentData = useCallback(async (force = false) => {
     const now = Date.now();
-    if (now - lastStudentDataFetchMs.current < STUDENT_DATA_FETCH_DEBOUNCE_MS) {
+    if (!force && now - lastStudentDataFetchMs.current < STUDENT_DATA_FETCH_DEBOUNCE_MS) {
       return; // Skip — data is fresh enough
     }
     lastStudentDataFetchMs.current = now;
@@ -1368,6 +1303,15 @@ const StudentDashboard: React.FC = () => {
       loadingRecentRef.current = false;
     }
   }, []);
+
+  const openTodayPanel = useCallback(async () => {
+    setTodayPanelOpen(true);
+    setTodayPanelLoading(true);
+    await loadStudentData(true);
+    if (mountedRef.current) {
+      setTodayPanelLoading(false);
+    }
+  }, [loadStudentData]);
 
   const warmLocation = useCallback(() => {
     if (locationWarmupPromiseRef.current) {
@@ -1433,15 +1377,6 @@ const StudentDashboard: React.FC = () => {
     const timerId = window.setTimeout(warmup, 600);
     return () => window.clearTimeout(timerId);
   }, [warmLocation]);
-
-  const openTodayPanel = useCallback(async () => {
-    setTodayPanelOpen(true);
-    setTodayPanelLoading(true);
-    await loadStudentData();
-    if (mountedRef.current) {
-      setTodayPanelLoading(false);
-    }
-  }, [loadStudentData]);
 
   const submitQrAttendance = useCallback(async () => {
     if (!faceVerifiedUntilRef.current || Date.now() > faceVerifiedUntilRef.current) {
@@ -1882,7 +1817,7 @@ const StudentDashboard: React.FC = () => {
         onLogout={logout}
         onOpenAcademicAttendance={() => setProfileModalTab("academics")}
         onOpenActivities={() => setProfileModalTab("activities")}
-        onOpenProfileModal={(tab) => setProfileModalTab(tab || "profile")}
+        onOpenProfileModal={(tab) => setProfileModalTab(tab === "activities" ? "activities" : "academics")}
       />
 
       <div className="mx-auto mb-4 relative flex min-h-[310px] w-full max-w-lg items-center justify-center rounded-[24px] border border-slate-800 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-900 p-6 sm:p-8 text-white shadow-[0_24px_50px_-20px_rgba(15,23,42,0.85)]">
@@ -2009,145 +1944,167 @@ const StudentDashboard: React.FC = () => {
         )}
       </div>
 
-      {/* ── Today's Attendance & Timetable Section (Direct Dashboard View) ── */}
-      <div className="mx-auto mb-4 w-full max-w-lg">
-        <div className="rounded-[24px] border border-slate-200/90 bg-white/95 p-5 shadow-[0_12px_36px_-12px_rgba(15,23,42,0.08)] backdrop-blur-xl">
-          {/* Header */}
-          <div className="flex items-center justify-between gap-3 mb-3">
-            <div className="flex items-center gap-2.5">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-teal-50 border border-teal-200/80 text-teal-700">
-                <Calendar size={18} />
+      {/* ── Today's Attendance Quick Access Button ── */}
+      <div className="mx-auto mb-6 flex w-full max-w-lg justify-center">
+        <button
+          type="button"
+          onClick={openTodayPanel}
+          className="group relative flex min-w-[200px] items-center justify-between gap-4 rounded-2xl border border-slate-800 bg-slate-900 px-5 py-3.5 text-white shadow-[0_18px_42px_-28px_rgba(15,23,42,0.8)] transition hover:-translate-y-0.5 hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2 cursor-pointer"
+        >
+          <div className="flex items-center gap-3 text-left">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-800 text-cyan-400 border border-slate-700/60 shadow-inner group-hover:bg-slate-700 transition">
+              <History size={20} />
+            </div>
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Today's Records</p>
+              <p className="text-sm font-bold tracking-tight text-white">View Attendance</p>
+            </div>
+          </div>
+          <span className="rounded-full bg-slate-800 px-2.5 py-1 text-xs font-mono font-bold text-slate-300 border border-slate-700/50">
+            {todayAttendanceSummary.total} {todayAttendanceSummary.total === 1 ? "class" : "classes"}
+          </span>
+        </button>
+      </div>
+
+      {/* ── Today's Attendance Lower-Side Popup Sheet ── */}
+      {todayPanelOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-[65] flex items-end justify-center bg-slate-950/55 p-3 backdrop-blur-sm sm:items-center sm:p-4 animate-in fade-in duration-200"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setTodayPanelOpen(false);
+          }}
+        >
+          <div className="max-h-[86vh] w-full max-w-lg overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_28px_90px_-36px_rgba(15,23,42,0.65)] flex flex-col">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-3.5 bg-slate-50/80">
+              <div className="flex min-w-0 items-center gap-2.5 font-bold tracking-tight text-slate-900">
+                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-teal-50 border border-teal-200/80 text-teal-700">
+                  <Calendar size={16} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 leading-tight">Today's Attendance</h3>
+                  <p className="text-[11px] font-medium text-slate-400">
+                    {new Date().toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}
+                  </p>
+                </div>
               </div>
-              <div>
-                <h3 className="text-sm font-bold text-slate-900 leading-tight">Today's Attendance</h3>
-                <p className="text-[11px] font-medium text-slate-400">
-                  {new Date().toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}
-                </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void loadStudentData(true)}
+                  className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:bg-slate-100 transition cursor-pointer"
+                  title="Refresh"
+                >
+                  <RefreshCw size={14} className={loadingRecentRef.current ? "animate-spin text-teal-600" : ""} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTodayPanelOpen(false)}
+                  aria-label="Close today's attendance"
+                  className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:bg-slate-100 transition cursor-pointer"
+                >
+                  <X size={16} />
+                </button>
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => void loadStudentData()}
-              className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition cursor-pointer shadow-2xs"
-              title="Refresh today's attendance"
-            >
-              <RefreshCw size={12} className={loadingRecentRef.current ? "animate-spin text-teal-600" : "text-slate-400"} />
-              <span>Refresh</span>
-            </button>
-          </div>
+            <div className="max-h-[calc(86vh-64px)] overflow-y-auto p-4">
+              {todayPanelLoading ? (
+                <div className="flex min-h-[220px] flex-col items-center justify-center text-center">
+                  <LoaderCircle size={28} className="animate-spin text-teal-600" />
+                  <p className="mt-3 text-sm font-semibold text-slate-800">Fetching today's attendance...</p>
+                </div>
+              ) : (
+                <>
+                  <div className="mb-3.5 flex flex-wrap items-center gap-2 text-xs font-semibold">
+                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-0.5 text-emerald-700 font-mono">
+                      {todayAttendanceSummary.present} Present
+                    </span>
+                    <span className="rounded-full border border-rose-200 bg-rose-50 px-3 py-0.5 text-rose-700 font-mono">
+                      {todayAttendanceSummary.absent} Absent
+                    </span>
+                    <span className="ml-auto text-[11px] font-medium text-slate-400 font-mono">
+                      {todayAttendanceSummary.total} class{todayAttendanceSummary.total === 1 ? "" : "es"}
+                    </span>
+                  </div>
 
-          {/* Summary Badges */}
-          <div className="mb-3.5 flex flex-wrap items-center gap-2 text-xs font-semibold">
-            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-0.5 text-emerald-700 font-mono">
-              {todayAttendanceSummary.present} Present
-            </span>
-            <span className="rounded-full border border-rose-200 bg-rose-50 px-3 py-0.5 text-rose-700 font-mono">
-              {todayAttendanceSummary.absent} Absent
-            </span>
-            <span className="ml-auto text-[11px] font-medium text-slate-400 font-mono">
-              {todayAttendanceSummary.total} class{todayAttendanceSummary.total === 1 ? "" : "es"}
-            </span>
-          </div>
-
-          {/* Sessions List */}
-          {todaysClasses.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 py-8 text-center text-slate-500">
-              <Clock size={28} className="mx-auto mb-2 text-slate-300" />
-              <p className="text-xs font-semibold text-slate-600">No sessions recorded yet today</p>
-              <p className="mt-0.5 text-[11px] text-slate-400">Classes will appear here as faculty begins sessions.</p>
-            </div>
-          ) : (
-            <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
-              <div className="grid grid-cols-[minmax(0,1fr)_minmax(72px,0.8fr)_56px] bg-slate-900 px-3.5 py-2.5 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-200">
-                <span>Subject</span>
-                <span>Time</span>
-                <span className="text-center">Status</span>
-              </div>
-              <div className="divide-y divide-slate-100">
-                {todaysClasses.map((record) => {
-                  const time = new Date(record.startTime).toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  });
-                  const isPresent = record.attendanceCode === "P";
-
-                  return (
-                    <div
-                      key={record.sessionId}
-                      className="grid grid-cols-[minmax(0,1fr)_minmax(72px,0.8fr)_56px] items-center px-3.5 py-2.5 text-xs transition hover:bg-slate-50/60"
-                    >
-                      <div className="min-w-0 pr-2">
-                        <div className="flex items-center gap-1.5">
-                          <span className="truncate font-mono font-bold text-slate-900">
-                            {record.subjectCode}
-                          </span>
-                          {record.isActive ? (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 border border-rose-200 px-1.5 py-0.5 text-[9px] font-extrabold text-rose-600 uppercase animate-pulse">
-                              Live
-                            </span>
-                          ) : null}
-                        </div>
-                        <p className="mt-0.5 truncate text-[11px] text-slate-500">
-                          {record.subjectName} · {record.facultyName}
-                        </p>
+                  {todaysClasses.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 py-9 text-center text-slate-500">
+                      <Clock size={28} className="mx-auto mb-2 text-slate-300" />
+                      <p className="text-xs font-semibold text-slate-600">No classes recorded yet today</p>
+                      <p className="mt-0.5 text-[11px] text-slate-400">Class sessions will appear here as faculty begins sessions.</p>
+                    </div>
+                  ) : (
+                    <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
+                      <div className="grid grid-cols-[minmax(0,1fr)_minmax(72px,0.8fr)_56px] bg-slate-900 px-3.5 py-2.5 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-200">
+                        <span>Subject</span>
+                        <span>Time</span>
+                        <span className="text-center">Status</span>
                       </div>
+                      <div className="divide-y divide-slate-100">
+                        {todaysClasses.map((record) => {
+                          const time = new Date(record.startTime).toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          });
+                          const isPresent = record.attendanceCode === "P";
 
-                      <div className="min-w-0">
-                        <span className="font-mono text-slate-700 font-medium">{time}</span>
-                      </div>
+                          return (
+                            <div
+                              key={record.sessionId}
+                              className="grid grid-cols-[minmax(0,1fr)_minmax(72px,0.8fr)_56px] items-center px-3.5 py-2.5 text-xs transition hover:bg-slate-50/60"
+                            >
+                              <div className="min-w-0 pr-2">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="truncate font-mono font-bold text-slate-900">
+                                    {record.subjectCode}
+                                  </span>
+                                  {record.isActive ? (
+                                    <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 border border-rose-200 px-1.5 py-0.5 text-[9px] font-extrabold text-rose-600 uppercase animate-pulse">
+                                      Live
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <p className="mt-0.5 truncate text-[11px] text-slate-500">
+                                  {record.subjectName} · {record.facultyName}
+                                </p>
+                              </div>
 
-                      <div className="flex justify-center">
-                        <span
-                          className={`inline-flex items-center justify-center rounded-lg px-2.5 py-1 text-xs font-black font-mono shadow-2xs ${
-                            isPresent
-                              ? "bg-emerald-500 text-white border border-emerald-600"
-                              : "bg-rose-500 text-white border border-rose-600"
-                          }`}
-                        >
-                          {record.attendanceCode}
-                        </span>
+                              <div className="min-w-0">
+                                <span className="font-mono text-slate-700 font-medium">{time}</span>
+                              </div>
+
+                              <div className="flex justify-center">
+                                <span
+                                  className={`inline-flex items-center justify-center rounded-lg px-2.5 py-1 text-xs font-black font-mono shadow-2xs ${
+                                    isPresent
+                                      ? "bg-emerald-500 text-white border border-emerald-600"
+                                      : "bg-rose-500 text-white border border-rose-600"
+                                  }`}
+                                >
+                                  {record.attendanceCode}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
-                  );
-                })}
-              </div>
+                  )}
+                </>
+              )}
             </div>
-          )}
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* ── Quick Profile & Extended Attendance Shortcuts ── */}
-      <div className="mx-auto mb-6 flex w-full max-w-lg items-center justify-between gap-2.5 px-1">
-        <button
-          type="button"
-          onClick={() => setProfileModalTab("academics")}
-          className="flex-1 flex items-center justify-center gap-2 rounded-2xl border border-indigo-200/80 bg-white/90 hover:bg-indigo-50/60 p-3 text-xs font-bold text-indigo-700 shadow-xs transition cursor-pointer"
-        >
-          <BookOpen size={15} />
-          <span>Academic Attendance</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setProfileModalTab("activities")}
-          className="flex-1 flex items-center justify-center gap-2 rounded-2xl border border-purple-200/80 bg-white/90 hover:bg-purple-50/60 p-3 text-xs font-bold text-purple-700 shadow-xs transition cursor-pointer"
-        >
-          <Award size={15} />
-          <span>Activities & Events</span>
-          {studentActivities.length > 0 && (
-            <span className="rounded-full bg-purple-100 text-purple-800 px-1.5 py-0.2 text-[10px] font-mono">
-              {studentActivities.length}
-            </span>
-          )}
-        </button>
-      </div>
-
-      {/* ── Unified Profile & Records Modal (Pop-up upon clicking Profile) ── */}
+      {/* ── Screen-Centered Modal for Academic Attendance & Activities ── */}
       {profileModalTab !== null && (
         <div
           role="dialog"
           aria-modal="true"
-          className="fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/60 p-2 sm:p-4 backdrop-blur-sm sm:items-center animate-in fade-in duration-200"
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/65 p-3 sm:p-6 backdrop-blur-sm animate-in fade-in duration-200"
           onClick={(e) => {
             if (e.target === e.currentTarget) setProfileModalTab(null);
           }}
@@ -2171,8 +2128,8 @@ const StudentDashboard: React.FC = () => {
                   <h3 className="text-sm font-bold text-slate-900 leading-tight truncate">
                     {currentUser?.name || "Student Records"}
                   </h3>
-                  <p className="text-[11px] font-mono text-slate-500">
-                    {currentUser?.enrollmentNo || "USN"} · Sec {currentUser?.section || "A"}
+                  <p className="text-[11px] font-mono text-slate-500 truncate">
+                    {currentUser?.enrollmentNo || "USN"} · {studentCohortText}
                   </p>
                 </div>
               </div>
@@ -2180,14 +2137,14 @@ const StudentDashboard: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setProfileModalTab(null)}
-                aria-label="Close profile modal"
+                aria-label="Close modal"
                 className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:bg-slate-100 transition cursor-pointer"
               >
                 <X size={16} />
               </button>
             </div>
 
-            {/* Segmented Tab Navigation */}
+            {/* Segmented Tab Navigation: Strictly Academics & Activities */}
             <div className="px-4 pt-2.5 pb-2 bg-white border-b border-slate-100 flex gap-2">
               <button
                 type="button"
@@ -2199,7 +2156,7 @@ const StudentDashboard: React.FC = () => {
                 }`}
               >
                 <BookOpen size={14} />
-                <span>Academics</span>
+                <span>Academic Attendance</span>
               </button>
               <button
                 type="button"
@@ -2211,19 +2168,12 @@ const StudentDashboard: React.FC = () => {
                 }`}
               >
                 <Award size={14} />
-                <span>Activities</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setProfileModalTab("profile")}
-                className={`flex-1 py-2 px-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
-                  profileModalTab === "profile"
-                    ? "bg-slate-900 text-white shadow-xs"
-                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                }`}
-              >
-                <UserRound size={14} />
-                <span>Details</span>
+                <span>Activities & Events</span>
+                {studentActivities.length > 0 && (
+                  <span className="rounded-full bg-purple-100 text-purple-800 px-1.5 py-0.2 text-[10px] font-mono">
+                    {studentActivities.length}
+                  </span>
+                )}
               </button>
             </div>
 
@@ -2246,58 +2196,6 @@ const StudentDashboard: React.FC = () => {
                       void handleStartAttendance();
                     }}
                   />
-                </div>
-              )}
-
-              {profileModalTab === "profile" && (
-                <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                  <div className="flex items-center gap-3">
-                    <div className="h-12 w-12 rounded-2xl bg-slate-900 text-white font-bold flex items-center justify-center text-base shadow-sm overflow-hidden shrink-0">
-                      {currentUser?.profilePhotoUrl || currentUser?.studentProfilePhotoUrl ? (
-                        <img
-                          src={currentUser?.studentProfilePhotoUrl || currentUser?.profilePhotoUrl}
-                          alt="Profile"
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        currentUser?.name?.slice(0, 2).toUpperCase() || "ST"
-                      )}
-                    </div>
-                    <div className="min-w-0">
-                      <h4 className="font-bold text-slate-900 text-base leading-tight truncate">
-                        {currentUser?.name || "Student"}
-                      </h4>
-                      <p className="text-xs font-mono font-semibold text-slate-500 mt-0.5">
-                        {currentUser?.enrollmentNo || "USN not assigned"}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200/60 text-xs">
-                    <div className="rounded-xl bg-white p-2.5 border border-slate-200/60 shadow-2xs">
-                      <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-400">Department</p>
-                      <p className="font-bold text-slate-800 mt-0.5 truncate">{currentUser?.department?.name || currentUser?.department || "General"}</p>
-                    </div>
-                    <div className="rounded-xl bg-white p-2.5 border border-slate-200/60 shadow-2xs">
-                      <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-400">Section & Sem</p>
-                      <p className="font-bold text-slate-800 mt-0.5">Sec {currentUser?.section || "A"} · Sem {currentUser?.semester || 1}</p>
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl bg-white p-2.5 border border-slate-200/60 shadow-2xs text-xs">
-                    <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-400">Email Address</p>
-                    <p className="font-semibold text-slate-700 mt-0.5 truncate">{currentUser?.email || "Not specified"}</p>
-                  </div>
-
-                  <div className="rounded-xl bg-white p-2.5 border border-slate-200/60 shadow-2xs text-xs flex items-center justify-between">
-                    <div>
-                      <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-400">Biometric Verification</p>
-                      <p className="font-bold text-emerald-700 mt-0.5 flex items-center gap-1">
-                        <CheckCircle size={13} className="text-emerald-600" /> Face Biometrics Enrolled
-                      </p>
-                    </div>
-                    <span className="text-[10px] font-mono bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-0.5 rounded-full font-bold">Active</span>
-                  </div>
                 </div>
               )}
             </div>

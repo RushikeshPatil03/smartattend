@@ -18,6 +18,12 @@ export interface User {
   profilePhotoUrl?: string | null;
   facultyProfilePhotoUrl?: string | null;
   studentProfilePhotoUrl?: string | null;
+  departmentId?: string | null;
+  departmentName?: string | null;
+  departmentCode?: string | null;
+  year?: number | null;
+  semester?: number | null;
+  section?: string | null;
 }
 
 export interface Department {

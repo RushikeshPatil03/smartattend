@@ -9,7 +9,7 @@ try {
 }
 
 const STUDENT_AUTH_SELECT =
-  "id, name, email, password_hash, enrollment_no, device_fingerprint, college_name, profile_photo_url, created_by_admin";
+  "id, name, email, password_hash, enrollment_no, year, semester, section, department, device_fingerprint, college_name, profile_photo_url, created_by_admin";
 
 const FACULTY_AUTH_SELECT =
   "id, name, email, password_hash, department, device_fingerprint, device_lock_enabled, profile_photo_url, created_by_admin";
@@ -21,6 +21,48 @@ const { verifyUserPassword } = require("../services/authService");
 
 const adminCollegeCache = new Map();
 const ADMIN_COLLEGE_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+const deptCache = new Map();
+const DEPT_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+async function resolveDepartment(supabase, deptRef) {
+  if (!deptRef || !supabase) return { id: null, name: null, code: null };
+  if (typeof deptRef === "object") {
+    return {
+      id: deptRef.id || null,
+      name: deptRef.name || null,
+      code: deptRef.code || null,
+    };
+  }
+  const str = String(deptRef).trim();
+  if (!str) return { id: null, name: null, code: null };
+
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
+  if (!isUuid) {
+    return { id: null, name: str, code: null };
+  }
+
+  const cached = deptCache.get(str);
+  if (cached && Date.now() - cached.cachedAt < DEPT_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  try {
+    const { data } = await supabase
+      .from("departments")
+      .select("id, name, code")
+      .eq("id", str)
+      .single();
+    if (data) {
+      const resolved = { id: data.id, name: data.name, code: data.code };
+      deptCache.set(str, { data: resolved, cachedAt: Date.now() });
+      return resolved;
+    }
+  } catch (err) {
+    console.warn("Failed to resolve department:", err?.message || err);
+  }
+  return { id: str, name: null, code: null };
+}
 
 async function getAdminCollege(supabase, adminId) {
   if (!adminId || !supabase) return null;
@@ -369,6 +411,8 @@ router.post(
       const studentProfilePhotoUrl =
         roleUpper === "STUDENT" ? String(userPhoto || "") || null : null;
 
+      const resolvedDept = await resolveDepartment(supabase, user.department);
+
       return res.json({
         ok: true,
         token: tokens.accessToken,
@@ -381,6 +425,13 @@ router.post(
           email: user.email,
           role: roleUpper,
           enrollmentNo: roleUpper === "STUDENT" ? user.enrollment_no || user.enrollmentNo || null : null,
+          year: user.year != null ? Number(user.year) : null,
+          semester: user.semester != null ? Number(user.semester) : null,
+          section: user.section || null,
+          department: resolvedDept.name || (typeof user.department === "string" && !/^[0-9a-f-]{36}$/i.test(user.department) ? user.department : null) || null,
+          departmentName: resolvedDept.name || null,
+          departmentCode: resolvedDept.code || null,
+          departmentId: resolvedDept.id || null,
           collegeName,
           profilePhotoUrl: safeCollegeLogo,
           facultyProfilePhotoUrl,
@@ -511,6 +562,8 @@ router.post("/refresh", async (req, res) => {
     const studentProfilePhotoUrl =
       role === "STUDENT" ? String(userPhoto || "") || null : null;
 
+    const resolvedDept = await resolveDepartment(supabase, user.department);
+
     return res.json({
       ok: true,
       token: tokens.accessToken,
@@ -523,6 +576,13 @@ router.post("/refresh", async (req, res) => {
         email: user.email,
         role,
         enrollmentNo: role === "STUDENT" ? user.enrollment_no || user.enrollmentNo || null : null,
+        year: user.year != null ? Number(user.year) : null,
+        semester: user.semester != null ? Number(user.semester) : null,
+        section: user.section || null,
+        department: resolvedDept.name || (typeof user.department === "string" && !/^[0-9a-f-]{36}$/i.test(user.department) ? user.department : null) || null,
+        departmentName: resolvedDept.name || null,
+        departmentCode: resolvedDept.code || null,
+        departmentId: resolvedDept.id || null,
         collegeName,
         profilePhotoUrl: safeCollegeLogo,
         facultyProfilePhotoUrl,
@@ -570,6 +630,8 @@ router.get("/me", authMiddleware, async (req, res) => {
     const studentProfilePhotoUrl =
       roleUpper === "STUDENT" ? String(userPhoto || "") || null : null;
 
+    const resolvedDept = await resolveDepartment(supabase, user.department);
+
     return res.json({
       ok: true,
       user: {
@@ -579,6 +641,13 @@ router.get("/me", authMiddleware, async (req, res) => {
         email: user.email,
         role: roleUpper,
         enrollmentNo: roleUpper === "STUDENT" ? user.enrollment_no || user.enrollmentNo || null : null,
+        year: user.year != null ? Number(user.year) : null,
+        semester: user.semester != null ? Number(user.semester) : null,
+        section: user.section || null,
+        department: resolvedDept.name || (typeof user.department === "string" && !/^[0-9a-f-]{36}$/i.test(user.department) ? user.department : null) || null,
+        departmentName: resolvedDept.name || null,
+        departmentCode: resolvedDept.code || null,
+        departmentId: resolvedDept.id || null,
         collegeName,
         profilePhotoUrl: safeCollegeLogo,
         facultyProfilePhotoUrl,

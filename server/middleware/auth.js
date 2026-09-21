@@ -86,6 +86,9 @@ function auth(allowedRoles = []) {
       user.enrollmentNo = user.enrollment_no || null;
       user.deviceFingerprint = user.device_fingerprint || null;
       user.deviceLockEnabled = user.device_lock_enabled !== false;
+      user.year = user.year != null ? Number(user.year) : null;
+      user.semester = user.semester != null ? Number(user.semester) : null;
+      user.section = user.section || null;
 
       if (ALLOWED.length > 0 && !ALLOWED.includes(role)) {
         return res.status(403).json({ ok: false, error: "Forbidden" });
