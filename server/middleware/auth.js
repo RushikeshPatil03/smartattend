@@ -8,19 +8,19 @@ function auth(allowedRoles = []) {
     try {
       const header = req.headers?.authorization;
       if (!header || !header.startsWith("Bearer ")) {
-        return res.status(401).json({ ok: false, error: "Unauthorized" });
+        return res.status(401).json({ ok: false, code: "UNAUTHORIZED", error: "Unauthorized" });
       }
 
       const token = header.split(" ")[1];
       if (!token) {
-        return res.status(401).json({ ok: false, error: "Unauthorized" });
+        return res.status(401).json({ ok: false, code: "UNAUTHORIZED", error: "Unauthorized" });
       }
 
       let decoded;
       try {
         decoded = verifyAccessToken(token);
       } catch {
-        return res.status(401).json({ ok: false, error: "Invalid token" });
+        return res.status(401).json({ ok: false, code: "INVALID_TOKEN", error: "Invalid token" });
       }
 
       const { id, role } = decoded;
@@ -76,7 +76,7 @@ function auth(allowedRoles = []) {
       }
 
       if (!user) {
-        return res.status(401).json({ ok: false, error: "Unauthorized" });
+        return res.status(401).json({ ok: false, code: "UNAUTHORIZED", error: "User not found or account deactivated" });
       }
 
       user._id = user.id;
@@ -91,7 +91,7 @@ function auth(allowedRoles = []) {
       user.section = user.section || null;
 
       if (ALLOWED.length > 0 && !ALLOWED.includes(role)) {
-        return res.status(403).json({ ok: false, error: "Forbidden" });
+        return res.status(403).json({ ok: false, code: "FORBIDDEN", error: "Access forbidden for this user role" });
       }
 
       req.user = user;
@@ -99,7 +99,7 @@ function auth(allowedRoles = []) {
       req.userId = String(user.id);
       next();
     } catch {
-      return res.status(401).json({ ok: false, error: "Unauthorized" });
+      return res.status(401).json({ ok: false, code: "UNAUTHORIZED", error: "Authentication failed" });
     }
   };
 }

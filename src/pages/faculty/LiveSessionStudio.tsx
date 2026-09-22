@@ -21,6 +21,8 @@ import {
   Download,
   AlertTriangle,
   ShieldAlert,
+  TrendingUp,
+  CheckCircle,
 } from "lucide-react";
 import { Button, CountUp } from "../../components/Common";
 import { LiveAttendanceItem } from "./types";
@@ -2097,6 +2099,67 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                   <Square size={14} /> {stoppingSession ? "Stopping..." : "Stop Session"}
                 </button>
               </div>
+            </div>
+          </div>
+
+          {/* Live Turnout & Attendance Metrics Strip (Visible on all screen sizes) */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {/* Metric 1: Total Enrolled */}
+            <div className="rounded-2xl border border-slate-200/80 bg-white/90 p-4 shadow-sm backdrop-blur-md">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Enrolled</span>
+                <span className="rounded-md bg-slate-100 p-1.5 text-slate-600">
+                  <Users size={14} />
+                </span>
+              </div>
+              <div className="mt-2 text-2xl font-black text-slate-900 font-mono">
+                <CountUp value={totalCount} />
+              </div>
+              <p className="mt-0.5 text-[11px] text-slate-400">Total registered</p>
+            </div>
+
+            {/* Metric 2: Present */}
+            <div className="rounded-2xl border border-emerald-200/80 bg-emerald-50/70 p-4 shadow-sm backdrop-blur-md">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-700">Present</span>
+                <span className="rounded-md bg-emerald-100 p-1.5 text-emerald-600">
+                  <CheckCircle size={14} />
+                </span>
+              </div>
+              <div className="mt-2 text-2xl font-black text-emerald-700 font-mono">
+                <CountUp value={presentCount} />
+              </div>
+              <p className="mt-0.5 text-[11px] text-emerald-600/80">Verified attendees</p>
+            </div>
+
+            {/* Metric 3: Remaining / Absent */}
+            <div className="rounded-2xl border border-rose-200/80 bg-rose-50/70 p-4 shadow-sm backdrop-blur-md">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-rose-700">Remaining</span>
+                <span className="rounded-md bg-rose-100 p-1.5 text-rose-600">
+                  <UserX size={14} />
+                </span>
+              </div>
+              <div className="mt-2 text-2xl font-black text-rose-700 font-mono">
+                <CountUp value={Math.max(0, totalCount - presentCount)} />
+              </div>
+              <p className="mt-0.5 text-[11px] text-rose-600/80">Yet to mark</p>
+            </div>
+
+            {/* Metric 4: Quorum / Turnout Rate */}
+            <div className="rounded-2xl border border-indigo-200/80 bg-indigo-50/70 p-4 shadow-sm backdrop-blur-md">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-700">Turnout Rate</span>
+                <span className="rounded-md bg-indigo-100 p-1.5 text-indigo-600">
+                  <TrendingUp size={14} />
+                </span>
+              </div>
+              <div className="mt-2 text-2xl font-black text-indigo-700 font-mono">
+                {attendancePercentage}%
+              </div>
+              <p className="mt-0.5 text-[11px] text-indigo-600/80">
+                {Number(attendancePercentage) >= 75 ? "Safe quorum reached" : "Below 75% quorum"}
+              </p>
             </div>
           </div>
 

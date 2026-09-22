@@ -200,6 +200,7 @@ CREATE TABLE IF NOT EXISTS attendances (
     CONSTRAINT uq_attendance_session_student UNIQUE (session, student)
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_attendances_session_student_uniq ON attendances (session, student);
 CREATE INDEX IF NOT EXISTS idx_attendances_session_status ON attendances (session, status, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_attendances_student_time ON attendances (student, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_attendances_subject_faculty ON attendances (subject, faculty, timestamp DESC);
@@ -639,8 +640,8 @@ CREATE POLICY "service_role_all_refresh" ON refresh_tokens FOR ALL TO service_ro
 DROP POLICY IF EXISTS "anon_read_active_sessions" ON sessions;
 CREATE POLICY "anon_read_active_sessions" ON sessions FOR SELECT TO anon, authenticated USING (is_active = true);
 
-DROP POLICY IF EXISTS "anon_read_attendances" ON attendances;
-CREATE POLICY "anon_read_attendances" ON attendances FOR SELECT TO anon, authenticated USING (true);
+-- Note: attendances table has NO public/anon SELECT policy. All queries flow securely
+-- through the backend Express API using service_role, preserving student attendance privacy.
 
 -- ========================================================================
 -- 7. SUPABASE REALTIME PUBLICATION SETUP

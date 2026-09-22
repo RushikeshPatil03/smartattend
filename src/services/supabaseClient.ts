@@ -19,7 +19,7 @@ export function getSupabase(): SupabaseClient {
     clientInstance = createClient(supabaseUrl, supabaseAnonKey, {
       realtime: {
         params: {
-          eventsPerSecond: 2,
+          eventsPerSecond: 10,
         },
       },
       global: {
@@ -96,6 +96,19 @@ export function subscribeToSessionAttendance(
   const client = getSupabase();
   const channelName = `session:${sessionId}`;
   let isCleanedUp = false;
+
+  // Clean up any stale or pre-existing channel for this session to prevent duplicate listeners
+  const existingChannels = client.getChannels();
+  const existing = existingChannels.find(
+    (ch) => ch.topic === `realtime:${channelName}` || (ch as any).name === channelName
+  );
+  if (existing) {
+    try {
+      client.removeChannel(existing);
+    } catch {
+      // Ignored
+    }
+  }
 
   const channel: RealtimeChannel = client.channel(channelName, {
     config: {

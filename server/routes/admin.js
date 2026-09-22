@@ -139,7 +139,18 @@ router.put("/profile", adminAuth, async (req, res) => {
       updates.college_name = trimmed;
     }
     if (typeof profilePhotoUrl === "string") {
-      updates.profile_photo_url = profilePhotoUrl.trim() || null;
+      const cleanPhoto = profilePhotoUrl.trim();
+      if (cleanPhoto) {
+        const isDataUrl = /^data:image\/(png|jpeg|jpg|webp);base64,/i.test(cleanPhoto);
+        const isHttp = /^https?:\/\//i.test(cleanPhoto);
+        if (!isDataUrl && !isHttp) {
+          return res.status(400).json({ ok: false, error: "Invalid profile photo format. Must be PNG, JPEG, or WebP." });
+        }
+        if (cleanPhoto.length > 120000) {
+          return res.status(400).json({ ok: false, error: "Profile photo exceeds size limit (~90KB compressed / 120KB payload)." });
+        }
+      }
+      updates.profile_photo_url = cleanPhoto || null;
     }
 
     const { data: updated, error } = await supabase

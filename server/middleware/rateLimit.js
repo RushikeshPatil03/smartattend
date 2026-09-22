@@ -54,7 +54,9 @@ function rateLimit(options = {}) {
         res.setHeader("Retry-After", String(retryAfterSeconds));
         return res.status(429).json({
           ok: false,
-          error: "Too many attempts. Please wait and try again.",
+          code: "RATE_LIMITED",
+          error: "Too many attempts. Please wait a moment before trying again.",
+          retryAfterSeconds,
         });
       }
 

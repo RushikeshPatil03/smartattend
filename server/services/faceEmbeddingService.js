@@ -4,7 +4,7 @@ const FACENET512_VERSION = String(process.env.FACENET512_VERSION || "facenet512-
 const FACENET512_DISTANCE_THRESHOLD = Number(
   process.env.FACENET512_DISTANCE_THRESHOLD || 0.38
 );
-const FACENET512_TIMEOUT_MS = Number(process.env.FACENET512_TIMEOUT_MS || 10000);
+const FACENET512_TIMEOUT_MS = Number(process.env.FACENET512_TIMEOUT_MS || 4000);
 const FACE_IMAGE_MAX_LENGTH = Number(process.env.FACE_IMAGE_MAX_LENGTH || 700000);
 
 function isImageDataUrl(value) {

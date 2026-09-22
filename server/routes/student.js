@@ -9,6 +9,10 @@ const auth = require("../middleware/auth");
 const env = require("../config/env");
 const { getCachedBatches } = require("./attendance");
 
+function isImageDataUrl(value) {
+  return /^data:image\/(png|jpeg|jpg|webp);base64,/i.test(String(value || "").trim());
+}
+
 function validateRegistrationToken(reg, expectedType) {
   if (!reg) return "Invalid registration token";
   if (!reg.is_active && !reg.isActive) return "Registration link is inactive";
@@ -143,6 +147,18 @@ router.post("/register", async (req, res) => {
 
     if (env.REQUIRE_FACE_VERIFICATION && (!faceSignature || typeof faceSignature !== "string")) {
       return res.status(400).json({ ok: false, error: "Face registration is required" });
+    }
+
+    if (profilePhotoUrl) {
+      const cleanPhoto = String(profilePhotoUrl).trim();
+      const isDataUrl = isImageDataUrl(cleanPhoto);
+      const isHttp = /^https?:\/\//i.test(cleanPhoto);
+      if (!isDataUrl && !isHttp) {
+        return res.status(400).json({ ok: false, error: "Invalid profile photo format. Must be PNG, JPEG, or WebP." });
+      }
+      if (cleanPhoto.length > 120000) {
+        return res.status(400).json({ ok: false, error: "Profile photo exceeds size limit (~90KB compressed / 120KB payload). Please retake." });
+      }
     }
 
     const normalizedEmail = String(email || "").trim().toLowerCase();

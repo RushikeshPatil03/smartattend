@@ -133,19 +133,26 @@ function isTunnelOrigin(origin) {
   try {
     const u = new URL(origin);
     if (u.protocol !== "https:") return false;
-    return (
-      u.hostname.endsWith(".loca.lt") ||
-      u.hostname.endsWith(".localtunnel.me") ||
-      u.hostname.endsWith(".trycloudflare.com") ||
-      u.hostname.endsWith(".pages.dev") ||
-      u.hostname.endsWith(".onrender.com") ||
-      u.hostname.endsWith(".vercel.app") ||
-      u.hostname.endsWith(".netlify.app")
-    );
+    const allowed = [
+      u.hostname.endsWith(".pages.dev"),
+      u.hostname.endsWith(".onrender.com"),
+      u.hostname.endsWith(".vercel.app"),
+      u.hostname.endsWith(".netlify.app"),
+    ];
+    if (!env.IS_PRODUCTION) {
+      allowed.push(
+        u.hostname.endsWith(".loca.lt"),
+        u.hostname.endsWith(".localtunnel.me"),
+        u.hostname.endsWith(".trycloudflare.com")
+      );
+    }
+    return allowed.some(Boolean);
   } catch {
     return false;
   }
 }
+
+app.disable("x-powered-by");
 
 app.use(
   cors({
@@ -166,6 +173,10 @@ app.use(
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
+    hidePoweredBy: true,
+    noSniff: true,
+    xssFilter: true,
+    referrerPolicy: { policy: "strict-origin-when-cross-origin" },
   })
 );
 app.use(compression());
@@ -174,7 +185,7 @@ app.use(compression());
 // Core Middleware (Performance-optimized body parsers)
 // ----------------------------------------------------
 const defaultJsonParser = express.json({ limit: "50kb" });
-const heavyJsonParser = express.json({ limit: "8mb" });
+const heavyJsonParser = express.json({ limit: "2mb" });
 
 // Heavy payload endpoints that process base64 images, face signatures, or photo uploads
 function isHeavyPayloadRoute(req) {
@@ -228,15 +239,15 @@ app.get("/api/health", async (_req, res) => {
       if (client) {
         const { error } = await client.from("admins").select("id").limit(1);
         if (error) {
-          supabaseError = error.message;
+          supabaseError = env.IS_PRODUCTION ? "Database query failed" : error.message;
         } else {
           supabaseReady = true;
         }
       } else {
-        supabaseError = "Supabase client instance is null";
+        supabaseError = env.IS_PRODUCTION ? "Database client unavailable" : "Supabase client instance is null";
       }
     } catch (err) {
-      supabaseError = err.message;
+      supabaseError = env.IS_PRODUCTION ? "Database connection error" : err.message;
     }
   }
 

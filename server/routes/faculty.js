@@ -260,8 +260,8 @@ router.put("/profile", authMiddleware, async (req, res) => {
       return res.status(400).json({ ok: false, error: "Invalid profile photo format" });
     }
 
-    if (profilePhotoUrl.length > 700000) {
-      return res.status(400).json({ ok: false, error: "Profile photo is too large" });
+    if (profilePhotoUrl.length > 120000) {
+      return res.status(400).json({ ok: false, error: "Profile photo exceeds size limit (~90KB compressed / 120KB payload)." });
     }
 
     const supabase = getSupabaseClient();
@@ -2157,18 +2157,25 @@ router.post("/session/:id/cancel", authMiddleware, async (req, res) => {
     const supabase = getSupabaseClient();
     if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
 
-    let fetchQuery = supabase.from("sessions").select("id, faculty").eq("id", sessionId);
-    if (req.userRole === "FACULTY") fetchQuery = fetchQuery.eq("faculty", req.userId);
-    const { data: session } = await fetchQuery.single();
+    const { data: existingAny } = await supabase
+      .from("sessions")
+      .select("id, faculty")
+      .eq("id", sessionId)
+      .single();
 
-    if (!session) {
-      return res.json({
-        ok: true,
-        canceled: true,
-        alreadyGone: true,
-        deletedAttendanceCount: 0,
+    if (!existingAny) {
+      return res.status(404).json({ ok: false, error: "Session not found" });
+    }
+
+    if (req.userRole === "FACULTY" && String(existingAny.faculty) !== String(req.userId)) {
+      return res.status(403).json({
+        ok: false,
+        code: "FORBIDDEN",
+        error: "Forbidden: You are not authorized to cancel this session",
       });
     }
+
+    const session = existingAny;
 
     // 1. Clean in-memory and ephemeral state stores & realtime channel
     await clearSessionQR(sessionId);
@@ -2244,19 +2251,28 @@ router.get("/session/:id/qr", authMiddleware, async (req, res) => {
     const supabase = getSupabaseClient();
     if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
 
-    let query = supabase
+    const { data: existingAny } = await supabase
       .from("sessions")
       .select(
         "id, faculty, subject, department, year, semester, section, " +
         "start_time, end_time, last_activity_at, is_active, location, created_at"
       )
-      .eq("id", sessionId);
-    if (req.userRole === "FACULTY") query = query.eq("faculty", req.userId);
-    let { data: session } = await query.single();
+      .eq("id", sessionId)
+      .single();
 
-    if (!session) {
+    if (!existingAny) {
       return res.status(404).json({ ok: false, error: "Session not found" });
     }
+
+    if (req.userRole === "FACULTY" && String(existingAny.faculty) !== String(req.userId)) {
+      return res.status(403).json({
+        ok: false,
+        code: "FORBIDDEN",
+        error: "Forbidden: You are not authorized to view QR for this session",
+      });
+    }
+
+    let session = existingAny;
 
     session = await expireIfInactive(session);
     const isRunning = Boolean(session?.is_active ?? session?.isActive);

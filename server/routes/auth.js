@@ -664,7 +664,8 @@ router.get("/me", authMiddleware, async (req, res) => {
 // POST /api/auth/logout
 router.post("/logout", async (req, res) => {
   try {
-    const refreshToken = readCookie(req, "refreshToken");
+    const refreshToken =
+      String(req.body?.refreshToken || "").trim() || readCookie(req, "refreshToken");
     if (refreshToken) {
       const decoded = jwt.decode(refreshToken);
       if (decoded?.jti) {

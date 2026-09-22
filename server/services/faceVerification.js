@@ -63,15 +63,15 @@ function resolveBestFaceScore(referenceSignatures, liveSignatures) {
   return pairs.length ? Math.max(...pairs) : 0;
 }
 
-async function verifyFaceForAttendance(student, payload = {}, now = new Date()) {
+async function verifyFaceForAttendance(student, payload = {}, now = new Date(), options = {}) {
   const version = String(payload.faceSignatureVersion || "").trim();
   const hasLiveImage = isImageDataUrl(payload.liveFaceImageDataUrl);
   if (!hasLiveImage && version && version !== FACE_SIGNATURE_VERSION) {
-    return { ok: false, error: "Unsupported face verification signature version" };
+    return { ok: false, code: "INVALID_FACE_SIGNATURE_VERSION", error: "Unsupported face verification signature version" };
   }
 
   const studentEmbedding = student?.faceEmbedding || student?.face_embedding;
-  if (isFaceNetEnabled() && hasLiveImage && Array.isArray(studentEmbedding)) {
+  if (!options.skipBlockingService && isFaceNetEnabled() && hasLiveImage && Array.isArray(studentEmbedding)) {
     const embeddingCheck = await verifyFaceEmbedding(
       { ...student, faceEmbedding: studentEmbedding },
       payload.liveFaceImageDataUrl,
@@ -96,6 +96,7 @@ async function verifyFaceForAttendance(student, payload = {}, now = new Date()) 
     if (FACE_VERIFICATION_STRICT_SERVICE) {
       return {
         ok: false,
+        code: "FACE_MISMATCH",
         error: embeddingCheck.error || "Face verification failed",
         score: embeddingCheck.score,
         threshold: embeddingCheck.threshold,
@@ -133,7 +134,7 @@ async function verifyFaceForAttendance(student, payload = {}, now = new Date()) 
   if (payload.faceMatch != null) {
     const match = Boolean(payload.faceMatch);
     if (!match) {
-      return { ok: false, error: "Face mismatch" };
+      return { ok: false, code: "FACE_MISMATCH", error: "Face mismatch" };
     }
     return {
       ok: true,
@@ -144,13 +145,14 @@ async function verifyFaceForAttendance(student, payload = {}, now = new Date()) 
   }
 
   if (liveSignatures.length === 0) {
-    return { ok: false, error: "Fresh live face signature is required" };
+    return { ok: false, code: "FACE_SIGNATURE_REQUIRED", error: "Fresh live face signature is required" };
   }
 
   const score = resolveBestFaceScore(storedRef, liveSignatures);
   if (score < FACE_MATCH_THRESHOLD) {
     return {
       ok: false,
+      code: "FACE_MISMATCH",
       error: "Face mismatch. Use the same student face that was captured during registration.",
       score,
       threshold: FACE_MATCH_THRESHOLD,

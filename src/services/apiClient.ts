@@ -425,6 +425,16 @@ class ApiClient {
   // ------------------------------------
   // ATTENDANCE (TWO-STEP QR)
   // ------------------------------------
+  verifyFace = (data: {
+    sessionId?: string;
+    fingerprint?: string;
+    faceMatch?: boolean;
+    faceMetrics?: any;
+    liveFaceSignature?: string;
+    liveFaceSignatureMirror?: string;
+    liveFaceImageDataUrl?: string;
+  }) => this.post("/api/attendance/face-verify", data);
+
   markAttendanceTwoStep = (data: {
     firstQrToken: string;
     secondQrToken: string;
@@ -433,6 +443,7 @@ class ApiClient {
     accuracy?: number | null;
     fingerprint?: string;
     scanGrantToken?: string;
+    faceGrantToken?: string;
     faceMatch?: any;
     faceMetrics?: any;
     faceEmbedding?: any;
@@ -446,6 +457,7 @@ class ApiClient {
     accuracy?: number | null;
     fingerprint?: string | null;
     scanGrantToken?: string;
+    faceGrantToken?: string;
   }) => this.post("/api/attendance/mark", data);
 
   /**
@@ -461,6 +473,7 @@ class ApiClient {
     lng?: number | null;
     accuracy?: number | null;
     fingerprint?: string | null;
+    faceGrantToken?: string;
   }) => this.post("/api/attendance/totp", data);
 
   submitAttendanceSequence = (data: {
@@ -469,6 +482,7 @@ class ApiClient {
     lng?: number | null;
     accuracy?: number | null;
     fingerprint?: string | null;
+    faceGrantToken?: string;
   }) => this.post("/api/attendance/submit", data);
 
   manualAttendance = (data: any) =>

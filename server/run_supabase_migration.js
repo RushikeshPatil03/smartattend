@@ -32,10 +32,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_students_credential_id ON students (creden
 `;
 
 async function runMigration() {
-  const connectionString = process.env.DATABASE_URL || process.env.DIRECT_URL;
+  // Migrations (DDL) require a direct connection or session pooler (port 5432).
+  // Transaction pooler (port 6543) does not support multi-statement DDL transactions.
+  const connectionString = process.env.DIRECT_URL || process.env.DATABASE_URL;
   if (!connectionString) {
-    console.error("❌ No database connection string found in .env");
+    console.error("❌ No database connection string found in .env (DIRECT_URL or DATABASE_URL).");
     process.exit(1);
+  }
+
+  if (connectionString.includes(":6543")) {
+    console.warn(
+      "⚠️ WARNING: Connecting to port 6543 (Supavisor Transaction Pooler). DDL migrations and schema changes are best executed on port 5432 (DIRECT_URL / Session mode)."
+    );
+  } else {
+    console.log("✓ Using direct/session connection (port 5432) for DDL migration.");
   }
 
   console.log("🔌 Connecting to Supabase PostgreSQL database...");

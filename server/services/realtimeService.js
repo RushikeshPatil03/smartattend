@@ -14,21 +14,28 @@ const batchBuffers = new Map(); // sessionId -> { queue: Array, timer: Timeout|n
 
 /**
  * Normalizes raw attendance payload into an ultra-compact structure:
- * { id, sId, roll, name, t }
+ * { id, sId, roll, name, t, st }
+ * Strict whitelist ensures zero biometric, credential, or secret leakage.
  * @param {object} raw
  * @returns {object|null}
  */
 function toCompactAttendanceItem(raw) {
   if (!raw) return null;
 
-  const id = raw.id || raw._id || raw.attendanceId || "";
+  const id = String(raw.id || raw._id || raw.attendanceId || "");
   const sId = String(raw.studentId || raw.student?._id || raw.student?.id || "");
-  const roll = String(raw.enrollmentNo || raw.student?.enrollment_no || raw.student?.enrollmentNo || raw.roll || "");
-  const name = String(raw.studentName || raw.student?.name || raw.name || "");
+  const roll = String(
+    raw.enrollmentNo ||
+    raw.student?.enrollment_no ||
+    raw.student?.enrollmentNo ||
+    raw.roll ||
+    ""
+  ).trim().toUpperCase();
+  const name = String(raw.studentName || raw.student?.name || raw.name || "").trim();
 
   let t;
   if (typeof raw.t === "number" && !isNaN(raw.t)) {
-    t = raw.t;
+    t = Math.floor(raw.t);
   } else if (raw.timestamp) {
     const parsed = Math.floor(new Date(raw.timestamp).getTime() / 1000);
     t = isNaN(parsed) ? Math.floor(Date.now() / 1000) : parsed;
@@ -38,8 +45,9 @@ function toCompactAttendanceItem(raw) {
 
   const status = raw.status === "absent" ? "absent" : "present";
 
+  // Strict whitelist: Only non-sensitive public display fields
   return {
-    id: String(id),
+    id,
     sId,
     roll,
     name,
@@ -49,18 +57,25 @@ function toCompactAttendanceItem(raw) {
 }
 
 /**
- * Gets or creates a Supabase Realtime channel for a specific session
+ * Internal helper to retrieve or construct a channel entry with subscription readiness tracking
  * @param {string} sessionId
- * @returns {RealtimeChannel|null}
+ * @returns {{ channel: any, isSubscribed: boolean, subscribePromise: Promise<boolean>, lastActivityAt: number } | null}
  */
-function getSessionChannel(sessionId) {
+function getSessionChannelEntry(sessionId) {
   const supabase = getSupabaseClient();
   if (!supabase) return null;
 
   const channelName = `session:${String(sessionId)}`;
   if (channelCache.has(channelName)) {
-    return channelCache.get(channelName);
+    const entry = channelCache.get(channelName);
+    entry.lastActivityAt = Date.now();
+    return entry;
   }
+
+  let resolveSubscribed;
+  const subscribePromise = new Promise((resolve) => {
+    resolveSubscribed = resolve;
+  });
 
   const channel = supabase.channel(channelName, {
     config: {
@@ -71,14 +86,35 @@ function getSessionChannel(sessionId) {
     },
   });
 
+  const entry = {
+    channel,
+    isSubscribed: false,
+    subscribePromise,
+    lastActivityAt: Date.now(),
+  };
+
   channel.subscribe((status) => {
     if (status === "SUBSCRIBED") {
-      // Channel ready for broadcasting
+      entry.isSubscribed = true;
+      resolveSubscribed(true);
+    } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+      entry.isSubscribed = false;
+      resolveSubscribed(false);
     }
   });
 
-  channelCache.set(channelName, channel);
-  return channel;
+  channelCache.set(channelName, entry);
+  return entry;
+}
+
+/**
+ * Gets or creates a Supabase Realtime channel for a specific session
+ * @param {string} sessionId
+ * @returns {RealtimeChannel|null}
+ */
+function getSessionChannel(sessionId) {
+  const entry = getSessionChannelEntry(sessionId);
+  return entry ? entry.channel : null;
 }
 
 /**
@@ -122,12 +158,21 @@ async function flushSessionBatch(sessionId) {
   };
   buffer.isFlushing = true;
   try {
-    const channel = getSessionChannel(sid);
-    if (!channel) {
+    const entry = getSessionChannelEntry(sid);
+    if (!entry || !entry.channel) {
       console.warn("⚠️ Supabase Realtime channel unavailable for session batch:", sid);
       return;
     }
-    await channel.send({
+
+    // Await subscription readiness if recently created (up to 2000ms race)
+    if (!entry.isSubscribed && entry.subscribePromise) {
+      await Promise.race([
+        entry.subscribePromise,
+        new Promise((resolve) => setTimeout(resolve, 2000)),
+      ]);
+    }
+
+    await entry.channel.send({
       type: "broadcast",
       event: "BATCH_MARKED",
       payload: compactBatchPayload,
@@ -232,10 +277,11 @@ async function removeSessionChannel(sessionId) {
 
   // 2. Remove Supabase Realtime channel
   const channelName = `session:${sid}`;
-  const channel = channelCache.get(channelName);
-  if (channel) {
+  const entry = channelCache.get(channelName);
+  if (entry) {
+    const channel = entry.channel || entry;
     const supabase = getSupabaseClient();
-    if (supabase) {
+    if (supabase && channel) {
       try {
         await supabase.removeChannel(channel);
       } catch {
@@ -244,6 +290,24 @@ async function removeSessionChannel(sessionId) {
     }
     channelCache.delete(channelName);
   }
+}
+
+// ----------------------------------------------------------------------------
+// Stale Session Channel Cleanup (2-hour inactivity TTL)
+// Prevents memory leaks if faculty session is closed without explicit stop
+// ----------------------------------------------------------------------------
+const INACTIVE_CHANNEL_TTL_MS = 2 * 60 * 60 * 1000;
+const channelCleanupInterval = setInterval(() => {
+  const now = Date.now();
+  for (const [channelName, entry] of channelCache.entries()) {
+    if (now - (entry?.lastActivityAt || 0) > INACTIVE_CHANNEL_TTL_MS) {
+      const sessionId = channelName.replace(/^session:/, "");
+      removeSessionChannel(sessionId).catch(() => {});
+    }
+  }
+}, 30 * 60 * 1000);
+if (channelCleanupInterval.unref) {
+  channelCleanupInterval.unref();
 }
 
 const realtimeBroadcaster = {

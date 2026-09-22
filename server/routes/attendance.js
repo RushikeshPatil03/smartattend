@@ -14,7 +14,7 @@ const {
   removeManualAbsent,
   isManualAbsent,
 } = require("../services/totpVerification");
-const { validateStudentLocation } = require("../services/locationValidation");
+const { validateStudentLocation, checkSuspiciousLocationJump } = require("../services/locationValidation");
 const { verifyFaceAgainstStudent } = require("../services/faceVerification");
 const { normalizeFingerprint } = require("../services/deviceFingerprint");
 const { expireIfInactive, touchSession } = require("../services/sessionLifecycle");
@@ -37,6 +37,8 @@ const QR_MAX_TWO_STEP_GAP_SECONDS = env.QR_MAX_TWO_STEP_GAP_SECONDS;
 const QR_PRECHECK_SKEW_SECONDS = env.QR_PRECHECK_SKEW_SECONDS;
 
 const scanGrantsMemoryStore = new Map();
+const faceGrantsMemoryStore = new Map();
+const FACE_GRANT_TTL_MS = 90_000; // 90 seconds single-use grant for scanning QR after face check
 const activeSessionsMemoryCache = new Map();
 const sessionInflightPromises = new Map();
 const ACTIVE_SESSION_CACHE_TTL_MS = 5000;
@@ -200,6 +202,15 @@ function cleanupExpiredScanGrants() {
   }
 }
 
+function cleanupExpiredFaceGrants() {
+  const now = Date.now();
+  for (const [key, grant] of faceGrantsMemoryStore.entries()) {
+    if (!grant || Number(grant.expiresAt || 0) <= now || grant.consumed) {
+      faceGrantsMemoryStore.delete(key);
+    }
+  }
+}
+
 function cleanupExpiredActiveSessions() {
   const now = Date.now();
   for (const [key, cached] of activeSessionsMemoryCache.entries()) {
@@ -222,6 +233,7 @@ function cleanupExpiredSessionTouches() {
 const memoryStoresCleanupInterval = setInterval(() => {
   try {
     cleanupExpiredScanGrants();
+    cleanupExpiredFaceGrants();
     cleanupExpiredActiveSessions();
     cleanupExpiredSessionTouches();
   } catch (err) {
@@ -373,6 +385,76 @@ function consumeScanGrant({ token, studentId, sessionId, fingerprint }) {
   scanGrantsMemoryStore.set(key, grant);
 
   return { ok: true };
+}
+
+function saveFaceGrant({ studentId, sessionId = null, fingerprint = null, score = 1.0, method = "client-faceapi" }) {
+  if (faceGrantsMemoryStore.size >= 5000) {
+    cleanupExpiredFaceGrants();
+  }
+  const token = crypto.randomBytes(24).toString("hex");
+  const expiresAt = Date.now() + FACE_GRANT_TTL_MS;
+  const grant = {
+    token,
+    studentId: String(studentId),
+    sessionId: sessionId ? String(sessionId) : null,
+    fingerprint: fingerprint ? String(fingerprint) : null,
+    score: Number(score) || 1.0,
+    method: String(method || "client-faceapi"),
+    consumed: false,
+    createdAt: Date.now(),
+    expiresAt,
+  };
+  faceGrantsMemoryStore.set(token, grant);
+  return grant;
+}
+
+function consumeFaceGrant({ token, studentId, sessionId, fingerprint }) {
+  if (!token) {
+    return { ok: false, code: "MISSING_FACE_GRANT", error: "Face verification grant token is required" };
+  }
+  const key = String(token);
+  const grant = faceGrantsMemoryStore.get(key);
+
+  if (!grant || grant.consumed || Number(grant.expiresAt || 0) < Date.now()) {
+    if (grant && Number(grant.expiresAt || 0) < Date.now()) {
+      faceGrantsMemoryStore.delete(key);
+    }
+    return {
+      ok: false,
+      code: "INVALID_FACE_GRANT",
+      error: "Face verification grant expired or invalid. Please verify face again.",
+    };
+  }
+
+  if (grant.studentId !== String(studentId)) {
+    return {
+      ok: false,
+      code: "FACE_GRANT_STUDENT_MISMATCH",
+      error: "Face verification grant does not belong to this student",
+    };
+  }
+
+  if (grant.fingerprint && fingerprint && grant.fingerprint !== String(fingerprint)) {
+    return {
+      ok: false,
+      code: "FACE_GRANT_DEVICE_MISMATCH",
+      error: "Face verification grant used on an unauthorized device",
+    };
+  }
+
+  if (grant.sessionId && sessionId && grant.sessionId !== String(sessionId)) {
+    return {
+      ok: false,
+      code: "FACE_GRANT_SESSION_MISMATCH",
+      error: "Face verification grant was issued for a different session",
+    };
+  }
+
+  // Mark single-use (anti-replay)
+  grant.consumed = true;
+  faceGrantsMemoryStore.set(key, grant);
+
+  return { ok: true, grant };
 }
 
 /**
@@ -622,6 +704,102 @@ router.post(
   }
 );
 
+// ----------------------------------------------------
+// 1.5) DEDICATED FACE VERIFICATION & GRANT ISSUANCE
+// POST /api/attendance/face-verify
+// POST /api/attendance/verify-face
+// ----------------------------------------------------
+const handleFaceVerification = async (req, res) => {
+  try {
+    const student = req.user;
+    const {
+      sessionId,
+      fingerprint,
+      faceMatch,
+      faceMetrics,
+      liveFaceSignature,
+      liveFaceSignatureMirror,
+      liveFaceImageDataUrl,
+    } = req.body || {};
+
+    const normalizedFp = normalizeFingerprint(fingerprint);
+    if (student?.device_fingerprint && (!normalizedFp || String(student.device_fingerprint) !== normalizedFp)) {
+      return res.status(401).json({
+        ok: false,
+        code: "DEVICE_MISMATCH",
+        error: "Face verification blocked: device fingerprint mismatch",
+      });
+    }
+
+    // Optional active session validation if sessionId was provided
+    if (sessionId) {
+      const session = await getCachedActiveSession(sessionId);
+      if (session && !(session.is_active ?? session.isActive)) {
+        return res.status(400).json({
+          ok: false,
+          code: "SESSION_EXPIRED",
+          error: "Class session is no longer active",
+        });
+      }
+    }
+
+    // Evaluate face verification using isolated helper with timeout
+    const faceEval = await verifyFaceAgainstStudent(
+      student,
+      {
+        faceMatch,
+        faceMetrics,
+        liveFaceSignature,
+        liveFaceSignatureMirror,
+        liveFaceImageDataUrl,
+      },
+      new Date(),
+      { skipBlockingService: false }
+    );
+
+    if (!faceEval.ok) {
+      return res.status(403).json({
+        ok: false,
+        code: faceEval.code || "FACE_MISMATCH",
+        error: faceEval.error || "Face verification failed. Please try again.",
+      });
+    }
+
+    const grant = saveFaceGrant({
+      studentId: student.id,
+      sessionId: sessionId || null,
+      fingerprint: normalizedFp,
+      score: faceEval.score || 1.0,
+      method: faceEval.model || "client-faceapi",
+    });
+
+    return res.json({
+      ok: true,
+      faceGrantToken: grant.token,
+      expiresAt: grant.expiresAt,
+      ttlSeconds: Math.round(FACE_GRANT_TTL_MS / 1000),
+      score: grant.score,
+      method: grant.method,
+    });
+  } catch (err) {
+    console.error("Face verification endpoint error:", err);
+    return res.status(500).json({
+      ok: false,
+      code: "SERVER_ERROR",
+      error: "Face verification service encountered an unexpected error",
+    });
+  }
+};
+
+const faceVerifyRateLimiter = rateLimit({
+  prefix: "face-verify",
+  windowMs: 60 * 1000,
+  max: 15,
+});
+
+router.post("/face-verify", auth(["STUDENT"]), faceVerifyRateLimiter, handleFaceVerification);
+router.post("/verify-face", auth(["STUDENT"]), faceVerifyRateLimiter, handleFaceVerification);
+
 /**
  * High-Throughput Write Micro-Batching Service for Attendance Writes
  * Groups concurrent scans into 60ms / 30-item bulk upsert operations.
@@ -638,7 +816,18 @@ class AttendanceBatchWriter {
 
   enqueue(payload, studentId, sessionId) {
     return new Promise((resolve, reject) => {
-      this.queue.push({ payload, resolve, reject, studentId, sessionId });
+      const sid = String(sessionId);
+      const stid = String(studentId);
+
+      // In-batch duplicate deduplication within same micro-batch window
+      const isDupe = this.queue.some(
+        (item) => String(item.sessionId) === sid && String(item.studentId) === stid
+      );
+      if (isDupe) {
+        return resolve({ alreadyMarked: true, already: true, studentId: stid, sessionId: sid });
+      }
+
+      this.queue.push({ payload, resolve, reject, studentId: stid, sessionId: sid });
       if (this.queue.length >= this.MAX_BATCH_SIZE) {
         this.flush();
       } else if (!this.timer) {
@@ -655,6 +844,11 @@ class AttendanceBatchWriter {
     if (this.queue.length === 0) return;
 
     const items = this.queue.splice(0, this.MAX_BATCH_SIZE);
+    // Fix queue starvation: if more items remain, schedule immediate next flush
+    if (this.queue.length > 0) {
+      this.timer = setTimeout(() => this.flush(), this.BATCH_WINDOW_MS);
+    }
+
     const supabase = getSupabaseClient();
     if (!supabase) {
       const err = new Error("Database unavailable");
@@ -664,28 +858,50 @@ class AttendanceBatchWriter {
 
     // Fast-path for single item
     if (items.length === 1) {
-      const { payload, resolve, reject } = items[0];
+      const { payload, resolve, reject, studentId, sessionId } = items[0];
       try {
         const { data, error } = await supabase
           .from("attendances")
-          .upsert(payload, { onConflict: "session,student" })
-          .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification")
-          .single();
+          .upsert(payload, { onConflict: "session,student", ignoreDuplicates: true })
+          .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification");
 
-        if (error) throw error;
-        resolve(data);
+        if (error) {
+          if (
+            error?.code === "23505" ||
+            String(error?.message || "").toLowerCase().includes("duplicate") ||
+            String(error?.message || "").toLowerCase().includes("unique")
+          ) {
+            return resolve({ alreadyMarked: true, already: true, studentId, sessionId });
+          }
+          throw error;
+        }
+
+        if (Array.isArray(data) && data.length > 0) {
+          resolve(data[0]);
+        } else {
+          // 0 rows returned because ON CONFLICT DO NOTHING ignored it -> already existed!
+          resolve({ alreadyMarked: true, already: true, studentId, sessionId });
+        }
       } catch (err) {
-        reject(err);
+        if (
+          err?.code === "23505" ||
+          String(err?.message || "").toLowerCase().includes("duplicate") ||
+          String(err?.message || "").toLowerCase().includes("unique")
+        ) {
+          resolve({ alreadyMarked: true, already: true, studentId, sessionId });
+        } else {
+          reject(err);
+        }
       }
       return;
     }
 
-    // Bulk upsert for multiple concurrent items
+    // Bulk upsert with ON CONFLICT DO NOTHING
     try {
       const payloads = items.map((i) => i.payload);
       const { data, error } = await supabase
         .from("attendances")
-        .upsert(payloads, { onConflict: "session,student" })
+        .upsert(payloads, { onConflict: "session,student", ignoreDuplicates: true })
         .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification");
 
       if (error) throw error;
@@ -697,9 +913,12 @@ class AttendanceBatchWriter {
         if (row) {
           item.resolve(row);
         } else {
+          // Row was not inserted by Postgres because it already existed for this session
           item.resolve({
-            id: `att_${Date.now()}_${String(item.studentId).slice(0, 8)}`,
-            ...item.payload,
+            alreadyMarked: true,
+            already: true,
+            studentId: item.studentId,
+            sessionId: item.sessionId,
           });
         }
       }
@@ -710,14 +929,34 @@ class AttendanceBatchWriter {
         try {
           const { data, error } = await supabase
             .from("attendances")
-            .upsert(item.payload, { onConflict: "session,student" })
-            .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification")
-            .single();
+            .upsert(item.payload, { onConflict: "session,student", ignoreDuplicates: true })
+            .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification");
 
-          if (error) throw error;
-          item.resolve(data);
+          if (error) {
+            if (
+              error?.code === "23505" ||
+              String(error?.message || "").toLowerCase().includes("duplicate") ||
+              String(error?.message || "").toLowerCase().includes("unique")
+            ) {
+              item.resolve({ alreadyMarked: true, already: true, studentId: item.studentId, sessionId: item.sessionId });
+            } else {
+              item.reject(error);
+            }
+          } else if (Array.isArray(data) && data.length > 0) {
+            item.resolve(data[0]);
+          } else {
+            item.resolve({ alreadyMarked: true, already: true, studentId: item.studentId, sessionId: item.sessionId });
+          }
         } catch (singleErr) {
-          item.reject(singleErr);
+          if (
+            singleErr?.code === "23505" ||
+            String(singleErr?.message || "").toLowerCase().includes("duplicate") ||
+            String(singleErr?.message || "").toLowerCase().includes("unique")
+          ) {
+            item.resolve({ alreadyMarked: true, already: true, studentId: item.studentId, sessionId: item.sessionId });
+          } else {
+            item.reject(singleErr);
+          }
         }
       }
     }
@@ -731,10 +970,36 @@ const attendanceBatchWriter = new AttendanceBatchWriter();
 // POST /api/attendance/mark
 // POST /api/attendance/scan-grant/mark
 // ----------------------------------------------------
+const attendanceRateLimiter = rateLimit({
+  prefix: "attendance-mark",
+  windowMs: 60 * 1000,
+  max: 20,
+  key: (req) => {
+    const studentId = req.user?.id || req.userId;
+    const rawSessionId =
+      req.body?.sessionId ||
+      req.body?.classId ||
+      req.body?.sequence?.[0]?.classId ||
+      req.body?.sequence?.[0]?.sessionId;
+    const fp = req.body?.fingerprint || req.headers["x-fingerprint"] || "";
+    const forwarded = String(req.headers["x-forwarded-for"] || "");
+    const ip = forwarded ? forwarded.split(",")[0].trim() : (req.ip || req.socket?.remoteAddress || "unknown");
+
+    if (studentId && rawSessionId) {
+      return `${studentId}:${rawSessionId}`;
+    }
+    if (studentId) {
+      return `${studentId}`;
+    }
+    return `${ip}:${fp}:${rawSessionId || "global"}`;
+  },
+});
+
 const handleMarkAttendance = async (req, res) => {
   const student = req.user;
   const {
     scanGrantToken,
+    faceGrantToken,
     firstQrToken,
     secondQrToken,
     location,
@@ -743,46 +1008,72 @@ const handleMarkAttendance = async (req, res) => {
     faceMetrics,
     faceEmbedding,
   } = req.body || {};
+
+  if (!scanGrantToken || !firstQrToken || !secondQrToken) {
+    return res.status(400).json({
+      ok: false,
+      code: "MISSING_TOKENS",
+      error: "Two dynamic QR scans & grant token required",
+    });
+  }
+
+  const normalizedFp = normalizeFingerprint(fingerprint);
+  if (!normalizedFp || String(student?.device_fingerprint) !== normalizedFp) {
+    return res.status(401).json({
+      ok: false,
+      code: "DEVICE_MISMATCH",
+      error: "Device mismatch - attendance blocked",
+    });
+  }
+
+  const firstVerified = verifyQRToken(firstQrToken, {
+    allowExpired: true,
+    maxAgeSeconds: QR_VERIFY_MAX_AGE_SECONDS,
+  });
+  const secondVerified = verifyQRToken(secondQrToken, {
+    allowExpired: false,
+  });
+  if (!firstVerified.ok || !secondVerified.ok) {
+    return res.status(400).json({
+      ok: false,
+      code: "INVALID_QR",
+      error: "QR token expired or invalid",
+    });
+  }
+
+  const firstIat = Number(firstVerified.decoded?.iat || 0);
+  const secondIat = Number(secondVerified.decoded?.iat || 0);
+  const gapSeconds = Math.abs(secondIat - firstIat);
+  if (gapSeconds > QR_MAX_TWO_STEP_GAP_SECONDS) {
+    return res.status(400).json({
+      ok: false,
+      code: "QR_TIMEOUT",
+      error: "Scan timeout between QR rotations. Scan again.",
+    });
+  }
+
+  const sessionId = secondVerified.decoded?.sessionId;
+  if (String(firstVerified.decoded?.sessionId) !== String(sessionId)) {
+    return res.status(400).json({
+      ok: false,
+      code: "SESSION_MISMATCH",
+      error: "QR scans belong to different sessions",
+    });
+  }
+
   // --- ATOMIC IN-MEMORY DEDUPLICATION GUARD ---
-  // Keyed by student ID to prevent simultaneous double-scans from hitting PostgreSQL
-  const lockKey = `mark:${student?.id}`;
+  // Keyed by student ID + sessionId to prevent simultaneous double-scans from hitting DB
+  const lockKey = `mark:${student?.id}:${sessionId}`;
   if (scanLocks.has(lockKey)) {
-    return res.status(409).json({ ok: false, error: "Submission already in progress. Please wait." });
+    return res.status(409).json({
+      ok: false,
+      code: "REQUEST_IN_FLIGHT",
+      error: "Attendance submission already in progress. Please wait a moment.",
+    });
   }
   scanLocks.set(lockKey, Date.now());
+
   try {
-    if (!scanGrantToken || !firstQrToken || !secondQrToken) {
-      scanLocks.delete(lockKey);
-      return res.status(400).json({ ok: false, error: "Two dynamic QR scans & grant token required" });
-    }
-    const normalizedFp = normalizeFingerprint(fingerprint);
-    if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
-      scanLocks.delete(lockKey);
-      return res.status(401).json({ ok: false, error: "Device mismatch - attendance blocked" });
-    }
-    const firstVerified = verifyQRToken(firstQrToken, {
-      allowExpired: true,
-      maxAgeSeconds: QR_VERIFY_MAX_AGE_SECONDS,
-    });
-    const secondVerified = verifyQRToken(secondQrToken, {
-      allowExpired: false,
-    });
-    if (!firstVerified.ok || !secondVerified.ok) {
-      scanLocks.delete(lockKey);
-      return res.status(400).json({ ok: false, error: "QR token expired or invalid" });
-    }
-    const firstIat = Number(firstVerified.decoded?.iat || 0);
-    const secondIat = Number(secondVerified.decoded?.iat || 0);
-    const gapSeconds = Math.abs(secondIat - firstIat);
-    if (gapSeconds > QR_MAX_TWO_STEP_GAP_SECONDS) {
-      scanLocks.delete(lockKey);
-      return res.status(400).json({ ok: false, error: "Scan timeout between QR rotations. Scan again." });
-    }
-    const sessionId = secondVerified.decoded.sessionId;
-    if (String(firstVerified.decoded.sessionId) !== String(sessionId)) {
-      scanLocks.delete(lockKey);
-      return res.status(400).json({ ok: false, error: "QR scans belong to different sessions" });
-    }
     const grantCheck = consumeScanGrant({
       token: scanGrantToken,
       studentId: student.id,
@@ -790,48 +1081,86 @@ const handleMarkAttendance = async (req, res) => {
       fingerprint: normalizedFp,
     });
     if (!grantCheck.ok) {
-      scanLocks.delete(lockKey);
-      return res.status(400).json({ ok: false, error: grantCheck.error });
+      return res.status(400).json({
+        ok: false,
+        code: "INVALID_GRANT",
+        error: grantCheck.error || "Invalid or expired scan grant",
+      });
     }
+
     const sequenceCheck = await validateTwoStepQR({
       sessionId,
       firstToken: firstQrToken,
       secondToken: secondQrToken,
     });
     if (!sequenceCheck.ok) {
-      scanLocks.delete(lockKey);
-      return res.status(400).json({ ok: false, error: sequenceCheck.error });
+      return res.status(400).json({
+        ok: false,
+        code: "INVALID_QR_SEQUENCE",
+        error: sequenceCheck.error,
+      });
     }
+
     const session = await getCachedActiveSession(sessionId);
     if (!session) {
-      scanLocks.delete(lockKey);
-      return res.status(404).json({ ok: false, error: "Session not found" });
+      return res.status(404).json({
+        ok: false,
+        code: "SESSION_NOT_FOUND",
+        error: "Session not found",
+      });
     }
+
     const isRunning = Boolean(session?.is_active ?? session?.isActive);
     if (!isRunning) {
-      scanLocks.delete(lockKey);
-      return res.status(400).json({ ok: false, error: "Session is no longer active" });
+      return res.status(400).json({
+        ok: false,
+        code: "SESSION_EXPIRED",
+        error: "Session is no longer active",
+      });
     }
+
     const isManuallyAbsent = await isManualAbsent(sessionId, student.id, student.enrollment_no);
     if (isManuallyAbsent) {
-      scanLocks.delete(lockKey);
       return res.status(403).json({
         ok: false,
         code: "REMOVED_BY_FACULTY",
         error: "You were removed from this attendance session by faculty.",
       });
     }
+
+    // Fast-path in-memory duplicate check
+    const isAlreadyPresent = await isStudentPresent(sessionId, student.id);
+    if (isAlreadyPresent) {
+      return res.json({
+        ok: true,
+        already: true,
+        alreadyMarked: true,
+        code: "ALREADY_MARKED",
+        status: "present",
+        session: {
+          id: session.id,
+          _id: session.id,
+          subjectName: session.subj?.name || "Subject",
+          subjectCode: session.subj?.code || "",
+        },
+        message: "Attendance already marked for this session",
+      });
+    }
+
     // --- STRICT SECTION & BATCH VALIDATION ---
     const supabase = getSupabaseClient();
     const eligibility = await validateStudentSessionEligibility(student, session, supabase);
     if (!eligibility.ok) {
-      scanLocks.delete(lockKey);
-      return res.status(403).json({ ok: false, error: eligibility.error });
+      return res.status(403).json({
+        ok: false,
+        code: "ELIGIBILITY_MISMATCH",
+        error: eligibility.error,
+      });
     }
+
     // --- GEOFENCING VALIDATION ---
     const locationCheck = validateStudentLocation(location, session.location, sessionId);
     if (!locationCheck.ok) {
-      scanLocks.delete(lockKey);
       return res.status(403).json({
         ok: false,
         code: locationCheck.code || "LOCATION_ERROR",
@@ -841,28 +1170,65 @@ const handleMarkAttendance = async (req, res) => {
         accuracy: locationCheck.accuracy,
       });
     }
+
     // --- BIOMETRIC 1:1 FACE VERIFICATION ---
     let faceVerificationResult = {
       verified: true,
-      score: Number(faceMetrics?.confidence || 1),
-      model: "client-mediapipe-facenet512",
+      score: 1.0,
+      model: "face-grant",
     };
-    if (env.REQUIRE_FACE_VERIFICATION || faceMatch != null || faceEmbedding != null) {
-      const faceEval = await verifyFaceAgainstStudent(student, {
-        faceMatch,
-        faceMetrics,
-        faceEmbedding,
+
+    if (faceGrantToken) {
+      const grantCheck = consumeFaceGrant({
+        token: faceGrantToken,
+        studentId: student.id,
+        sessionId,
+        fingerprint: normalizedFp,
       });
+      if (!grantCheck.ok) {
+        return res.status(403).json({
+          ok: false,
+          code: grantCheck.code || "INVALID_FACE_GRANT",
+          error: grantCheck.error || "Face verification grant expired or invalid. Please verify your face again.",
+        });
+      }
+      faceVerificationResult = {
+        verified: true,
+        score: grantCheck.grant.score || 1.0,
+        model: grantCheck.grant.method || "face-grant",
+        grantVerifiedAt: grantCheck.grant.createdAt,
+      };
+    } else if (faceMatch != null || faceEmbedding != null) {
+      const faceEval = await verifyFaceAgainstStudent(
+        student,
+        {
+          faceMatch,
+          faceMetrics,
+          faceEmbedding,
+        },
+        new Date(),
+        { skipBlockingService: true }
+      );
       if (!faceEval.ok) {
-        scanLocks.delete(lockKey);
-        return res.status(403).json({ ok: false, error: faceEval.error });
+        return res.status(403).json({
+          ok: false,
+          code: faceEval.code || "FACE_MISMATCH",
+          error: faceEval.error,
+        });
       }
       faceVerificationResult = {
         verified: true,
         score: Number(faceEval.score || 1),
         model: faceEval.model || "facenet512",
       };
+    } else if (env.REQUIRE_FACE_VERIFICATION) {
+      return res.status(403).json({
+        ok: false,
+        code: "FACE_VERIFICATION_REQUIRED",
+        error: "Face verification is required before marking attendance.",
+      });
     }
+
     // --- ATOMIC DATABASE INSERTION (USING EXACT SCHEMA COLUMNS) ---
     const fullAttendancePayload = {
       session: sessionId,
@@ -890,17 +1256,56 @@ const handleMarkAttendance = async (req, res) => {
       device_fingerprint: normalizedFp,
       face_verification: faceVerificationResult,
     };
+
     let attendance;
     try {
       attendance = await attendanceBatchWriter.enqueue(fullAttendancePayload, student.id, sessionId);
     } catch (insertError) {
-      scanLocks.delete(lockKey);
-      if (insertError?.code === "23505" || String(insertError?.message || "").includes("duplicate")) {
-        return res.status(409).json({ ok: false, error: "Attendance already marked for this session" });
+      if (
+        insertError?.code === "23505" ||
+        String(insertError?.message || "").toLowerCase().includes("unique") ||
+        String(insertError?.message || "").toLowerCase().includes("duplicate")
+      ) {
+        await recordInstantPresence(sessionId, student.id);
+        return res.json({
+          ok: true,
+          already: true,
+          alreadyMarked: true,
+          code: "ALREADY_MARKED",
+          status: "present",
+          session: {
+            id: session.id,
+            _id: session.id,
+            subjectName: session.subj?.name || "Subject",
+            subjectCode: session.subj?.code || "",
+          },
+          message: "Attendance already marked for this session",
+        });
       }
       throw insertError;
     }
-    scanLocks.delete(lockKey);
+
+    if (attendance?.alreadyMarked || attendance?.already) {
+      await recordInstantPresence(sessionId, student.id);
+      return res.json({
+        ok: true,
+        already: true,
+        alreadyMarked: true,
+        code: "ALREADY_MARKED",
+        status: "present",
+        session: {
+          id: session.id,
+          _id: session.id,
+          subjectName: session.subj?.name || "Subject",
+          subjectCode: session.subj?.code || "",
+        },
+        message: "Attendance already marked for this session",
+      });
+    }
+
+    // Record presence in high-speed memory cache immediately
+    await recordInstantPresence(sessionId, student.id);
+
     // --- SHAPED REALTIME BROADCAST (Micro-batched to avoid WS storms) ---
     realtimeBroadcaster.enqueue(sessionId, {
       id: attendance.id,
@@ -911,39 +1316,43 @@ const handleMarkAttendance = async (req, res) => {
       timestamp: attendance.timestamp,
       status: "present",
     });
+
     return res.json({
       ok: true,
       attendanceId: attendance.id,
       status: "present",
       markedAt: attendance.timestamp,
+      session: {
+        id: session.id,
+        _id: session.id,
+        subjectName: session.subj?.name || "Subject",
+        subjectCode: session.subj?.code || "",
+      },
       message: "Attendance verified and recorded successfully",
     });
   } catch (err) {
-    scanLocks.delete(lockKey);
     console.error("Attendance submission error:", err);
-    return res.status(500).json({ ok: false, error: "Failed to record attendance" });
+    return res.status(500).json({
+      ok: false,
+      code: "SERVER_ERROR",
+      error: "Failed to record attendance",
+    });
+  } finally {
+    scanLocks.delete(lockKey);
   }
 };
 
 router.post(
   "/mark",
   auth(["STUDENT"]),
-  rateLimit({
-    prefix: "mark",
-    windowMs: 60 * 1000,
-    max: 15,
-  }),
+  attendanceRateLimiter,
   handleMarkAttendance
 );
 
 router.post(
   "/scan-grant/mark",
   auth(["STUDENT"]),
-  rateLimit({
-    prefix: "mark",
-    windowMs: 60 * 1000,
-    max: 15,
-  }),
+  attendanceRateLimiter,
   handleMarkAttendance
 );
 
@@ -1833,80 +2242,96 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
 // ----------------------------------------------------
 async function handleTotpAttendanceSubmission(req, res) {
   const student = req.user;
+  const {
+    sequence,
+    token1,
+    token2,
+    fingerprint,
+    faceGrantToken,
+    faceMatch,
+    faceMetrics,
+    faceEmbedding,
+  } = req.body || {};
+
+  const rawSessionId =
+    req.body?.sessionId ||
+    req.body?.classId ||
+    sequence?.[0]?.classId ||
+    sequence?.[0]?.sessionId;
+
+  if (!rawSessionId) {
+    return res.status(400).json({
+      ok: false,
+      code: "MISSING_SESSION",
+      error: "Session ID required",
+    });
+  }
+
+  const sessionId = String(rawSessionId);
+  const normalizedFp = normalizeFingerprint(fingerprint);
+
+  if (!normalizedFp || String(student?.device_fingerprint) !== normalizedFp) {
+    return res.status(401).json({
+      ok: false,
+      code: "DEVICE_MISMATCH",
+      error: "Device mismatch - attendance blocked",
+    });
+  }
+
   // --- ATOMIC IN-MEMORY DEDUPLICATION GUARD ---
-  const lockKey = `totp:${student?.id}`;
+  const lockKey = `totp:${student?.id}:${sessionId}`;
   if (scanLocks.has(lockKey)) {
-    return res.status(409).json({ ok: false, error: "Submission already in progress. Please wait." });
+    return res.status(409).json({
+      ok: false,
+      code: "REQUEST_IN_FLIGHT",
+      error: "Attendance submission already in progress. Please wait a moment.",
+    });
   }
   scanLocks.set(lockKey, Date.now());
 
   try {
-    const {
-      sequence,
-      token1,
-      token2,
-      fingerprint,
-      faceMatch,
-      faceMetrics,
-      faceEmbedding,
-    } = req.body || {};
-
-    const rawSessionId =
-      req.body?.sessionId ||
-      req.body?.classId ||
-      sequence?.[0]?.classId ||
-      sequence?.[0]?.sessionId;
-
-    const location =
-      req.body?.location ||
-      (req.body?.lat != null && req.body?.lng != null
-        ? { lat: Number(req.body.lat), lng: Number(req.body.lng), accuracy: Number(req.body.accuracy || 0) }
-        : null);
-
-    if (!rawSessionId) {
-      scanLocks.delete(lockKey);
-      return res.status(400).json({ ok: false, error: "Session ID required" });
-    }
-
-    const sessionId = String(rawSessionId);
-    const normalizedFp = normalizeFingerprint(fingerprint);
-
-    if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
-      scanLocks.delete(lockKey);
-      return res.status(401).json({ ok: false, error: "Device mismatch - attendance blocked" });
-    }
-
     let totpValidation;
     if (Array.isArray(sequence) && sequence.length >= 2) {
       totpValidation = await verifyTotpSequence(sessionId, sequence);
     } else if (token1 && token2) {
       totpValidation = await verifyConsecutiveTotpTokens(sessionId, token1, token2);
     } else {
-      scanLocks.delete(lockKey);
-      return res.status(400).json({ ok: false, error: "Two consecutive TOTP tokens required" });
+      return res.status(400).json({
+        ok: false,
+        code: "MISSING_TOKENS",
+        error: "Two consecutive TOTP tokens required",
+      });
     }
 
     if (!totpValidation.ok) {
-      scanLocks.delete(lockKey);
-      return res.status(400).json({ ok: false, error: totpValidation.error });
+      return res.status(400).json({
+        ok: false,
+        code: "INVALID_QR",
+        error: totpValidation.error || "Invalid TOTP sequence",
+      });
     }
 
     const session = await getCachedActiveSession(sessionId);
     if (!session) {
-      scanLocks.delete(lockKey);
-      return res.status(404).json({ ok: false, error: "Session not found" });
+      return res.status(404).json({
+        ok: false,
+        code: "SESSION_NOT_FOUND",
+        error: "Session not found",
+      });
     }
 
     const isRunning = Boolean(session?.is_active ?? session?.isActive);
     if (!isRunning) {
-      scanLocks.delete(lockKey);
-      return res.status(400).json({ ok: false, error: "Session is no longer active" });
+      return res.status(400).json({
+        ok: false,
+        code: "SESSION_EXPIRED",
+        error: "Session is no longer active",
+      });
     }
 
     // Strict check: if faculty manually marked student as absent / removed them
     const isManuallyAbsent = await isManualAbsent(sessionId, student.id, student.enrollment_no);
     if (isManuallyAbsent) {
-      scanLocks.delete(lockKey);
       return res.status(403).json({
         ok: false,
         code: "REMOVED_BY_FACULTY",
@@ -1916,14 +2341,20 @@ async function handleTotpAttendanceSubmission(req, res) {
 
     const supabase = getSupabaseClient();
     if (!supabase) {
-      scanLocks.delete(lockKey);
-      return res.status(503).json({ ok: false, error: "Database unavailable" });
+      return res.status(503).json({
+        ok: false,
+        code: "DATABASE_UNAVAILABLE",
+        error: "Database unavailable",
+      });
     }
 
     const eligibility = await validateStudentSessionEligibility(student, session, supabase);
     if (!eligibility.ok) {
-      scanLocks.delete(lockKey);
-      return res.status(403).json({ ok: false, error: eligibility.error });
+      return res.status(403).json({
+        ok: false,
+        code: "ELIGIBILITY_MISMATCH",
+        error: eligibility.error,
+      });
     }
 
     // Fast-path in-memory duplicate check
@@ -1933,7 +2364,9 @@ async function handleTotpAttendanceSubmission(req, res) {
         ok: true,
         already: true,
         alreadyMarked: true,
+        code: "ALREADY_MARKED",
         status: "present",
+        message: "Attendance already marked for this session",
         session: {
           id: sessionId,
           _id: sessionId,
@@ -1943,11 +2376,16 @@ async function handleTotpAttendanceSubmission(req, res) {
       });
     }
 
+    const location =
+      req.body?.location ||
+      (req.body?.lat != null && req.body?.lng != null
+        ? { lat: Number(req.body.lat), lng: Number(req.body.lng), accuracy: Number(req.body.accuracy || 0) }
+        : null);
+
     let locationCheck = { ok: true, distanceMeters: null };
     if (session.location) {
       locationCheck = validateStudentLocation(location, session.location, sessionId);
       if (!locationCheck.ok) {
-        scanLocks.delete(lockKey);
         return res.status(403).json({
           ok: false,
           code: locationCheck.code || "LOCATION_ERROR",
@@ -1957,24 +2395,78 @@ async function handleTotpAttendanceSubmission(req, res) {
           accuracy: locationCheck.accuracy,
         });
       }
+
+      // Detect impossible velocity jumps / mock GPS leaps across attendance sessions
+      const jumpCheck = checkSuspiciousLocationJump(student.id, location?.lat, location?.lng);
+      if (!jumpCheck.ok) {
+        return res.status(403).json({
+          ok: false,
+          code: jumpCheck.code || "IMPOSSIBLE_TRAVEL",
+          error: jumpCheck.error,
+          distanceMeters: jumpCheck.distanceMeters,
+        });
+      }
     }
 
     let faceVerificationResult = {
       verified: true,
-      score: Number(faceMetrics?.confidence || 1),
-      model: "totp-mediapipe-facenet512",
+      score: 1.0,
+      model: "face-grant",
     };
 
-    if (env.REQUIRE_FACE_VERIFICATION || faceMatch != null || faceEmbedding != null) {
-      const faceEval = await verifyFaceAgainstStudent(student, {
-        faceMatch,
-        faceMetrics,
-        faceEmbedding,
+    const hasEnrolledFace = Boolean(
+      student?.profile_photo_url ||
+      student?.face_signature ||
+      student?.face_embedding
+    );
+
+    if (faceGrantToken) {
+      const grantCheck = consumeFaceGrant({
+        token: faceGrantToken,
+        studentId: student.id,
+        sessionId,
+        fingerprint: normalizedFp,
       });
+      if (!grantCheck.ok) {
+        return res.status(403).json({
+          ok: false,
+          code: grantCheck.code || "INVALID_FACE_GRANT",
+          error: grantCheck.error || "Face verification grant expired or invalid. Please verify your face again.",
+        });
+      }
+      faceVerificationResult = {
+        verified: true,
+        score: grantCheck.grant.score || 1.0,
+        model: grantCheck.grant.method || "face-grant",
+        grantVerifiedAt: grantCheck.grant.createdAt,
+      };
+    } else if (hasEnrolledFace && faceMatch != null && !faceEmbedding && !req.body?.liveFaceSignature && !req.body?.liveFaceImageDataUrl) {
+      // Direct client-only biometric claim without grant token or signature is rejected for enrolled students
+      return res.status(403).json({
+        ok: false,
+        code: "FACE_GRANT_REQUIRED",
+        error: "Face verification grant is required. Please verify your face through the official face verification gate.",
+      });
+    } else if (faceMatch != null || faceEmbedding != null) {
+      const faceEval = await verifyFaceAgainstStudent(
+        student,
+        {
+          faceMatch,
+          faceMetrics,
+          faceEmbedding,
+          liveFaceSignature: req.body?.liveFaceSignature,
+          liveFaceImageDataUrl: req.body?.liveFaceImageDataUrl,
+        },
+        new Date(),
+        { skipBlockingService: true }
+      );
 
       if (!faceEval.ok) {
-        scanLocks.delete(lockKey);
-        return res.status(403).json({ ok: false, error: faceEval.error });
+        return res.status(403).json({
+          ok: false,
+          code: faceEval.code || "FACE_MISMATCH",
+          error: faceEval.error,
+        });
       }
 
       faceVerificationResult = {
@@ -1982,13 +2474,22 @@ async function handleTotpAttendanceSubmission(req, res) {
         score: Number(faceEval.score || 1),
         model: faceEval.model || "facenet512",
       };
+    } else if (env.REQUIRE_FACE_VERIFICATION || hasEnrolledFace) {
+      return res.status(403).json({
+        ok: false,
+        code: "FACE_VERIFICATION_REQUIRED",
+        error: "Face verification is required before marking attendance.",
+      });
     }
 
     // In-memory LRU cache guarantees session active status with zero network latency.
     if (!session || !(session.is_active ?? session.isActive)) {
       invalidateCachedSession(sessionId);
-      scanLocks.delete(lockKey);
-      return res.status(400).json({ ok: false, error: "Session is no longer active" });
+      return res.status(400).json({
+        ok: false,
+        code: "SESSION_EXPIRED",
+        error: "Session is no longer active",
+      });
     }
 
     // Atomic upsert into attendances table using micro-batched pipeline
@@ -2025,7 +2526,6 @@ async function handleTotpAttendanceSubmission(req, res) {
     try {
       attendance = await attendanceBatchWriter.enqueue(fullAttendancePayload, student.id, sessionId);
     } catch (insertError) {
-      scanLocks.delete(lockKey);
       if (
         insertError?.code === "23505" ||
         String(insertError?.message || "").toLowerCase().includes("unique") ||
@@ -2036,6 +2536,7 @@ async function handleTotpAttendanceSubmission(req, res) {
           ok: true,
           already: true,
           alreadyMarked: true,
+          code: "ALREADY_MARKED",
           status: "present",
           session: {
             id: session.id,
@@ -2043,13 +2544,34 @@ async function handleTotpAttendanceSubmission(req, res) {
             subjectName: session.subj?.name || "Subject",
             subjectCode: session.subj?.code || "",
           },
+          message: "Attendance already marked for this session",
         });
       }
       console.error("Attendance insert error:", insertError);
-      return res.status(400).json({ ok: false, error: insertError?.message || "Failed to record attendance" });
+      return res.status(400).json({
+        ok: false,
+        code: "INSERT_ERROR",
+        error: insertError?.message || "Failed to record attendance",
+      });
     }
 
-    scanLocks.delete(lockKey);
+    if (attendance?.alreadyMarked || attendance?.already) {
+      await recordInstantPresence(sessionId, student.id);
+      return res.json({
+        ok: true,
+        already: true,
+        alreadyMarked: true,
+        code: "ALREADY_MARKED",
+        status: "present",
+        message: "Attendance already marked for this session",
+        session: {
+          id: session.id,
+          _id: session.id,
+          subjectName: session.subj?.name || "Subject",
+          subjectCode: session.subj?.code || "",
+        },
+      });
+    }
 
     // Record presence in high-speed memory cache immediately
     await recordInstantPresence(sessionId, student.id);
@@ -2109,23 +2631,23 @@ async function handleTotpAttendanceSubmission(req, res) {
         subjectName: session.subj?.name || "Subject",
         subjectCode: session.subj?.code || "",
       },
+      message: "Attendance verified and recorded successfully",
     });
   } catch (err) {
-    scanLocks.delete(lockKey);
     console.error("Attendance submission error:", err);
-    return res.status(500).json({ ok: false, error: err?.message || "Server error" });
+    return res.status(500).json({
+      ok: false,
+      code: "SERVER_ERROR",
+      error: err?.message || "Server error",
+    });
+  } finally {
+    scanLocks.delete(lockKey);
   }
 }
 
-const totpRateLimiter = rateLimit({
-  prefix: "totp-submit",
-  windowMs: 60 * 1000,
-  max: 30,
-});
-
-router.post("/submit", auth(["STUDENT"]), totpRateLimiter, handleTotpAttendanceSubmission);
-router.post("/totp", auth(["STUDENT"]), totpRateLimiter, handleTotpAttendanceSubmission);
-router.post("/totp-submit", auth(["STUDENT"]), totpRateLimiter, handleTotpAttendanceSubmission);
+router.post("/submit", auth(["STUDENT"]), attendanceRateLimiter, handleTotpAttendanceSubmission);
+router.post("/totp", auth(["STUDENT"]), attendanceRateLimiter, handleTotpAttendanceSubmission);
+router.post("/totp-submit", auth(["STUDENT"]), attendanceRateLimiter, handleTotpAttendanceSubmission);
 
 // ----------------------------------------------------
 // 4) GET SESSION ATTENDEES (FACULTY / ADMIN)
@@ -2626,14 +3148,25 @@ router.delete("/session/:id", auth(["FACULTY", "ADMIN"]), async (req, res) => {
     const supabase = getSupabaseClient();
     if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
 
-    let fetchQuery = supabase.from("sessions").select("id, faculty").eq("id", sessionId);
-    if (req.userRole === "FACULTY") {
-      fetchQuery = fetchQuery.eq("faculty", req.userId);
+    const { data: existingAny, error: existErr } = await supabase
+      .from("sessions")
+      .select("id, faculty")
+      .eq("id", sessionId)
+      .single();
+
+    if (existErr || !existingAny) {
+      return res.status(404).json({ ok: false, error: "Session not found" });
     }
-    const { data: session, error: sessErr } = await fetchQuery.single();
-    if (sessErr || !session) {
-      return res.status(404).json({ ok: false, error: "Session not found or unauthorized" });
+
+    if (req.userRole === "FACULTY" && String(existingAny.faculty) !== String(req.userId)) {
+      return res.status(403).json({
+        ok: false,
+        code: "FORBIDDEN",
+        error: "Forbidden: You are not authorized to delete another faculty's session",
+      });
     }
+
+    const session = existingAny;
 
     // Invalidate session cache and cleanup realtime batch & channel
     invalidateCachedSession(sessionId);

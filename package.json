@@ -13,6 +13,13 @@
     "build": "vite build",
     "preview": "vite preview",
     "perf:load": "node scripts/load-attendance-check.cjs",
+    "test:load": "node scripts/load-test.cjs --profile=smoke",
+    "test:load:smoke": "node scripts/load-test.cjs --profile=smoke",
+    "test:load:standard": "node scripts/load-test.cjs --profile=standard",
+    "test:load:burst": "node scripts/load-test.cjs --profile=burst",
+    "test:load:concurrency": "node scripts/load-test.cjs --profile=concurrency",
+    "test:load:dry": "node scripts/load-test.cjs --dry-run",
+    "test:generate-token": "node scripts/generate-test-token.cjs",
     "models:download": "node scripts/download-face-models.cjs"
   },
   "dependencies": {

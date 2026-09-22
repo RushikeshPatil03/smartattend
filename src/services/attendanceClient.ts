@@ -215,7 +215,8 @@ export async function markAttendanceTwoStep(
   lng?: number | null,
   scanGrant?: string | null,
   accuracy?: number | null,
-  faceVerification?: Record<string, any> | null
+  faceVerification?: Record<string, any> | null,
+  faceGrantToken?: string | null
 ) {
   try {
     const first = String(firstQrToken || "").trim();
@@ -241,6 +242,9 @@ export async function markAttendanceTwoStep(
     }
     if (accuracy != null) {
       payload.accuracy = accuracy;
+    }
+    if (faceGrantToken) {
+      payload.faceGrantToken = String(faceGrantToken);
     }
     if (faceVerification) {
       payload.faceVerification = faceVerification;

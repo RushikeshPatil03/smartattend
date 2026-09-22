@@ -237,10 +237,63 @@ function validateStudentLocation(studentLocation, sessionLocation, sessionId = n
   return validateLocationInRadius(anchor, numLat, numLng, accuracy);
 }
 
+// In-memory velocity tracking to detect impossible travel / GPS jumping
+const studentLocationHistory = new Map();
+const VELOCITY_HISTORY_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+function cleanupVelocityHistory() {
+  const now = Date.now();
+  for (const [key, value] of studentLocationHistory.entries()) {
+    if (!value || now - value.timestamp > VELOCITY_HISTORY_TTL_MS) {
+      studentLocationHistory.delete(key);
+    }
+  }
+}
+
+/**
+ * Detect impossible physical velocity jumps between consecutive attendance check-ins
+ * Flag if student moves > 5km in under 3 minutes (> 100 km/h).
+ */
+function checkSuspiciousLocationJump(studentId, lat, lng) {
+  if (!studentId || lat == null || lng == null) return { ok: true };
+  const sid = String(studentId);
+  const numLat = Number(lat);
+  const numLng = Number(lng);
+  if (!Number.isFinite(numLat) || !Number.isFinite(numLng)) return { ok: true };
+
+  cleanupVelocityHistory();
+  const prev = studentLocationHistory.get(sid);
+  const now = Date.now();
+
+  if (prev && prev.timestamp) {
+    const elapsedMs = Math.max(0, now - prev.timestamp);
+    if (elapsedMs < 3 * 60 * 1000) {
+      const dist = distanceMeters(prev.lat, prev.lng, numLat, numLng);
+      // If student moved more than 5,000 meters in under 3 minutes
+      if (dist > 5000) {
+        const safeElapsedMs = Math.max(elapsedMs, 100);
+        const speedKmh = Math.round((dist / 1000) / (safeElapsedMs / 3600000));
+        return {
+          ok: false,
+          code: "IMPOSSIBLE_TRAVEL",
+          error: `Suspicious location change detected (${Math.round(dist / 1000)}km in ${Math.round(elapsedMs / 1000)}s, ~${speedKmh} km/h). Attendance blocked for location integrity.`,
+          distanceMeters: Math.round(dist),
+          speedKmh,
+        };
+      }
+    }
+  }
+
+  // Update last seen coordinates
+  studentLocationHistory.set(sid, { lat: numLat, lng: numLng, timestamp: now });
+  return { ok: true };
+}
+
 module.exports = {
   distanceMeters,
   validateLocationInRadius,
   validateStudentLocation,
+  checkSuspiciousLocationJump,
   cacheSessionAnchorLocation,
   getCachedSessionAnchorLocation,
   invalidateSessionAnchorLocation,

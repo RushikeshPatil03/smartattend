@@ -27,6 +27,10 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: PG_MAX_POOL_SIZE
+        value: 10
       - key: JWT_SECRET
         generateValue: true
       - key: QR_SECRET

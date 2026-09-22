@@ -46,7 +46,11 @@ function requireValue(name) {
 }
 
 function requireStrongSecret(name, fallback = "smart-attendance-system-default-strong-jwt-secret-key-32-chars-min") {
-  const value = clean(process.env[name]) || fallback;
+  const raw = clean(process.env[name]);
+  if (IS_PRODUCTION && !raw) {
+    throw new Error(`${name} environment variable MUST be explicitly set in production and cannot use default fallback.`);
+  }
+  const value = raw || fallback;
   if (value.length < 32) {
     const message = `${name} must be at least 32 characters`;
     if (IS_PRODUCTION) throw new Error(message);

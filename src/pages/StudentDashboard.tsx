@@ -6,7 +6,8 @@ import CollegeHeader from "../components/CollegeHeader";
 import {
   Scan, MapPin, CheckCircle, XCircle, History, Camera, LoaderCircle, X,
   BookOpen, TrendingUp, AlertTriangle, RefreshCw, ChevronDown,
-  Award, Clock, ShieldAlert, Calendar, Users, UserRound, Mail, GraduationCap, ShieldCheck
+  Award, Clock, ShieldAlert, Calendar, Users, UserRound, Mail, GraduationCap, ShieldCheck,
+  Smartphone, CheckCircle2
 } from "lucide-react";
 import { markAttendanceTwoStep, getFingerprint } from "../services/attendanceClient";
 import apiClient from "../services/apiClient";
@@ -891,12 +892,165 @@ const AssignedActivitiesSection: React.FC<{
   );
 });
 
-AssignedActivitiesSection.displayName = "AssignedActivitiesSection";
+function getFriendlyAttendanceMessage(result: any): {
+  title: string;
+  message: string;
+  type: "error" | "location" | "face" | "expired" | "device";
+} {
+  const code = String(result?.code || "").toUpperCase();
+  const rawMsg = String(result?.error || result?.message || "");
+  const lowerMsg = rawMsg.toLowerCase();
+
+  if (
+    code === "ALREADY_MARKED" ||
+    result?.already ||
+    result?.alreadyMarked ||
+    lowerMsg.includes("already marked") ||
+    lowerMsg.includes("already recorded")
+  ) {
+    return {
+      title: "Already Recorded",
+      message: "Your attendance for this session was already recorded earlier.",
+      type: "error",
+    };
+  }
+
+  if (
+    code === "OUT_OF_RANGE" ||
+    lowerMsg.includes("out of range") ||
+    lowerMsg.includes("distance") ||
+    lowerMsg.includes("meters away")
+  ) {
+    return {
+      title: "Outside Classroom Range",
+      message: "You appear to be outside the classroom zone. Please move closer to your lecture room and try again.",
+      type: "location",
+    };
+  }
+
+  if (code === "LOCATION_ERROR" || lowerMsg.includes("location") || lowerMsg.includes("gps")) {
+    return {
+      title: "Location Check Failed",
+      message: "We could not determine your accurate GPS location. Please turn on Location / GPS with High Accuracy and retry.",
+      type: "location",
+    };
+  }
+
+  if (
+    code === "SESSION_EXPIRED" ||
+    code === "SESSION_NOT_FOUND" ||
+    lowerMsg.includes("session ended") ||
+    lowerMsg.includes("session expired") ||
+    lowerMsg.includes("session not found")
+  ) {
+    return {
+      title: "Session Ended",
+      message: "This attendance session has ended or is no longer accepting new scans.",
+      type: "expired",
+    };
+  }
+
+  if (
+    code === "INVALID_QR" ||
+    code === "QR_TIMEOUT" ||
+    lowerMsg.includes("qr code expired") ||
+    lowerMsg.includes("qr timeout") ||
+    lowerMsg.includes("invalid qr")
+  ) {
+    return {
+      title: "QR Code Expired",
+      message: "The projected QR code rotates every few seconds. Please scan the current code displayed on the screen.",
+      type: "expired",
+    };
+  }
+
+  if (code === "FACE_MISMATCH" || lowerMsg.includes("face mismatch") || lowerMsg.includes("face verification failed")) {
+    return {
+      title: "Face Verification Failed",
+      message: "Face did not match your registered profile photo. Make sure your face is well-lit and directly facing the camera.",
+      type: "face",
+    };
+  }
+
+  if (code === "DEVICE_MISMATCH" || lowerMsg.includes("device mismatch") || lowerMsg.includes("unrecognized device")) {
+    return {
+      title: "Unregistered Device",
+      message: "This device is not linked to your student account. Please use your registered phone or request a device change.",
+      type: "device",
+    };
+  }
+
+  if (code === "RATE_LIMITED" || lowerMsg.includes("too many requests")) {
+    const retrySec = result?.retryAfterSeconds || 5;
+    return {
+      title: "Please Slow Down",
+      message: `Too many rapid scan attempts. Please wait ${retrySec} seconds before trying again.`,
+      type: "error",
+    };
+  }
+
+  if (code === "REQUEST_IN_FLIGHT" || lowerMsg.includes("in flight")) {
+    return {
+      title: "Check-in In Progress",
+      message: "Your attendance submission is currently being processed. Please wait a moment.",
+      type: "error",
+    };
+  }
+
+  if (code === "ELIGIBILITY_MISMATCH" || lowerMsg.includes("not enrolled") || lowerMsg.includes("eligibility")) {
+    return {
+      title: "Not Enrolled",
+      message: "You are not enrolled in this specific class, subject, or batch.",
+      type: "error",
+    };
+  }
+
+  if (code === "REMOVED_BY_FACULTY" || lowerMsg.includes("faculty")) {
+    return {
+      title: "Manual Faculty Action",
+      message: "Your attendance was updated directly by the faculty.",
+      type: "error",
+    };
+  }
+
+  if (
+    lowerMsg.includes("timeout") ||
+    lowerMsg.includes("network") ||
+    lowerMsg.includes("fetch") ||
+    lowerMsg.includes("failed to fetch")
+  ) {
+    return {
+      title: "Connection Issue",
+      message: "Unable to reach the attendance server. Please check your internet connection and try again.",
+      type: "error",
+    };
+  }
+
+  return {
+    title: "Attendance Unsuccessful",
+    message:
+      rawMsg.length > 0 && !rawMsg.includes("<") && rawMsg.length < 120
+        ? rawMsg
+        : "Could not record attendance. Please try scanning again.",
+    type: "error",
+  };
+}
 
 const StudentDashboard: React.FC = () => {
   const { currentUser, departments = [], fetchDepartments, logout } = useApp();
 
-  const [scanStep, setScanStep] = useState<"IDLE" | "PREPARING" | "SCANNING" | "SUBMITTING" | "SUCCESS" | "ERROR">("IDLE");
+  const [scanStep, setScanStep] = useState<
+    "IDLE" | "PREPARING" | "SCANNING" | "SUBMITTING" | "SUCCESS" | "ALREADY_MARKED" | "ERROR"
+  >("IDLE");
+  const [errorDetails, setErrorDetails] = useState<{
+    title: string;
+    message: string;
+    type: "error" | "location" | "face" | "expired" | "device";
+  }>({
+    title: "Attendance Unsuccessful",
+    message: "",
+    type: "error",
+  });
   const [statusMsg, setStatusMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [recentSessions, setRecentSessions] = useState<any[]>([]);
@@ -968,9 +1122,11 @@ const StudentDashboard: React.FC = () => {
   const faceGateTimerRef = useRef<number | null>(null);
   const faceVerifiedUntilRef = useRef(0);
   const faceVerificationPayloadRef = useRef<{
-    dataUrl: string;
+    dataUrl?: string;
     faceVerification?: any;
   } | null>(null);
+  const faceGrantTokenRef = useRef<string | null>(null);
+  const faceGrantPromiseRef = useRef<Promise<any> | null>(null);
 
   const faceVerified = faceVerifiedUntil > Date.now();
   const registeredFacePhoto = useMemo(() => {
@@ -1123,6 +1279,8 @@ const StudentDashboard: React.FC = () => {
     faceVerifiedUntilRef.current = 0;
     setFaceVerifiedUntil(0);
     faceVerificationPayloadRef.current = null;
+    faceGrantTokenRef.current = null;
+    faceGrantPromiseRef.current = null;
     if (faceGateTimerRef.current) {
       window.clearTimeout(faceGateTimerRef.current);
       faceGateTimerRef.current = null;
@@ -1166,9 +1324,25 @@ const StudentDashboard: React.FC = () => {
     const verifiedUntil = Date.now() + FACE_VERIFICATION_WINDOW_MS;
     faceVerifiedUntilRef.current = verifiedUntil;
     faceVerificationPayloadRef.current = {
-      dataUrl: capture.dataUrl,
       faceVerification: capture.faceVerification,
     };
+
+    // Obtain cryptographically signed, short-lived face verification grant
+    const fingerprint = getFingerprint();
+    faceGrantTokenRef.current = null;
+    faceGrantPromiseRef.current = apiClient
+      .verifyFace({
+        faceMatch: Boolean(capture.faceVerification?.matched),
+        faceMetrics: capture.faceVerification,
+        fingerprint,
+      })
+      .then((res: any) => {
+        if (res?.ok && res?.faceGrantToken) {
+          faceGrantTokenRef.current = String(res.faceGrantToken);
+        }
+        return res;
+      })
+      .catch(() => null);
     if (faceGateTimerRef.current) window.clearTimeout(faceGateTimerRef.current);
     setFaceVerifiedUntil(verifiedUntil);
     setFaceGateOpen(false);
@@ -1435,6 +1609,22 @@ const StudentDashboard: React.FC = () => {
       }
       const fingerprint = getFingerprint();
 
+      // Resolve face grant token if still in flight
+      let faceGrantToken = faceGrantTokenRef.current;
+      if (!faceGrantToken && faceGrantPromiseRef.current) {
+        try {
+          const grantRes = await Promise.race([
+            faceGrantPromiseRef.current,
+            new Promise((resolve) => setTimeout(() => resolve(null), 1500)),
+          ]);
+          if (grantRes?.ok && grantRes?.faceGrantToken) {
+            faceGrantToken = String(grantRes.faceGrantToken);
+          }
+        } catch {}
+      }
+      faceGrantTokenRef.current = null;
+      faceGrantPromiseRef.current = null;
+
       // Execute attendance submit with 12s fast timeout
       const submitPromise = (async () => {
         if (pendingQrPairRef.current?.kind === "totp") {
@@ -1452,7 +1642,7 @@ const StudentDashboard: React.FC = () => {
               lng: coords.lng,
               accuracy: coords.accuracy,
             },
-            facePhotoWebp: facePayload?.dataUrl,
+            faceGrantToken,
             faceVerification: facePayload?.faceVerification,
           });
         } else {
@@ -1462,9 +1652,10 @@ const StudentDashboard: React.FC = () => {
             fingerprint,
             coords.lat,
             coords.lng,
-            facePayload?.dataUrl || null,
+            null,
             coords.accuracy,
-            facePayload?.faceVerification || null
+            facePayload?.faceVerification || null,
+            faceGrantToken
           );
         }
       })();
@@ -1496,10 +1687,15 @@ const StudentDashboard: React.FC = () => {
               : null;
 
         pendingQrPairRef.current = null;
-        setScanStep("SUCCESS");
+        if (isAlreadyMarked) {
+          setScanStep("ALREADY_MARKED");
+          setStatusMsg("Attendance already recorded for this session");
+        } else {
+          setScanStep("SUCCESS");
+          setStatusMsg("Attendance confirmed ✓");
+        }
         try { navigator.vibrate?.([80, 40, 160]); } catch {}
         playSuccessChime();
-        setStatusMsg(isAlreadyMarked ? "Attendance already recorded ✓" : "Attendance confirmed ✓");
 
         // 1. Optimistic Local State Update (Instant 0ms UI Feedback)
         const markedSessionId = String(
@@ -1568,16 +1764,12 @@ const StudentDashboard: React.FC = () => {
         return;
       }
 
-      // Handle server error responses cleanly
-      const rawError = typeof result === "string" ? "Network or server error" : String(result?.error || result?.message || "Attendance submission failed.");
-      const cleanError =
-        rawError.includes("<!DOCTYPE") || rawError.includes("<html") || rawError.includes("<pre>")
-          ? "Attendance server error. Please try again."
-          : rawError;
-
+      // Map raw response into friendly, actionable user message
+      const friendly = getFriendlyAttendanceMessage(result);
+      setErrorDetails(friendly);
       setScanStep("ERROR");
       try { navigator.vibrate?.(400); } catch {}
-      setStatusMsg(cleanError);
+      setStatusMsg(friendly.message);
     } finally {
       // ALWAYS unlock the UI so student can immediately retry or scan again
       setBusy(false);
@@ -1594,6 +1786,11 @@ const StudentDashboard: React.FC = () => {
 
     if (!registeredFacePhoto || registeredFacePhoto.length < 5) {
       setScanStep("ERROR");
+      setErrorDetails({
+        title: "Face Profile Missing",
+        message: "No registered face photo found on your account. Please contact your college administrator to upload your official photo.",
+        type: "face",
+      });
       setStatusMsg("No registered face photo found on your account. Please contact your college administrator to upload your official photo.");
       return;
     }
@@ -1627,6 +1824,11 @@ const StudentDashboard: React.FC = () => {
   const resetScan = () => {
     setScanStep("IDLE");
     setStatusMsg("");
+    setErrorDetails({
+      title: "Attendance Unsuccessful",
+      message: "",
+      type: "error",
+    });
     setBusy(false);
     pendingQrPairRef.current = null;
     submitLockRef.current = false;
@@ -1820,9 +2022,93 @@ const StudentDashboard: React.FC = () => {
         onOpenProfileModal={(tab) => setProfileModalTab(tab === "activities" ? "activities" : "academics")}
       />
 
-      <div className="mx-auto mb-4 relative flex min-h-[310px] w-full max-w-lg items-center justify-center rounded-[24px] border border-slate-800 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-900 p-6 sm:p-8 text-white shadow-[0_24px_50px_-20px_rgba(15,23,42,0.85)]">
+      <div className="mx-auto mb-4 relative flex min-h-[340px] w-full max-w-lg flex-col justify-between rounded-[24px] border border-slate-800 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-900 p-5 sm:p-7 text-white shadow-[0_24px_50px_-20px_rgba(15,23,42,0.85)]">
+        {/* 4-Step Progress Stepper */}
+        <div className="mb-4 w-full border-b border-slate-800/80 pb-3" aria-label="Attendance marking steps">
+          <div className="flex items-center justify-between text-[11px] font-medium text-slate-400">
+            {/* Step 1: Face Check */}
+            <div className="flex items-center gap-1.5">
+              <div
+                className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold transition-colors ${
+                  faceVerified
+                    ? "bg-emerald-500 text-slate-950"
+                    : faceGateOpen
+                    ? "bg-teal-500 text-white animate-pulse"
+                    : "bg-slate-800 text-slate-400"
+                }`}
+              >
+                {faceVerified ? "✓" : "1"}
+              </div>
+              <span className={faceVerified ? "text-emerald-400 font-semibold" : faceGateOpen ? "text-teal-300 font-semibold" : "text-slate-400"}>
+                Face
+              </span>
+            </div>
+
+            <div className="h-[1px] flex-1 mx-2 bg-slate-800" />
+
+            {/* Step 2: Scan QR */}
+            <div className="flex items-center gap-1.5">
+              <div
+                className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold transition-colors ${
+                  scanStep === "SUBMITTING" || scanStep === "SUCCESS" || scanStep === "ALREADY_MARKED"
+                    ? "bg-emerald-500 text-slate-950"
+                    : scannerOpen
+                    ? "bg-cyan-500 text-white animate-pulse"
+                    : "bg-slate-800 text-slate-400"
+                }`}
+              >
+                {scanStep === "SUBMITTING" || scanStep === "SUCCESS" || scanStep === "ALREADY_MARKED" ? "✓" : "2"}
+              </div>
+              <span className={scanStep === "SUBMITTING" || scanStep === "SUCCESS" || scanStep === "ALREADY_MARKED" ? "text-emerald-400 font-semibold" : scannerOpen ? "text-cyan-300 font-semibold" : "text-slate-400"}>
+                QR
+              </span>
+            </div>
+
+            <div className="h-[1px] flex-1 mx-2 bg-slate-800" />
+
+            {/* Step 3: Location */}
+            <div className="flex items-center gap-1.5">
+              <div
+                className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold transition-colors ${
+                  scanStep === "SUCCESS" || scanStep === "ALREADY_MARKED"
+                    ? "bg-emerald-500 text-slate-950"
+                    : scanStep === "SUBMITTING"
+                    ? "bg-teal-500 text-white animate-pulse"
+                    : locationReady
+                    ? "bg-emerald-950 text-emerald-400 border border-emerald-500/40"
+                    : "bg-slate-800 text-slate-400"
+                }`}
+              >
+                {scanStep === "SUCCESS" || scanStep === "ALREADY_MARKED" ? "✓" : "3"}
+              </div>
+              <span className={scanStep === "SUCCESS" || scanStep === "ALREADY_MARKED" ? "text-emerald-400 font-semibold" : scanStep === "SUBMITTING" ? "text-teal-300 font-semibold" : "text-slate-400"}>
+                GPS
+              </span>
+            </div>
+
+            <div className="h-[1px] flex-1 mx-2 bg-slate-800" />
+
+            {/* Step 4: Marked */}
+            <div className="flex items-center gap-1.5">
+              <div
+                className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold transition-colors ${
+                  scanStep === "SUCCESS" || scanStep === "ALREADY_MARKED"
+                    ? "bg-emerald-500 text-slate-950"
+                    : "bg-slate-800 text-slate-400"
+                }`}
+              >
+                {scanStep === "SUCCESS" || scanStep === "ALREADY_MARKED" ? "✓" : "4"}
+              </div>
+              <span className={scanStep === "SUCCESS" || scanStep === "ALREADY_MARKED" ? "text-emerald-400 font-semibold" : "text-slate-400"}>
+                Marked
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* State Card Contents */}
         {scanStep === "IDLE" && (
-          <div className="w-full text-center">
+          <div className="w-full text-center my-auto py-2">
             {hasActiveLiveSession && (
               <div className="absolute top-4 right-4 sm:top-5 sm:right-5 z-10">
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-950/80 border border-rose-500/50 px-3 py-1 text-xs font-mono font-extrabold text-rose-400 shadow-[0_0_15px_rgba(244,63,94,0.35)] animate-pulse">
@@ -1834,10 +2120,10 @@ const StudentDashboard: React.FC = () => {
                 </span>
               </div>
             )}
-            <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-800/80 text-cyan-400 border border-slate-700/60 shadow-inner">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-800/80 text-cyan-400 border border-slate-700/60 shadow-inner">
               <Scan size={36} />
             </div>
-            <div className="flex items-center justify-center gap-2 mb-2">
+            <div className="flex items-center justify-center gap-2 mb-1.5">
               <h2 className="text-2xl font-bold tracking-tight text-white">Mark Attendance</h2>
               {hasActiveLiveSession && (
                 <span className="inline-flex items-center gap-1 rounded-full bg-rose-500/20 border border-rose-500/40 px-2 py-0.5 text-[10px] font-black text-rose-400 animate-pulse">
@@ -1845,77 +2131,102 @@ const StudentDashboard: React.FC = () => {
                 </span>
               )}
             </div>
-            <p className="text-slate-300 text-sm mb-5 leading-relaxed">Step 1: Face Liveness Check &rarr; Step 2: Scan QR within 15s.</p>
-            <div className="mb-6 flex flex-wrap items-center justify-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em]">
-              <span className="rounded-full border border-slate-700 bg-slate-800/80 px-3.5 py-1 text-slate-300">
-                Camera On Tap
-              </span>
-              <span className={`rounded-full border px-3.5 py-1 ${locationReady ? "border-emerald-500/50 bg-emerald-950/60 text-emerald-300" : "border-slate-700 bg-slate-800/80 text-slate-300"}`}>
-                GPS {locationReady ? "Ready" : "Warming"}
-              </span>
-            </div>
+            <p className="text-slate-300 text-xs sm:text-sm mb-4 leading-relaxed max-w-sm mx-auto">
+              Verify your face with directional liveness, then scan the rotating classroom QR.
+            </p>
+
+            {faceVerified && faceVerifiedUntil > Date.now() ? (
+              <div className="mb-4 inline-flex items-center gap-2 rounded-xl bg-emerald-950/70 border border-emerald-500/50 px-3.5 py-1.5 text-xs text-emerald-300 font-medium">
+                <ShieldCheck size={16} className="text-emerald-400" />
+                Face verified • Ready to scan QR
+              </div>
+            ) : (
+              <div className="mb-4 flex flex-wrap items-center justify-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em]">
+                <span className="rounded-full border border-slate-700 bg-slate-800/80 px-3 py-1 text-slate-300">
+                  Liveness Check
+                </span>
+                <span
+                  className={`rounded-full border px-3 py-1 ${
+                    locationReady
+                      ? "border-emerald-500/50 bg-emerald-950/60 text-emerald-300"
+                      : "border-slate-700 bg-slate-800/80 text-slate-300"
+                  }`}
+                >
+                  GPS {locationReady ? "Ready ✓" : "Warming"}
+                </span>
+              </div>
+            )}
+
             <Button
               onPointerDown={() => void touchDownPrewarmFrontCamera()}
               onTouchStart={() => void touchDownPrewarmFrontCamera()}
               onClick={() => void handleStartAttendance()}
-              className="bg-teal-600 hover:bg-teal-500 active:bg-teal-700 w-full py-4 text-base sm:text-lg font-bold text-white shadow-lg shadow-teal-950/50 rounded-xl cursor-pointer flex items-center justify-center gap-2"
+              className="bg-teal-600 hover:bg-teal-500 active:bg-teal-700 w-full py-3.5 text-base sm:text-lg font-bold text-white shadow-lg shadow-teal-950/50 rounded-xl cursor-pointer flex items-center justify-center gap-2 transition disabled:opacity-60"
               disabled={busy}
             >
-              <Camera size={20} /> Mark Attendance
-              {hasActiveLiveSession && (
-                <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-rose-500 px-2 py-0.5 text-[10px] font-black uppercase text-white shadow-xs animate-pulse">
-                  ● LIVE
-                </span>
-              )}
+              <Camera size={20} />
+              {faceVerified && faceVerifiedUntil > Date.now() ? "Scan Classroom QR" : "Start Verification"}
             </Button>
           </div>
         )}
 
         {scanStep === "PREPARING" && (
-          <div className="w-full text-center">
-            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-teal-950/60 text-teal-400 border border-teal-500/40">
-              <MapPin size={36} />
+          <div className="w-full text-center my-auto py-4">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-teal-950/60 text-teal-400 border border-teal-500/40 animate-pulse">
+              <LoaderCircle size={36} className="animate-spin text-teal-400" />
             </div>
             <h3 className="text-lg font-bold tracking-tight text-white">Getting Ready</h3>
-            <p className="text-xs text-slate-300 mt-2">{statusMsg || "Preparing camera and live GPS."}</p>
+            <p className="text-xs text-slate-300 mt-2 max-w-xs mx-auto">
+              {statusMsg || "Preparing camera and checking live GPS coordinates..."}
+            </p>
           </div>
         )}
 
         {scanStep === "SCANNING" && (
-          <div className="w-full text-center">
-            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-950/60 text-emerald-400 border border-emerald-500/40">
-              <CheckCircle size={36} />
+          <div className="w-full text-center my-auto py-4">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-cyan-950/60 text-cyan-400 border border-cyan-500/40">
+              <Scan size={36} className="animate-pulse" />
             </div>
-            <h2 className="text-xl font-bold tracking-tight text-white">Scan Attendance QR</h2>
-            <p className="text-slate-300 text-sm mb-6 mt-1">
-              Hold steady while the app captures the rotating QR pair.
+            <h2 className="text-xl font-bold tracking-tight text-white">Scan Classroom QR</h2>
+            <p className="text-slate-300 text-xs sm:text-sm mb-2 mt-1">
+              Point your camera steadily at the projector screen.
             </p>
-            {statusMsg && <p className="text-xs text-slate-300 mt-3 leading-relaxed">{statusMsg}</p>}
+            {statusMsg && <p className="text-xs text-cyan-300/80 mt-2 leading-relaxed">{statusMsg}</p>}
           </div>
         )}
 
         {scanStep === "SUBMITTING" && (
-          <div className="w-full text-center">
-            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-teal-950/60 text-teal-400 border border-teal-500/40 animate-pulse">
-              <CheckCircle size={36} />
+          <div className="w-full text-center my-auto py-4">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-teal-950/60 text-teal-400 border border-teal-500/40">
+              <LoaderCircle size={36} className="animate-spin text-teal-400" />
             </div>
-            <h2 className="text-xl font-bold tracking-tight text-white">Submitting</h2>
-            <p className="text-slate-300 text-sm mt-1">{statusMsg || "Verifying QR, device, and location."}</p>
+            <h2 className="text-xl font-bold tracking-tight text-white">Verifying Attendance</h2>
+            <p className="text-slate-300 text-xs sm:text-sm mt-1 max-w-xs mx-auto">
+              {statusMsg || "Validating cryptographic token, device integrity, and location..."}
+            </p>
+            <div className="mt-4 flex justify-center">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-800 px-3 py-1 text-[11px] text-slate-300">
+                <span className="h-1.5 w-1.5 rounded-full bg-teal-400 animate-ping" />
+                Processing request...
+              </span>
+            </div>
           </div>
         )}
 
         {scanStep === "SUCCESS" && (
-          <div className="w-full text-center">
+          <div className="w-full text-center my-auto py-2">
             <motion.div
-              initial={{ scale: 0.5, opacity: 0 }}
-              animate={{ scale: [1.3, 1.0], opacity: 1 }}
+              initial={{ scale: 0.6, opacity: 0 }}
+              animate={{ scale: [1.2, 1.0], opacity: 1 }}
               transition={{ type: "spring", duration: 0.5 }}
-              className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-950/60 text-emerald-400 border border-emerald-500/40 shadow-[0_0_25px_rgba(16,185,129,0.35)]"
+              className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-950/70 text-emerald-400 border border-emerald-500/50 shadow-[0_0_25px_rgba(16,185,129,0.35)]"
             >
-              <CheckCircle size={36} />
+              <CheckCircle2 size={38} />
             </motion.div>
-            <h2 className="text-2xl font-bold tracking-tight text-white">Present</h2>
-            <p className="text-emerald-300 bg-emerald-950/60 border border-emerald-500/30 rounded-lg px-3 py-2 mt-3 text-sm">{statusMsg}</p>
+            <h2 className="text-2xl font-bold tracking-tight text-white">Attendance Marked!</h2>
+            <p className="text-emerald-300 bg-emerald-950/60 border border-emerald-500/30 rounded-lg px-3.5 py-2.5 mt-3 text-xs sm:text-sm max-w-sm mx-auto">
+              {statusMsg || "Your attendance was verified and recorded successfully."}
+            </p>
             <Button
               onClick={() => {
                 if (resetTimerRef.current) {
@@ -1925,7 +2236,37 @@ const StudentDashboard: React.FC = () => {
                 resetScan();
               }}
               variant="secondary"
-              className="mt-6 bg-white text-slate-900 border-none hover:bg-slate-100 font-bold cursor-pointer"
+              className="mt-5 w-full max-w-xs mx-auto bg-white text-slate-900 border-none hover:bg-slate-100 font-bold cursor-pointer py-2.5 rounded-xl transition"
+            >
+              Done
+            </Button>
+          </div>
+        )}
+
+        {scanStep === "ALREADY_MARKED" && (
+          <div className="w-full text-center my-auto py-2">
+            <motion.div
+              initial={{ scale: 0.8, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ duration: 0.3 }}
+              className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-950/60 text-amber-400 border border-amber-500/40 shadow-[0_0_20px_rgba(245,158,11,0.25)]"
+            >
+              <CheckCircle2 size={38} />
+            </motion.div>
+            <h2 className="text-2xl font-bold tracking-tight text-white">Already Recorded</h2>
+            <p className="text-amber-200 bg-amber-950/60 border border-amber-500/30 rounded-lg px-3.5 py-2.5 mt-3 text-xs sm:text-sm max-w-sm mx-auto">
+              {statusMsg || "Your attendance for this session was previously recorded. No further action is required."}
+            </p>
+            <Button
+              onClick={() => {
+                if (resetTimerRef.current) {
+                  window.clearTimeout(resetTimerRef.current);
+                  resetTimerRef.current = null;
+                }
+                resetScan();
+              }}
+              variant="secondary"
+              className="mt-5 w-full max-w-xs mx-auto bg-white text-slate-900 border-none hover:bg-slate-100 font-bold cursor-pointer py-2.5 rounded-xl transition"
             >
               Done
             </Button>
@@ -1933,13 +2274,50 @@ const StudentDashboard: React.FC = () => {
         )}
 
         {scanStep === "ERROR" && (
-          <div className="w-full text-center">
-            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-rose-950/60 text-rose-400 border border-rose-500/40">
-              <XCircle size={36} />
+          <div className="w-full text-center my-auto py-2">
+            <div
+              className={`mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl border ${
+                errorDetails.type === "location"
+                  ? "bg-amber-950/60 text-amber-400 border-amber-500/40"
+                  : errorDetails.type === "expired"
+                  ? "bg-amber-950/60 text-amber-400 border-amber-500/40"
+                  : "bg-rose-950/60 text-rose-400 border-rose-500/40"
+              }`}
+            >
+              {errorDetails.type === "location" ? (
+                <MapPin size={34} />
+              ) : errorDetails.type === "face" ? (
+                <Camera size={34} />
+              ) : errorDetails.type === "expired" ? (
+                <Clock size={34} />
+              ) : errorDetails.type === "device" ? (
+                <Smartphone size={34} />
+              ) : (
+                <XCircle size={34} />
+              )}
             </div>
-            <h2 className="text-2xl font-bold tracking-tight text-white">Failed</h2>
-            <p className="text-rose-300 bg-rose-950/60 border border-rose-500/30 rounded-lg px-3 py-2 mt-3 text-sm">{statusMsg}</p>
-            <Button onClick={resetScan} variant="secondary" className="mt-6 bg-white text-slate-900 border-none hover:bg-slate-100 font-bold cursor-pointer">Try Again</Button>
+            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-white">
+              {errorDetails.title || "Attendance Unsuccessful"}
+            </h2>
+            <div
+              className={`rounded-lg px-3.5 py-2.5 mt-3 text-xs sm:text-sm max-w-sm mx-auto border ${
+                errorDetails.type === "location" || errorDetails.type === "expired"
+                  ? "bg-amber-950/60 border-amber-500/30 text-amber-200"
+                  : "bg-rose-950/60 border-rose-500/30 text-rose-200"
+              }`}
+            >
+              <p className="leading-relaxed">{errorDetails.message || statusMsg || "An error occurred during submission."}</p>
+            </div>
+            <div className="mt-5 flex justify-center">
+              <Button
+                onClick={resetScan}
+                disabled={busy}
+                variant="secondary"
+                className="w-full max-w-xs bg-white text-slate-900 border-none hover:bg-slate-100 font-bold cursor-pointer py-2.5 rounded-xl transition disabled:opacity-50"
+              >
+                Try Again
+              </Button>
+            </div>
           </div>
         )}
       </div>
