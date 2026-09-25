@@ -7,6 +7,7 @@ import {
   Camera,
   CheckCircle2,
   Compass,
+  LoaderCircle,
   RefreshCw,
   ShieldAlert,
   Smartphone,
@@ -675,11 +676,12 @@ const LivePhotoCapture: React.FC<{
               setLivenessChallenge(update.challenge);
             }
             if (update.passed) {
-              setLivenessPassed(true);
-              setLivenessProgress(1);
+              // Liveness movement completed! Hold progress at 92% while 1:1 biometric comparison executes
+              setLivenessProgress(0.92);
+              setVerificationMessage("Matching face against registered profile...");
             } else {
-              // Smooth forward monotonic progression to eliminate arc jitter
-              const smoothed = Math.min(0.98, Math.max(lastReportedProgress, update.progress));
+              // Smooth forward monotonic progression scaled up to 0.88
+              const smoothed = Math.min(0.88, Math.max(lastReportedProgress, update.progress * 0.88));
               if (Math.abs(smoothed - lastReportedProgress) >= 0.015) {
                 lastReportedProgress = smoothed;
                 setLivenessProgress(smoothed);
@@ -691,12 +693,12 @@ const LivePhotoCapture: React.FC<{
           setLivenessPassed(false);
           throw new Error(liveness.reason || "Live face movement was not detected.");
         }
-        setLivenessPassed(true);
-        setVerificationMessage("Verifying face against registered photo...");
-        // Stabilize frame after head movement challenge
-        await new Promise((res) => setTimeout(res, 140));
 
-        // 2. Strict 1:1 Cosine Similarity Matching (Threshold >= 0.875)
+        // Liveness confirmed! Now run 1:1 biometric matching
+        setVerificationMessage("Matching face against registered profile...");
+        setLivenessProgress(0.94);
+
+        // 2. Strict 1:1 Cosine Similarity Matching (Threshold >= 0.915)
         const [capturedDataUrl, referenceDescriptor, liveDescriptor] = await Promise.all([
           captureVideoFrame(videoRef.current!, DEFAULT_CAPTURE_OPTIONS),
           computeDescriptorFromImageURL(faceVerificationReferenceUrl!),
@@ -709,6 +711,15 @@ const LivePhotoCapture: React.FC<{
             `Face mismatch: Detected face does not match the registered account photo (Similarity: ${(match.similarity * 100).toFixed(1)}% / Required: ${(match.threshold * 100).toFixed(0)}%).`
           );
         }
+
+        // 3. BOTH Liveness and 1:1 Biometric Match succeeded!
+        setLivenessProgress(1);
+        setLivenessPassed(true);
+        setVerificationMessage("Identity Verified ✓");
+
+        // Brief 180ms visual celebration so student clearly sees the green checkmark
+        await new Promise((res) => setTimeout(res, 180));
+
         faceVerification = {
           method: "client-faceapi",
           distance: match.distance,
@@ -1083,6 +1094,17 @@ const LivePhotoCapture: React.FC<{
                       <span className="mt-1.5 text-[11px] font-bold text-emerald-300 tracking-wider uppercase bg-emerald-950/90 px-2.5 py-0.5 rounded-full border border-emerald-500/40 shadow-sm">
                         Verified ✓
                       </span>
+                    </div>
+                  ) : verificationInProgress && livenessProgress >= 0.90 ? (
+                    <div className="flex flex-col items-center justify-center animate-in fade-in duration-200">
+                      <div className="rounded-full bg-slate-900/70 p-2.5 backdrop-blur-md border border-cyan-400/50 shadow-lg shadow-cyan-500/30">
+                        <LoaderCircle size={30} className="text-cyan-300 animate-spin" />
+                      </div>
+                      <div className="mt-1.5 flex items-center gap-1.5 bg-slate-900/90 px-2.5 py-0.5 rounded-full border border-cyan-400/30 shadow-sm">
+                        <span className="text-[11px] font-bold text-cyan-200">
+                          Matching...
+                        </span>
+                      </div>
                     </div>
                   ) : verificationInProgress && livenessDirection ? (
                     <div className="flex flex-col items-center justify-center animate-in fade-in duration-200">

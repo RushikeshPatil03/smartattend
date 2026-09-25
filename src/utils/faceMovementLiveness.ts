@@ -20,7 +20,7 @@ export const CHALLENGES: readonly LivenessChallenge[] = [
 
 export const DEFAULT_MOVEMENT_MAX_TIME_MS = Math.max(
   2000,
-  Number(import.meta.env.VITE_FACEAPI_MOVEMENT_MAX_TIME_MS || 3500)
+  Number(import.meta.env.VITE_FACEAPI_MOVEMENT_MAX_TIME_MS || 4500)
 );
 export const DEFAULT_MOVEMENT_SAMPLE_FPS = Math.max(
   8,
@@ -33,11 +33,11 @@ export const DEFAULT_MOVEMENT_ROTATION_THRESHOLD = Number(
   import.meta.env.VITE_FACEAPI_MOVEMENT_ROTATION_THRESHOLD || 0.045
 );
 
-// Calibrated for subtle, natural head turns (10°-15°) without neck strain
-export const RELATIVE_PITCH_DELTA_THRESHOLD = 0.035; // Subtle nod/tilt (Up/Down)
-export const RELATIVE_YAW_DELTA_THRESHOLD = 0.040;   // Subtle turn (Left/Right)
-export const MIN_LIVENESS_DURATION_MS = 140;         // Fast confirmation window
-export const CONSECUTIVE_FRAMES_REQUIRED = 1;        // Single clean frame verification
+// Calibrated for comfortable, natural head movements without false-positive camera noise
+export const RELATIVE_PITCH_DELTA_THRESHOLD = 0.050; // User-approved subtle nod/tilt (Up/Down)
+export const RELATIVE_YAW_DELTA_THRESHOLD = 0.070;   // User-approved subtle turn (Left/Right)
+export const MIN_LIVENESS_DURATION_MS = 400;         // User-approved active window
+export const CONSECUTIVE_FRAMES_REQUIRED = 2;        // User-approved sustained verification frames
 
 export type ChallengeDirection = "UP" | "DOWN" | "LEFT" | "RIGHT";
 
@@ -210,6 +210,7 @@ export async function runMovementLiveness(
 
   const startedAt = performance.now();
 
+  let initialPose: FacePoseSample | null = null;
   let baseline: FacePoseSample | null = null;
   let samples = 0;
   let missingFaceSamples = 0;
@@ -259,10 +260,6 @@ export async function runMovementLiveness(
     }
 
     // Adaptive timing: measure real inference cost on first successful frame.
-    // If inference exceeds 80% of the configured frame budget (e.g., 44ms > 0.8×55ms
-    // at 18fps on a low-end device), widen the sleep to actualCost×1.2 (max 100ms).
-    // This prevents the loop from immediately re-queuing inference with no GPU breathing
-    // room, which would stall WebGL and reduce effective throughput below the target FPS.
     if (pose && !inferenceObserved) {
       const actualCost = performance.now() - loopStart;
       if (actualCost > sampleIntervalMs * 0.8) {
@@ -286,12 +283,23 @@ export async function runMovementLiveness(
     samples += 1;
     missingFaceSamples = 0;
 
+    // Multi-frame baseline stabilization: average 2 initial poses to eliminate single-frame noise
     if (!baseline) {
-      baseline = pose;
-      // Fast yield so next frame is immediately evaluated against baseline
-      const loopCost = performance.now() - loopStart;
-      const pause = Math.max(10, Math.min(25, sampleIntervalMs - loopCost));
-      await wait(pause);
+      if (!initialPose) {
+        initialPose = pose;
+        const loopCost = performance.now() - loopStart;
+        const pause = Math.max(10, Math.min(25, sampleIntervalMs - loopCost));
+        await wait(pause);
+        continue;
+      }
+      baseline = {
+        center: average([initialPose.center, pose.center]),
+        size: (initialPose.size + pose.size) / 2,
+        noseOffsetX: (initialPose.noseOffsetX + pose.noseOffsetX) / 2,
+        eyeTilt: (initialPose.eyeTilt + pose.eyeTilt) / 2,
+        pitchRatio: (initialPose.pitchRatio + pose.pitchRatio) / 2,
+        yawRatio: (initialPose.yawRatio + pose.yawRatio) / 2,
+      };
       continue;
     }
 
@@ -311,25 +319,30 @@ export async function runMovementLiveness(
 
     const elapsed = performance.now() - startedAt;
 
-    // Calculate directional delta with exponential responsiveness
+    // Calculate directional delta with opposite direction awareness
     let delta = 0;
+    let oppositeDelta = 0;
     let isCorrectDirection = false;
     switch (challenge) {
       case "TURN_LEFT":
-        // Nose moves rightward relative to face frame in mirrored selfie
+        // In mirrored front-camera feed: nose moves rightward relative to eye midpoint
         delta = pose.yawRatio - baseline.yawRatio;
+        oppositeDelta = baseline.yawRatio - pose.yawRatio;
         isCorrectDirection = delta >= RELATIVE_YAW_DELTA_THRESHOLD;
         break;
       case "TURN_RIGHT":
         delta = baseline.yawRatio - pose.yawRatio;
+        oppositeDelta = pose.yawRatio - baseline.yawRatio;
         isCorrectDirection = delta >= RELATIVE_YAW_DELTA_THRESHOLD;
         break;
       case "TILT_UP":
         delta = baseline.pitchRatio - pose.pitchRatio;
+        oppositeDelta = pose.pitchRatio - baseline.pitchRatio;
         isCorrectDirection = delta >= RELATIVE_PITCH_DELTA_THRESHOLD;
         break;
       case "TILT_DOWN":
         delta = pose.pitchRatio - baseline.pitchRatio;
+        oppositeDelta = baseline.pitchRatio - pose.pitchRatio;
         isCorrectDirection = delta >= RELATIVE_PITCH_DELTA_THRESHOLD;
         break;
     }
@@ -349,12 +362,12 @@ export async function runMovementLiveness(
       }
     } else {
       consecutiveFrames = Math.max(0, consecutiveFrames - 1);
-      if (progress < 0.70) {
+      if (progress < 0.65) {
         challengePassed = false;
       }
     }
 
-    // Check completion condition
+    // Check completion condition: requires sustained frames AND minimum physical duration
     if (challengePassed && elapsed >= MIN_LIVENESS_DURATION_MS) {
       options.onChallengeUpdate?.({
         challenge,
@@ -382,10 +395,19 @@ export async function runMovementLiveness(
     }
 
     // Send real-time progress update to the visual progress ring
+    const isOppositeDirection = oppositeDelta >= threshold * 0.7;
     const promptText = challengePassed
       ? "Liveness verified ✓"
       : consecutiveFrames > 0
       ? `Hold ${challengePrompt.toLowerCase()}...`
+      : isOppositeDirection
+      ? challenge === "TURN_LEFT"
+        ? "Turn other way (turn left)"
+        : challenge === "TURN_RIGHT"
+        ? "Turn other way (turn right)"
+        : challenge === "TILT_UP"
+        ? "Tilt other way (tilt up)"
+        : "Tilt other way (tilt down)"
       : challengePrompt;
 
     options.onChallengeUpdate?.({
@@ -398,10 +420,6 @@ export async function runMovementLiveness(
       targetThreshold,
     });
 
-    // Adaptive frame pacing: only sleep the remainder of adaptiveSampleIntervalMs.
-    // On fast devices this equals sampleIntervalMs; on slow devices it's been widened
-    // to give the GPU a proper idle window before the next inference call.
-    const loopCost = performance.now() - loopStart;
     const remainingWait = Math.max(0, adaptiveSampleIntervalMs - loopCost);
     if (remainingWait > 2) {
       await wait(remainingWait);
