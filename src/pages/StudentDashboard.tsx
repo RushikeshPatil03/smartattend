@@ -488,6 +488,7 @@ FaceVerificationProgressBar.displayName = "FaceVerificationProgressBar";
 const MyAttendanceCard: React.FC = () => {
   const [overviewData, setOverviewData] = useState<AttendanceOverviewData | null>(null);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "loaded" | "error">("idle");
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastFetchedAt, setLastFetchedAt] = useState<Date | null>(null);
   const fetchingRef = useRef(false);
   const mountedRef = useRef(true);
@@ -495,6 +496,7 @@ const MyAttendanceCard: React.FC = () => {
   const fetchOverview = useCallback(async (silent = false) => {
     if (fetchingRef.current) return;
     fetchingRef.current = true;
+    setIsRefreshing(true);
     if (!silent) setLoadState("loading");
 
     try {
@@ -518,6 +520,7 @@ const MyAttendanceCard: React.FC = () => {
       if (mountedRef.current) setLoadState("error");
     } finally {
       fetchingRef.current = false;
+      if (mountedRef.current) setIsRefreshing(false);
     }
   }, []);
 
@@ -676,7 +679,7 @@ const MyAttendanceCard: React.FC = () => {
                   className="flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition cursor-pointer"
                   title="Refresh attendance data"
                 >
-                  <RefreshCw size={11} className={loadState === "loading" ? "animate-spin" : ""} />
+                  <RefreshCw size={11} className={isRefreshing ? "animate-spin" : ""} />
                   {lastFetchedAt ? `Updated ${lastFetchedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Refresh"}
                 </button>
               </div>

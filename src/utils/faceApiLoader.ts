@@ -267,9 +267,7 @@ async function warmUpEngine(faceapi: FaceApi): Promise<void> {
       if (ctx) {
         ctx.fillStyle = "#808080";
         ctx.fillRect(0, 0, 160, 160);
-        await faceapi
-          .detectSingleFace(dummyCanvas, trackingDetectorOptions(faceapi))
-          .catch(() => {});
+        await (faceapi.detectSingleFace(dummyCanvas, trackingDetectorOptions(faceapi)) as any)?.catch?.(() => {});
       }
 
       // 2. Pre-compile WebGL shaders for Landmark and Recognition nets

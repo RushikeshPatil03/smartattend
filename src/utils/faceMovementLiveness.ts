@@ -420,6 +420,7 @@ export async function runMovementLiveness(
       targetThreshold,
     });
 
+    const loopCost = performance.now() - loopStart;
     const remainingWait = Math.max(0, adaptiveSampleIntervalMs - loopCost);
     if (remainingWait > 2) {
       await wait(remainingWait);
