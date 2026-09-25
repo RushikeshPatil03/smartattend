@@ -30,19 +30,15 @@ import {
   type ChallengeDirection,
   type LivenessChallenge,
 } from "../utils/faceMovementLiveness";
-import { buildFaceSignatures } from "../utils/faceSignature";
 
 const PORTRAIT_BETA_MIN = 55;
 const PORTRAIT_BETA_MAX = 125;
 const PORTRAIT_GAMMA_TOLERANCE = 28;
 const ORIENTATION_UPDATE_THRESHOLD = 0.8;
 const FACE_QUALITY_INTERVAL_MS = 120;
-const LEGACY_FACE_SCORE_THRESHOLD = Number(
-  import.meta.env.VITE_FACEAPI_LEGACY_SCORE_THRESHOLD || 0.78
-);
 
 type ClientFaceVerification = {
-  method: "client-faceapi" | "client-legacy-signature";
+  method: "client-faceapi";
   distance?: number;
   score?: number;
   threshold: number;
@@ -96,15 +92,6 @@ const waitForNextFrame = () =>
     requestAnimationFrame(() => resolve());
   });
 
-function signatureSimilarity(left: string, right: string) {
-  if (!left || left.length !== right.length) return 0;
-  let difference = 0;
-  for (let index = 0; index < left.length; index += 1) {
-    difference += Math.abs(parseInt(left[index], 16) - parseInt(right[index], 16));
-  }
-  return 1 - difference / (left.length * 15);
-}
-
 function captureErrorMessage(error: any) {
   const name = String(error?.name || "");
   const message = String(error?.message || "");
@@ -125,27 +112,13 @@ function captureErrorMessage(error: any) {
   return message || "Unable to open the camera. Check permissions and try again.";
 }
 
-async function compareLegacyFaceSignatures(referenceUrl: string, liveDataUrl: string) {
-  const [reference, live] = await Promise.all([
-    buildFaceSignatures(referenceUrl),
-    buildFaceSignatures(liveDataUrl),
-  ]);
-  const score = Math.max(
-    signatureSimilarity(reference.signature, live.signature),
-    signatureSimilarity(reference.signature, live.mirrorSignature),
-    signatureSimilarity(reference.mirrorSignature, live.signature),
-    signatureSimilarity(reference.mirrorSignature, live.mirrorSignature)
-  );
-  return { score, matched: score >= LEGACY_FACE_SCORE_THRESHOLD };
-}
-
 const FRONT_CAMERA_CONSTRAINTS: MediaStreamConstraints = {
   audio: false,
   video: {
     facingMode: "user" as const,
-    width: { ideal: 640 },
-    height: { ideal: 480 },
-    frameRate: { ideal: 30, min: 15 },
+    width: { ideal: 480, max: 640 },
+    height: { ideal: 480, max: 640 },
+    frameRate: { ideal: 24, max: 30, min: 15 },
   },
 };
 
@@ -686,13 +659,32 @@ const LivePhotoCapture: React.FC<{
         if (!isModelsLoaded()) {
           await loadModelsIfNeeded();
         }
+        let lastReportedPrompt = "";
+        let lastReportedDirection: ChallengeDirection | null = null;
+        let lastReportedProgress = 0;
+
         const liveness = await runMovementLiveness(videoRef.current!, {
           onChallengeUpdate: (update) => {
-            setVerificationMessage(update.prompt);
-            setLivenessProgress(update.progress);
-            setLivenessChallenge(update.challenge);
-            setLivenessDirection(update.direction);
-            setLivenessPassed(update.passed);
+            if (update.prompt !== lastReportedPrompt) {
+              lastReportedPrompt = update.prompt;
+              setVerificationMessage(update.prompt);
+            }
+            if (update.direction !== lastReportedDirection) {
+              lastReportedDirection = update.direction;
+              setLivenessDirection(update.direction);
+              setLivenessChallenge(update.challenge);
+            }
+            if (update.passed) {
+              setLivenessPassed(true);
+              setLivenessProgress(1);
+            } else {
+              // Smooth forward monotonic progression to eliminate arc jitter
+              const smoothed = Math.min(0.98, Math.max(lastReportedProgress, update.progress));
+              if (Math.abs(smoothed - lastReportedProgress) >= 0.015) {
+                lastReportedProgress = smoothed;
+                setLivenessProgress(smoothed);
+              }
+            }
           },
         });
         if (!liveness.ok) {
@@ -987,8 +979,31 @@ const LivePhotoCapture: React.FC<{
                   videoRef.current.play().catch(() => {});
                 }
               }}
-              className="absolute inset-0 h-full w-full object-cover -scale-x-100 bg-slate-950"
+              className={`absolute inset-0 h-full w-full object-cover -scale-x-100 bg-slate-950 transition-opacity duration-300 ${
+                cameraLoading ? "opacity-0" : "opacity-100"
+              }`}
             />
+
+            {/* Seamless Active Shimmer / Radar Pulse Loader (Visible while hardware camera spins up) */}
+            {cameraLoading && (
+              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-slate-950/95 backdrop-blur-sm gap-4 animate-in fade-in duration-200 pointer-events-none">
+                <div className="relative flex items-center justify-center">
+                  <div className="absolute h-24 w-24 rounded-full border border-sky-500/25 bg-sky-500/5 animate-ping duration-1000" />
+                  <div className="h-20 w-20 rounded-full border-2 border-dashed border-sky-400/40 animate-spin duration-3000" />
+                  <div className="absolute rounded-full bg-slate-900/90 p-3.5 border border-sky-400/30 shadow-lg shadow-sky-500/20">
+                    <Camera size={26} className="text-sky-400 animate-pulse" />
+                  </div>
+                </div>
+                <div className="flex flex-col items-center gap-1.5 text-center px-6">
+                  <span className="text-xs font-semibold text-sky-200 tracking-wide">
+                    Initializing Front Camera...
+                  </span>
+                  <span className="text-[11px] text-slate-400 max-w-[200px]">
+                    Hold phone upright in good lighting
+                  </span>
+                </div>
+              </div>
+            )}
 
             {/* Circular Progress Ring & Direction Guidance Overlay */}
             <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-10">
@@ -1052,7 +1067,7 @@ const LivePhotoCapture: React.FC<{
                       fill="none"
                       filter={livenessPassed || livenessProgress >= 0.8 ? "url(#emeraldGlow)" : undefined}
                       style={{
-                        transition: "stroke-dashoffset 60ms ease-out, stroke 200ms ease",
+                        transition: "stroke-dashoffset 120ms cubic-bezier(0.2, 0.8, 0.2, 1), stroke 200ms ease",
                       }}
                     />
                   ) : null}

@@ -544,6 +544,33 @@ const MyAttendanceCard: React.FC = () => {
   return (
     <div className="mx-auto w-full max-w-lg">
       <div className="overflow-hidden rounded-[20px] border border-slate-200 bg-white shadow-[0_8px_28px_-12px_rgba(15,23,42,0.18)]">
+        {/* Header bar with circular refresh button */}
+        <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/80 px-4 py-3">
+          <div className="flex items-center gap-2">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-50 border border-indigo-200/80 text-indigo-600">
+              <BookOpen size={14} />
+            </div>
+            <div>
+              <h3 className="text-xs font-bold text-slate-800">Academic Overview</h3>
+              <p className="text-[10px] text-slate-400">
+                {lastFetchedAt
+                  ? `Updated ${lastFetchedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                  : loadState === "loading"
+                  ? "Loading records..."
+                  : "Tap refresh to sync"}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => void fetchOverview(true)}
+            className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition cursor-pointer"
+            title="Refresh academic attendance"
+          >
+            <RefreshCw size={13} className={loadState === "loading" ? "animate-spin text-indigo-600" : ""} />
+          </button>
+        </div>
+
         {/* Loading skeleton */}
         {loadState === "loading" && !overviewData && (
           <div className="space-y-4 p-5">
@@ -1091,10 +1118,12 @@ const StudentDashboard: React.FC = () => {
     }
   }, []);
 
-  // Fetch student assigned activities on mount
+  // Lazy-load student assigned activities only when user opens the activities tab
   useEffect(() => {
-    void fetchStudentActivities();
-  }, [fetchStudentActivities]);
+    if (profileModalTab === "activities") {
+      void fetchStudentActivities();
+    }
+  }, [profileModalTab, fetchStudentActivities]);
 
   useEffect(() => {
     navigator.storage?.persisted?.().then((persisted) => {
@@ -1615,7 +1644,7 @@ const StudentDashboard: React.FC = () => {
         try {
           const grantRes = await Promise.race([
             faceGrantPromiseRef.current,
-            new Promise((resolve) => setTimeout(() => resolve(null), 1500)),
+            new Promise((resolve) => setTimeout(() => resolve(null), 2500)),
           ]);
           if (grantRes?.ok && grantRes?.faceGrantToken) {
             faceGrantToken = String(grantRes.faceGrantToken);
@@ -2323,11 +2352,10 @@ const StudentDashboard: React.FC = () => {
       </div>
 
       {/* ── Today's Attendance Quick Access Button ── */}
-      <div className="mx-auto mb-6 flex w-full max-w-lg justify-center">
-        <button
-          type="button"
+      <div className="mx-auto mb-6 flex w-full max-w-lg items-center justify-center">
+        <div
           onClick={openTodayPanel}
-          className="group relative flex min-w-[200px] items-center justify-between gap-4 rounded-2xl border border-slate-800 bg-slate-900 px-5 py-3.5 text-white shadow-[0_18px_42px_-28px_rgba(15,23,42,0.8)] transition hover:-translate-y-0.5 hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2 cursor-pointer"
+          className="group relative flex w-full items-center justify-between gap-4 rounded-2xl border border-slate-800 bg-slate-900 px-5 py-3.5 text-white shadow-[0_18px_42px_-28px_rgba(15,23,42,0.8)] transition hover:-translate-y-0.5 hover:bg-slate-800/90 cursor-pointer"
         >
           <div className="flex items-center gap-3 text-left">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-800 text-cyan-400 border border-slate-700/60 shadow-inner group-hover:bg-slate-700 transition">
@@ -2338,10 +2366,25 @@ const StudentDashboard: React.FC = () => {
               <p className="text-sm font-bold tracking-tight text-white">View Attendance</p>
             </div>
           </div>
-          <span className="rounded-full bg-slate-800 px-2.5 py-1 text-xs font-mono font-bold text-slate-300 border border-slate-700/50">
-            {todayAttendanceSummary.total} {todayAttendanceSummary.total === 1 ? "class" : "classes"}
-          </span>
-        </button>
+          <div className="flex items-center gap-2.5">
+            {recentSessions.length > 0 && (
+              <span className="rounded-full bg-slate-800 px-2.5 py-1 text-xs font-mono font-bold text-slate-300 border border-slate-700/50">
+                {todayAttendanceSummary.total} {todayAttendanceSummary.total === 1 ? "class" : "classes"}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                void openTodayPanel();
+              }}
+              className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-700/70 bg-slate-800/80 text-slate-400 hover:text-cyan-300 hover:bg-slate-700 transition cursor-pointer"
+              title="Refresh today's records"
+            >
+              <RefreshCw size={13} className={todayPanelLoading || loadingRecentRef.current ? "animate-spin text-cyan-400" : ""} />
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* ── Today's Attendance Lower-Side Popup Sheet ── */}

@@ -29,7 +29,6 @@ import {
   isModelsLoaded,
   loadModelsIfNeeded,
 } from "../utils/faceApiLoader";
-import { buildFaceSignatures } from "../utils/faceSignature";
 
 type ScannerPhase = "QR_SCAN" | "FACE_ALIGN" | "SUBMITTING" | "SUCCESS" | "ERROR";
 
@@ -129,9 +128,9 @@ export const IntegratedAttendanceScanner: React.FC<IntegratedAttendanceScannerPr
           audio: false,
           video: {
             facingMode: { ideal: facingMode },
-            width: { ideal: facingMode === "environment" ? 640 : 480 },
-            height: { ideal: facingMode === "environment" ? 480 : 480 },
-            frameRate: { ideal: 30 },
+            width: { ideal: facingMode === "environment" ? 640 : 480, max: 640 },
+            height: { ideal: 480, max: 640 },
+            frameRate: { ideal: 24, max: 30, min: 15 },
           },
         };
 

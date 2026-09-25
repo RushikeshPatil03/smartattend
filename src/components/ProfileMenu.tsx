@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, GraduationCap, LogOut, Mail, ShieldCheck, UserRound, Edit, Camera, BookOpen, Award, Building2, TrendingUp } from "lucide-react";
+import { ChevronDown, GraduationCap, LogOut, Mail, ShieldCheck, UserRound, Edit, Camera, BookOpen, Award, Building2, TrendingUp, RefreshCw } from "lucide-react";
 import { useApp } from "../store";
 import apiClient from "../services/apiClient";
 import LivePhotoCapture from "./LivePhotoCapture";
@@ -343,9 +343,17 @@ const ProfileMenu: React.FC<ProfileMenuProps> = ({
                     <TrendingUp size={15} className="text-indigo-600" />
                     <span>My Attendance</span>
                   </div>
-                  <span className="text-[10px] uppercase font-bold tracking-wider text-indigo-500 bg-white/80 px-1.5 py-0.5 rounded-md border border-indigo-200/60">
-                    View
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] uppercase font-bold tracking-wider text-indigo-500 bg-white/80 px-1.5 py-0.5 rounded-md border border-indigo-200/60">
+                      View
+                    </span>
+                    <span
+                      className="flex h-5 w-5 items-center justify-center rounded-full border border-indigo-200/60 bg-white/90 text-indigo-500 hover:text-indigo-700 hover:bg-white transition"
+                      title="Sync and view My Attendance"
+                    >
+                      <RefreshCw size={10} />
+                    </span>
+                  </div>
                 </button>
               </div>
             )}

@@ -266,11 +266,11 @@ async function warmUpEngine(faceapi: FaceApi): Promise<void> {
       if (ctx) {
         ctx.fillStyle = "#808080";
         ctx.fillRect(0, 0, 160, 160);
-        await Promise.allSettled([
-          faceapi.detectSingleFace(dummyCanvas, trackingDetectorOptions(faceapi)),
-          (faceapi as any).detectFaceLandmarksTiny?.(dummyCanvas),
-          (faceapi as any).computeFaceDescriptor?.(dummyCanvas),
-        ]);
+        await faceapi
+          .detectSingleFace(dummyCanvas, trackingDetectorOptions(faceapi))
+          .withFaceLandmarks(true)
+          .withFaceDescriptor()
+          .catch(() => {});
       }
     } catch {
       // Warmup failures are non-blocking
@@ -368,53 +368,7 @@ export function clearDescriptorCache(): void {
   idbClearStore();
 }
 
-// ─── Canvas helpers ───────────────────────────────────────────────────────────
 
-let reusableVideoCanvas: HTMLCanvasElement | null = null;
-let reusableVideoContext: CanvasRenderingContext2D | null = null;
-
-function getReusableCanvas(): HTMLCanvasElement {
-  if (!reusableVideoCanvas) {
-    reusableVideoCanvas = document.createElement("canvas");
-    reusableVideoCanvas.width = FACE_API_INPUT_SIZE;
-    reusableVideoCanvas.height = FACE_API_INPUT_SIZE;
-    reusableVideoContext = reusableVideoCanvas.getContext("2d", { willReadFrequently: true });
-  }
-  return reusableVideoCanvas;
-}
-
-function drawSmallSquare(source: CanvasImageSource, width: number, height: number, reuse = false) {
-  const canvas = reuse
-    ? getReusableCanvas()
-    : document.createElement("canvas");
-  if (!reuse) {
-    canvas.width = FACE_API_INPUT_SIZE;
-    canvas.height = FACE_API_INPUT_SIZE;
-  }
-  const context = reuse && reusableVideoContext
-    ? reusableVideoContext
-    : canvas.getContext("2d", { willReadFrequently: true });
-
-  if (!context || !width || !height) {
-    throw new Error("Unable to prepare the face frame.");
-  }
-
-  const side = Math.min(width, height);
-  const sourceX = (width - side) / 2;
-  const sourceY = Math.max(0, (height - side) / 2 - height * 0.05);
-  context.drawImage(
-    source,
-    sourceX,
-    sourceY,
-    side,
-    side,
-    0,
-    0,
-    FACE_API_INPUT_SIZE,
-    FACE_API_INPUT_SIZE
-  );
-  return canvas;
-}
 
 function loadImage(url: string) {
   return new Promise<HTMLImageElement>((resolve, reject) => {

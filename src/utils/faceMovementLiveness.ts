@@ -3,6 +3,7 @@ import {
   type FaceLandmarks,
   type FacePoint,
 } from "./faceApiLoader";
+import { detectMediaPipePose } from "./mediaPipeFaceQuality";
 
 export type LivenessChallenge =
   | "TURN_LEFT"
@@ -22,8 +23,8 @@ export const DEFAULT_MOVEMENT_MAX_TIME_MS = Math.max(
   Number(import.meta.env.VITE_FACEAPI_MOVEMENT_MAX_TIME_MS || 3500)
 );
 export const DEFAULT_MOVEMENT_SAMPLE_FPS = Math.max(
-  12,
-  Math.min(24, Number(import.meta.env.VITE_FACEAPI_MOVEMENT_SAMPLE_FPS || 20))
+  8,
+  Math.min(20, Number(import.meta.env.VITE_FACEAPI_MOVEMENT_SAMPLE_FPS || 11))
 );
 export const DEFAULT_MOVEMENT_TRANSLATE_THRESHOLD = Number(
   import.meta.env.VITE_FACEAPI_MOVEMENT_TRANSLATE_THRESHOLD || 0.045
@@ -239,8 +240,23 @@ export async function runMovementLiveness(
       }
     });
 
-    const landmarks = await computeLandmarksFromVideoFrame(video);
-    const pose = landmarks ? getPoseSample(landmarks) : null;
+    // Primary: Ultra-fast MediaPipe BlazeFace Wasm keypoints (3-5ms execution time, zero UI lag)
+    let pose: FacePoseSample | null = null;
+    const mpPose = await detectMediaPipePose(video);
+    if (mpPose) {
+      pose = {
+        center: mpPose.center,
+        size: mpPose.size,
+        noseOffsetX: mpPose.noseOffsetX,
+        eyeTilt: mpPose.eyeTilt,
+        pitchRatio: mpPose.pitchRatio,
+        yawRatio: mpPose.yawRatio,
+      };
+    } else {
+      // Resilient Fallback: face-api.js 68 landmarks
+      const landmarks = await computeLandmarksFromVideoFrame(video);
+      pose = landmarks ? getPoseSample(landmarks) : null;
+    }
 
     // Adaptive timing: measure real inference cost on first successful frame.
     // If inference exceeds 80% of the configured frame budget (e.g., 44ms > 0.8×55ms

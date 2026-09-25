@@ -192,3 +192,76 @@ export async function assessMediaPipeFaceQuality(
     },
   };
 }
+
+export type MediaPipePoseSample = {
+  center: { x: number; y: number };
+  size: number;
+  noseOffsetX: number;
+  eyeTilt: number;
+  pitchRatio: number;
+  yawRatio: number;
+  score: number;
+};
+
+/**
+ * Ultra-fast MediaPipe BlazeFace head-pose analyzer (3-5ms execution time).
+ * Uses WebAssembly C++ with SIMD vectorization to track keypoints for liveness challenges
+ * without causing any main-thread camera frame drops.
+ */
+export async function detectMediaPipePose(
+  video: HTMLVideoElement
+): Promise<MediaPipePoseSample | null> {
+  if (!video.videoWidth || !video.videoHeight || video.readyState < 2) {
+    return null;
+  }
+
+  const detector = await getDetector();
+  if (!detector) return null;
+
+  try {
+    const result = detector.detectForVideo(video, performance.now());
+    const detections = result.detections || [];
+    if (detections.length !== 1) return null;
+
+    const detection = detections[0];
+    const keypoints = detection.keypoints || [];
+    if (keypoints.length < 4) return null;
+
+    const score = getDetectionScore(detection);
+    if (score < 0.42) return null;
+
+    // BlazeFace 6 Keypoints (normalized 0.0 - 1.0):
+    // 0: right eye, 1: left eye, 2: nose tip, 3: mouth center, 4: right ear, 5: left ear
+    const rightEye = keypoints[0];
+    const leftEye = keypoints[1];
+    const nose = keypoints[2];
+    const mouth = keypoints[3];
+
+    const eyeMidX = (rightEye.x + leftEye.x) / 2;
+    const eyeMidY = (rightEye.y + leftEye.y) / 2;
+    const eyeDist = Math.max(Math.hypot(rightEye.x - leftEye.x, rightEye.y - leftEye.y), 0.001);
+    const faceHeight = Math.max(Math.hypot(eyeMidX - mouth.x, eyeMidY - mouth.y), 0.001);
+
+    // Yaw ratio: horizontal displacement of nose relative to eye distance
+    // In mirrored front-camera feed: nose.x moves relative to eyeMidX
+    const yawRatio = (nose.x - eyeMidX) / eyeDist;
+
+    // Pitch ratio: vertical displacement of nose relative to eye-mouth distance
+    const pitchRatio = (nose.y - eyeMidY) / faceHeight;
+
+    const eyeTilt = (rightEye.y - leftEye.y) / eyeDist;
+    const noseOffsetX = (nose.x - eyeMidX) / faceHeight;
+
+    return {
+      center: { x: eyeMidX, y: eyeMidY },
+      size: eyeDist,
+      noseOffsetX,
+      eyeTilt,
+      pitchRatio,
+      yawRatio,
+      score,
+    };
+  } catch {
+    return null;
+  }
+}
