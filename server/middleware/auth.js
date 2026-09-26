@@ -37,7 +37,11 @@ function auth(allowedRoles = []) {
           .eq("id", String(id))
           .single();
         if (error || !data) {
-          const fallback = await supabase.from("admins").select("*").eq("id", String(id)).single();
+          const fallback = await supabase
+            .from("admins")
+            .select("id, name, email, college_name, created_at")
+            .eq("id", String(id))
+            .single();
           data = fallback.data;
         }
         user = data;
@@ -46,13 +50,17 @@ function auth(allowedRoles = []) {
           .from("faculties")
           .select(
             "id, name, email, department, device_fingerprint, device_lock_enabled, " +
-            "profile_photo_url, created_by_admin, " +
+            "profile_photo_url, created_by_admin, allotted_subjects, " +
             "credential_id, public_key, counter"
           )
           .eq("id", String(id))
           .single();
         if (error || !data) {
-          const fallback = await supabase.from("faculties").select("*").eq("id", String(id)).single();
+          const fallback = await supabase
+            .from("faculties")
+            .select("id, name, email, department, profile_photo_url, created_by_admin, allotted_subjects")
+            .eq("id", String(id))
+            .single();
           data = fallback.data;
         }
         user = data;
@@ -69,7 +77,11 @@ function auth(allowedRoles = []) {
           .eq("id", String(id))
           .single();
         if (error || !data) {
-          const fallback = await supabase.from("students").select("*").eq("id", String(id)).single();
+          const fallback = await supabase
+            .from("students")
+            .select("id, name, email, enrollment_no, year, semester, section, department, college_name, profile_photo_url, created_by_admin")
+            .eq("id", String(id))
+            .single();
           data = fallback.data;
         }
         user = data;
@@ -80,12 +92,15 @@ function auth(allowedRoles = []) {
       }
 
       user._id = user.id;
+      user.departmentId = user.department || null;
+      user.department_id = user.department || null;
       user.createdByAdmin = user.created_by_admin || null;
       user.collegeName = user.college_name || null;
       user.profilePhotoUrl = user.profile_photo_url || null;
       user.enrollmentNo = user.enrollment_no || null;
       user.deviceFingerprint = user.device_fingerprint || null;
       user.deviceLockEnabled = user.device_lock_enabled !== false;
+      user.allottedSubjects = user.allotted_subjects || [];
       user.year = user.year != null ? Number(user.year) : null;
       user.semester = user.semester != null ? Number(user.semester) : null;
       user.section = user.section || null;

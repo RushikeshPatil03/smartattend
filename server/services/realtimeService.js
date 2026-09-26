@@ -275,13 +275,22 @@ async function removeSessionChannel(sessionId) {
     batchBuffers.delete(sid);
   }
 
-  // 2. Remove Supabase Realtime channel
+  // 2. Broadcast SESSION_ENDED event and remove Supabase Realtime channel
   const channelName = `session:${sid}`;
   const entry = channelCache.get(channelName);
   if (entry) {
     const channel = entry.channel || entry;
     const supabase = getSupabaseClient();
     if (supabase && channel) {
+      try {
+        await channel.send({
+          type: "broadcast",
+          event: "SESSION_ENDED",
+          payload: { sessionId: sid },
+        });
+      } catch {
+        // Ignore broadcast error
+      }
       try {
         await supabase.removeChannel(channel);
       } catch {

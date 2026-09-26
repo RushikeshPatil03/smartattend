@@ -220,6 +220,7 @@ app.use("/api/student", studentRoutes);
 app.use("/api/faculty", facultyRoutes);
 app.use("/api/attendance", attendanceRoutes);
 app.use("/api/department", departmentRoutes);
+app.use("/api/departments", departmentRoutes);
 app.use("/api/subject", subjectRoutes);
 app.use("/api/subjects", subjectRoutes);
 app.use("/api/public", publicRoutes);

@@ -1,18 +1,25 @@
 import { createClient, SupabaseClient, RealtimeChannel } from "@supabase/supabase-js";
+import logger from "../utils/logger";
 
 const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL as string)?.trim() || "";
 const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string)?.trim() || "";
 
 let clientInstance: SupabaseClient | null = null;
+const activeChannelsMap = new Map<string, RealtimeChannel>();
 
+/**
+ * Returns a strict singleton SupabaseClient instance.
+ * Guaranteed to never re-instantiate across component render cycles.
+ */
 export function getSupabase(): SupabaseClient {
   if (clientInstance) return clientInstance;
 
   if (!supabaseUrl || !supabaseAnonKey) {
-    console.warn(
-      "⚠️ VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY is not defined. Please set them in your .env or Cloudflare Pages environment variables (Mumbai region)."
+    logger.warn(
+      "⚠️ VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY is not defined. Using singleton placeholder client."
     );
-    return createClient("https://placeholder-mumbai-project.supabase.co", "dummy-key");
+    clientInstance = createClient("https://placeholder-mumbai-project.supabase.co", "dummy-key");
+    return clientInstance;
   }
 
   try {
@@ -30,12 +37,33 @@ export function getSupabase(): SupabaseClient {
     });
     return clientInstance;
   } catch (err) {
-    console.error("❌ Failed to initialize Supabase frontend client:", err);
-    return createClient("https://placeholder-mumbai-project.supabase.co", "dummy-key");
+    logger.error("❌ Failed to initialize Supabase frontend client:", err);
+    clientInstance = createClient("https://placeholder-mumbai-project.supabase.co", "dummy-key");
+    return clientInstance;
   }
 }
 
 export const supabase = getSupabase();
+
+// Global unload teardown: clean up all active Realtime subscriptions on window close/reload
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", () => {
+    try {
+      const client = getSupabase();
+      for (const [name, channel] of activeChannelsMap.entries()) {
+        try {
+          channel.unsubscribe();
+          client.removeChannel(channel);
+        } catch {
+          // Ignore teardown errors
+        }
+      }
+      activeChannelsMap.clear();
+    } catch {
+      // Ignore unload cleanup errors
+    }
+  });
+}
 
 export interface AttendanceBroadcastPayload {
   sessionId: string;
@@ -76,20 +104,22 @@ export interface BatchAttendanceBroadcastPayload {
 
 export interface SubscribeAttendanceOptions {
   batchWindowMs?: number;
+  onSessionEnded?: () => void;
 }
 
 /**
  * Subscribe to realtime attendance updates for a live class session
- * Supports both high-throughput micro-batched payloads (BATCH_MARKED) and single payloads (ATTENDANCE_MARKED)
+ * Supports both high-throughput micro-batched payloads (BATCH_MARKED), single payloads (ATTENDANCE_MARKED),
+ * and session lifecycle terminations (SESSION_ENDED)
  * @param sessionId The active class session UUID
  * @param onAttendance Callback triggered whenever batch or single attendance updates arrive
- * @param options Optional subscription configuration
+ * @param options Optional subscription configuration (e.g. onSessionEnded callback)
  * @returns Unsubscribe cleanup function
  */
 export function subscribeToSessionAttendance(
   sessionId: string,
   onAttendance: (data: AttendanceBroadcastPayload | BatchAttendanceBroadcastPayload | any) => void,
-  _options?: SubscribeAttendanceOptions
+  options?: SubscribeAttendanceOptions
 ): () => void {
   if (!sessionId) return () => {};
 
@@ -98,6 +128,17 @@ export function subscribeToSessionAttendance(
   let isCleanedUp = false;
 
   // Clean up any stale or pre-existing channel for this session to prevent duplicate listeners
+  if (activeChannelsMap.has(channelName)) {
+    const prev = activeChannelsMap.get(channelName)!;
+    try {
+      prev.unsubscribe();
+      client.removeChannel(prev);
+    } catch {
+      // Ignored
+    }
+    activeChannelsMap.delete(channelName);
+  }
+
   const existingChannels = client.getChannels();
   const existing = existingChannels.find(
     (ch) => ch.topic === `realtime:${channelName}` || (ch as any).name === channelName
@@ -166,15 +207,23 @@ export function subscribeToSessionAttendance(
         onAttendance(response.payload as AttendanceBroadcastPayload);
       }
     })
+    .on("broadcast", { event: "SESSION_ENDED" }, () => {
+      if (isCleanedUp) return;
+      logger.info("Realtime session end broadcast received for session:", sessionId);
+      options?.onSessionEnded?.();
+    })
     .subscribe((status) => {
       if (status === "SUBSCRIBED") {
-        // Subscribed to realtime attendance updates in Mumbai region
+        logger.info(`Subscribed to realtime attendance updates for session: ${sessionId}`);
       }
     });
+
+  activeChannelsMap.set(channelName, channel);
 
   return () => {
     if (isCleanedUp) return;
     isCleanedUp = true;
+    activeChannelsMap.delete(channelName);
     try {
       channel.unsubscribe();
     } catch {
@@ -185,6 +234,67 @@ export function subscribeToSessionAttendance(
     } catch {
       // Ignored
     }
+  };
+}
+
+/**
+ * Type-safe helper for subscribing to Postgres table changes.
+ * Enforces targeted events (INSERT | UPDATE | DELETE) and row-level filters.
+ * Wildcard event: '*' is explicitly forbidden to reduce payload noise.
+ */
+export function subscribeToRecordChanges<T = any>(config: {
+  channelName: string;
+  table: string;
+  event: "INSERT" | "UPDATE" | "DELETE";
+  filter: string;
+  onRecord: (payload: { eventType: string; new: T; old: Partial<T> }) => void;
+}): () => void {
+  const { channelName, table, event, filter, onRecord } = config;
+  if (!table || !event || !filter) {
+    logger.warn("subscribeToRecordChanges requires explicit table, event, and filter.");
+    return () => {};
+  }
+
+  const client = getSupabase();
+  let isCleanedUp = false;
+
+  if (activeChannelsMap.has(channelName)) {
+    const prev = activeChannelsMap.get(channelName)!;
+    try {
+      prev.unsubscribe();
+      client.removeChannel(prev);
+    } catch {}
+    activeChannelsMap.delete(channelName);
+  }
+
+  const channel = client.channel(channelName);
+
+  channel
+    .on(
+      "postgres_changes" as any,
+      {
+        event,
+        schema: "public",
+        table,
+        filter,
+      },
+      (payload: any) => {
+        if (isCleanedUp) return;
+        onRecord(payload);
+      }
+    )
+    .subscribe();
+
+  activeChannelsMap.set(channelName, channel);
+
+  return () => {
+    if (isCleanedUp) return;
+    isCleanedUp = true;
+    activeChannelsMap.delete(channelName);
+    try {
+      channel.unsubscribe();
+      client.removeChannel(channel);
+    } catch {}
   };
 }
 

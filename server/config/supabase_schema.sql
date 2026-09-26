@@ -765,6 +765,8 @@ CREATE TABLE IF NOT EXISTS activity_batches (
     batch_number INT NOT NULL DEFAULT 1,
     batch_name VARCHAR(100) NOT NULL DEFAULT 'Default Batch',
     student_enrollments JSONB NOT NULL DEFAULT '[]'::jsonb,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    archived_at TIMESTAMPTZ DEFAULT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -772,6 +774,7 @@ CREATE TABLE IF NOT EXISTS activity_batches (
 CREATE INDEX IF NOT EXISTS idx_activities_faculty ON activities(faculty, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_activities_dept_cohort ON activities(department, semester, section);
 CREATE INDEX IF NOT EXISTS idx_activity_batches_activity ON activity_batches(activity_id, batch_number);
+CREATE INDEX IF NOT EXISTS idx_activity_batches_active ON activity_batches(activity_id, is_active);
 
 -- Support category = 'ACTIVITY' in sessions
 ALTER TABLE IF EXISTS sessions ADD COLUMN IF NOT EXISTS category VARCHAR(50) DEFAULT 'REGULAR';
@@ -802,10 +805,84 @@ CREATE TABLE IF NOT EXISTS subject_batches (
     batch_number INT NOT NULL DEFAULT 1,
     batch_name VARCHAR(100) NOT NULL DEFAULT 'Batch 1',
     student_enrollments TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    archived_at TIMESTAMPTZ DEFAULT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
 CREATE INDEX IF NOT EXISTS idx_subject_batches_sub_fac ON subject_batches(subject_id, faculty_id);
+CREATE INDEX IF NOT EXISTS idx_subject_batches_active ON subject_batches(subject_id, faculty_id, is_active);
 
+-- 2.11 IMMUTABLE SESSION ROSTER SNAPSHOTS TABLE
+CREATE TABLE IF NOT EXISTS session_roster_snapshots (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    student_id UUID REFERENCES students(id) ON DELETE SET NULL,
+    enrollment_no VARCHAR(50) NOT NULL,
+    student_name VARCHAR(120) NOT NULL,
+    student_email VARCHAR(255) DEFAULT NULL,
+    batch_id UUID DEFAULT NULL,
+    batch_name VARCHAR(100) DEFAULT NULL,
+    batch_number INT DEFAULT NULL,
+    category VARCHAR(50) DEFAULT 'REGULAR',
+    subject_id UUID DEFAULT NULL,
+    activity_id UUID DEFAULT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_session_roster_snapshot UNIQUE (session_id, enrollment_no)
+);
+CREATE INDEX IF NOT EXISTS idx_roster_snap_session ON session_roster_snapshots(session_id);
+CREATE INDEX IF NOT EXISTS idx_roster_snap_student ON session_roster_snapshots(student_id);
+CREATE INDEX IF NOT EXISTS idx_roster_snap_enrollment ON session_roster_snapshots(enrollment_no);
+CREATE INDEX IF NOT EXISTS idx_roster_snap_batch ON session_roster_snapshots(batch_id);
+CREATE INDEX IF NOT EXISTS idx_roster_snap_subj ON session_roster_snapshots(subject_id);
+CREATE INDEX IF NOT EXISTS idx_roster_snap_act ON session_roster_snapshots(activity_id);
+CREATE INDEX IF NOT EXISTS idx_roster_snap_student_session ON session_roster_snapshots(student_id, session_id);
 
+-- 2.12 BATCH CONFIGURATION AUDITS TABLE
+CREATE TABLE IF NOT EXISTS batch_configuration_audits (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    scope_type VARCHAR(20) NOT NULL,
+    scope_id UUID NOT NULL,
+    faculty_id UUID NOT NULL REFERENCES faculties(id) ON DELETE CASCADE,
+    actor_id UUID NOT NULL,
+    actor_role VARCHAR(20) NOT NULL,
+    operation_type VARCHAR(50) NOT NULL,
+    before_state JSONB NOT NULL DEFAULT '[]'::jsonb,
+    after_state JSONB NOT NULL DEFAULT '[]'::jsonb,
+    summary TEXT DEFAULT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_batch_audits_scope ON batch_configuration_audits(scope_type, scope_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_batch_audits_faculty ON batch_configuration_audits(faculty_id, created_at DESC);
+
+-- ========================================================================
+-- 10. SUPABASE STORAGE BUCKET: INSTITUTION LOGOS (Branding Only)
+-- Dedicated public bucket for non-sensitive institution branding assets.
+-- Does NOT store any student face, biometric, or personal identity data.
+-- ========================================================================
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES (
+    'institution-logos',
+    'institution-logos',
+    true,
+    2097152, -- 2MB
+    ARRAY['image/png', 'image/jpeg', 'image/webp']
+)
+ON CONFLICT (id) DO UPDATE SET
+    public = true,
+    file_size_limit = EXCLUDED.file_size_limit,
+    allowed_mime_types = EXCLUDED.allowed_mime_types;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE schemaname = 'storage' 
+          AND tablename = 'objects' 
+          AND policyname = 'Public Access for Institution Logos'
+    ) THEN
+        CREATE POLICY "Public Access for Institution Logos"
+        ON storage.objects FOR SELECT
+        USING (bucket_id = 'institution-logos');
+    END IF;
+END $$;

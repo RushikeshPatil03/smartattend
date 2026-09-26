@@ -17,6 +17,12 @@ const FACULTY_AUTH_SELECT =
 const ADMIN_AUTH_SELECT =
   "id, name, email, password_hash, college_name, profile_photo_url";
 
+const MINIMAL_AUTH_SELECT =
+  "id, name, email, password_hash";
+
+const MINIMAL_PROFILE_SELECT =
+  "id, name, email, profile_photo_url";
+
 const { verifyUserPassword } = require("../services/authService");
 
 const adminCollegeCache = new Map();
@@ -85,6 +91,21 @@ async function getAdminCollege(supabase, adminId) {
     console.warn("Failed to fetch admin college profile:", err?.message || err);
   }
   return null;
+}
+
+function setAdminCollegeCache(adminId, data) {
+  if (!adminId) return;
+  const key = String(adminId);
+  if (!data) {
+    adminCollegeCache.delete(key);
+  } else {
+    adminCollegeCache.set(key, { data, cachedAt: Date.now() });
+  }
+}
+
+function invalidateAdminCollegeCache(adminId) {
+  if (!adminId) return;
+  adminCollegeCache.delete(String(adminId));
 }
 
 const crypto = require("crypto");
@@ -294,21 +315,21 @@ router.post(
       if (roleUpper === "ADMIN") {
         let { data, error } = await supabase.from("admins").select(ADMIN_AUTH_SELECT).ilike("email", normalizedEmail).single();
         if (error || !data) {
-          const fallback = await supabase.from("admins").select("*").ilike("email", normalizedEmail).single();
+          const fallback = await supabase.from("admins").select(MINIMAL_AUTH_SELECT).ilike("email", normalizedEmail).single();
           data = fallback.data;
         }
         user = data;
       } else if (roleUpper === "FACULTY") {
         let { data, error } = await supabase.from("faculties").select(FACULTY_AUTH_SELECT).ilike("email", normalizedEmail).single();
         if (error || !data) {
-          const fallback = await supabase.from("faculties").select("*").ilike("email", normalizedEmail).single();
+          const fallback = await supabase.from("faculties").select(MINIMAL_AUTH_SELECT).ilike("email", normalizedEmail).single();
           data = fallback.data;
         }
         user = data;
       } else if (roleUpper === "STUDENT") {
         let { data, error } = await supabase.from("students").select(STUDENT_AUTH_SELECT).ilike("email", normalizedEmail).single();
         if (error || !data) {
-          const fallback = await supabase.from("students").select("*").ilike("email", normalizedEmail).single();
+          const fallback = await supabase.from("students").select(MINIMAL_AUTH_SELECT).ilike("email", normalizedEmail).single();
           data = fallback.data;
         }
         user = data;
@@ -512,21 +533,21 @@ router.post("/refresh", async (req, res) => {
       if (role === "ADMIN") {
         let { data, error } = await supabase.from("admins").select(ADMIN_AUTH_SELECT).eq("id", userId).single();
         if (error || !data) {
-          const fallback = await supabase.from("admins").select("*").eq("id", userId).single();
+          const fallback = await supabase.from("admins").select(MINIMAL_PROFILE_SELECT).eq("id", userId).single();
           data = fallback.data;
         }
         user = data;
       } else if (role === "FACULTY") {
         let { data, error } = await supabase.from("faculties").select(FACULTY_AUTH_SELECT).eq("id", userId).single();
         if (error || !data) {
-          const fallback = await supabase.from("faculties").select("*").eq("id", userId).single();
+          const fallback = await supabase.from("faculties").select(MINIMAL_PROFILE_SELECT).eq("id", userId).single();
           data = fallback.data;
         }
         user = data;
       } else if (role === "STUDENT") {
         let { data, error } = await supabase.from("students").select(STUDENT_AUTH_SELECT).eq("id", userId).single();
         if (error || !data) {
-          const fallback = await supabase.from("students").select("*").eq("id", userId).single();
+          const fallback = await supabase.from("students").select(MINIMAL_PROFILE_SELECT).eq("id", userId).single();
           data = fallback.data;
         }
         user = data;
@@ -864,5 +885,8 @@ router.post("/device-change/request", async (req, res) => {
     return res.status(500).json({ ok: false, error: "Server error" });
   }
 });
+
+router.setAdminCollegeCache = setAdminCollegeCache;
+router.invalidateAdminCollegeCache = invalidateAdminCollegeCache;
 
 module.exports = router;

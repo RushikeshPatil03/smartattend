@@ -521,6 +521,28 @@ const handleStudentAttendanceOverview = async (req, res) => {
 
     const presentBySession = new Map(attendanceRows.map((row) => [String(row.session), row]));
 
+    // Fetch immutable session roster snapshots for this student across all these sessions
+    let studentSnapshots = [];
+    const sessionsWithSnapshotsSet = new Set();
+    if (sessionIds.length > 0) {
+      const { data: mySnaps } = await supabase
+        .from("session_roster_snapshots")
+        .select("session_id, batch_id, batch_name, batch_number")
+        .in("session_id", sessionIds)
+        .or(`student_id.eq.${studentId},enrollment_no.eq.${studentUsn}`);
+      studentSnapshots = mySnaps || [];
+
+      const { data: anySnaps } = await supabase
+        .from("session_roster_snapshots")
+        .select("session_id")
+        .in("session_id", sessionIds);
+      (anySnaps || []).forEach((sn) => sessionsWithSnapshotsSet.add(String(sn.session_id)));
+    }
+
+    const studentSnapshotBySession = new Map(
+      studentSnapshots.map((sn) => [String(sn.session_id), sn])
+    );
+
     // High-performance batch roster retrieval with 60s in-memory caching & inflight deduplication
     const batchPromises = subjectIds.map((sId) =>
       getCachedBatches("sub", sId, supabase).catch(() => [])
@@ -596,7 +618,19 @@ const handleStudentAttendanceOverview = async (req, res) => {
         return;
       }
 
-      // CASE B: UNATTENDED SESSIONS
+      // CASE B: IMMUTABLE ROSTER SNAPSHOT ELIGIBILITY
+      // If this session has an immutable roster snapshot, membership is frozen
+      if (sessionsWithSnapshotsSet.has(String(session.id))) {
+        if (studentSnapshotBySession.has(String(session.id))) {
+          // Student was on the frozen snapshot roster and missed this session
+          entry.totalClassesConducted += 1;
+          entry.classesMissed += 1;
+        }
+        // If not in snapshot, session was for a different batch and does not count against student
+        return;
+      }
+
+      // CASE C: LEGACY UNATTENDED SESSIONS (FALLBACK)
       const sessionBatchIds = Array.isArray(session.batch_ids) && session.batch_ids.length > 0
         ? session.batch_ids.map(String).filter((b) => b && b !== "all" && b !== "ALL")
         : (session.batch_id && session.batch_id !== "all" && session.batch_id !== "ALL" ? [String(session.batch_id)] : []);

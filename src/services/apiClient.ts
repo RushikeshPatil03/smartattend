@@ -331,8 +331,13 @@ class ApiClient {
     });
   getStudentAnalytics = (studentId: string, signal?: AbortSignal) =>
     this.get(`/api/admin/students/${encodeURIComponent(studentId)}/analytics`, signal);
-  updateAdminProfile = (data: { collegeName?: string; profilePhotoUrl?: string | null }) =>
-    this.put("/api/admin/profile", data);
+  uploadAdminLogo = (data: { image: string }) =>
+    this.post("/api/admin/profile/logo", data);
+  updateAdminProfile = (data: {
+    collegeName?: string;
+    profilePhotoUrl?: string | null;
+    newStoragePath?: string | null;
+  }) => this.put("/api/admin/profile", data);
 
   // Departments
   getDepartments = (signal?: AbortSignal) => this.get("/api/department", signal);

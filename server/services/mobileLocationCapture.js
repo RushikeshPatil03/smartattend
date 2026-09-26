@@ -61,7 +61,7 @@ async function getMobileLocationCapture(token) {
     try {
       const { data } = await supabase
         .from("mobile_location_captures")
-        .select("*")
+        .select("token, faculty_id, status, coords, accuracy, device_label, expires_at, created_at, captured_at")
         .eq("token", String(token))
         .single();
 
@@ -105,6 +105,25 @@ async function setMobileLocationCapture(token, next) {
         .eq("token", String(token));
     } catch {
       // Memory store already set
+    }
+
+    // Broadcast instant GPS capture over Supabase Realtime to eliminate client polling
+    try {
+      const channel = supabase.channel(`session:capture:${String(token)}`);
+      await channel.send({
+        type: "broadcast",
+        event: "LOCATION_CAPTURED",
+        payload: {
+          token: String(token),
+          status: next.status,
+          coords: next.coords,
+          location: next.coords,
+          accuracy: next.accuracy,
+        },
+      });
+      supabase.removeChannel(channel).catch(() => {});
+    } catch {
+      // Ignored
     }
   }
 }

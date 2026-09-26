@@ -100,7 +100,7 @@ router.post("/", adminAuth, async (req, res) => {
         departments: deps,
         created_by_admin: adminId,
       })
-      .select("*")
+      .select("id, name, code, year, semester, departments, allotted_faculties, created_by_admin, created_at")
       .single();
 
     if (error || !subject) {
@@ -143,7 +143,9 @@ router.get("/", authMiddleware, async (req, res) => {
     const supabase = getSupabaseClient();
     if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
 
-    let query = supabase.from("subjects").select("*");
+    let query = supabase
+      .from("subjects")
+      .select("id, name, code, year, semester, departments, allotted_faculties, created_by_admin, created_at");
 
     if (req.userRole === "ADMIN") {
       query = query.eq("created_by_admin", req.userId);
@@ -240,7 +242,7 @@ router.post("/allot", adminAuth, async (req, res) => {
 
     const { data: subject } = await supabase
       .from("subjects")
-      .select("*")
+      .select("id, name, code, year, semester, departments, allotted_faculties, created_by_admin")
       .eq("id", subjectId)
       .eq("created_by_admin", adminId)
       .single();
@@ -368,7 +370,7 @@ router.post("/allot", adminAuth, async (req, res) => {
       })
       .eq("id", subjectId)
       .eq("created_by_admin", adminId)
-      .select("*")
+      .select("id, name, code, year, semester, departments, allotted_faculties, created_by_admin, created_at")
       .single();
 
     if (updateSubjError) throw updateSubjError;
@@ -395,20 +397,28 @@ router.post("/allot", adminAuth, async (req, res) => {
 });
 
 // ======================================================
+const { syncSubjectBatches } = require("../services/batchManagementService");
+
+// ======================================================
 // GET SUBJECT BATCHES (FACULTY / ADMIN)
 // GET /api/subjects/:id/batches
 // ======================================================
 router.get("/:id/batches", authMiddleware, async (req, res) => {
   try {
     const subjectId = req.params.id;
+    const includeArchived = req.query.includeArchived === "true";
     const supabase = getSupabaseClient();
     if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
 
     let query = supabase
       .from("subject_batches")
-      .select("id, subject_id, faculty_id, department_id, year, semester, section, batch_number, batch_name, student_enrollments, created_at, updated_at")
+      .select("id, subject_id, faculty_id, department_id, year, semester, section, batch_number, batch_name, student_enrollments, is_active, created_at, updated_at")
       .eq("subject_id", subjectId)
       .order("batch_number", { ascending: true });
+
+    if (!includeArchived) {
+      query = query.eq("is_active", true);
+    }
 
     if (req.userRole === "FACULTY") {
       const { data: myBatches, error: myErr } = await query.eq("faculty_id", req.userId);
@@ -417,11 +427,15 @@ router.get("/:id/batches", authMiddleware, async (req, res) => {
         return res.json({ ok: true, batches: myBatches });
       }
       // Fallback: check if batches exist for the subject created by Admin or co-faculty
-      const { data: allBatches, error: allErr } = await supabase
+      let allQuery = supabase
         .from("subject_batches")
-        .select("id, subject_id, faculty_id, department_id, year, semester, section, batch_number, batch_name, student_enrollments, created_at, updated_at")
+        .select("id, subject_id, faculty_id, department_id, year, semester, section, batch_number, batch_name, student_enrollments, is_active, created_at, updated_at")
         .eq("subject_id", subjectId)
         .order("batch_number", { ascending: true });
+      if (!includeArchived) {
+        allQuery = allQuery.eq("is_active", true);
+      }
+      const { data: allBatches, error: allErr } = await allQuery;
       if (allErr) throw allErr;
       return res.json({ ok: true, batches: allBatches || [] });
     } else if (req.query.facultyId) {
@@ -469,43 +483,16 @@ router.post("/:id/batches", authMiddleware, async (req, res) => {
       }
     }
 
-    // Atomically replace batches for this subject & faculty
-    await supabase
-      .from("subject_batches")
-      .delete()
-      .eq("subject_id", subjectId)
-      .eq("faculty_id", targetFacultyId);
-
-    if (Array.isArray(batches) && batches.length > 0) {
-      const rowsToInsert = batches.map((b, idx) => ({
-        subject_id: subjectId,
-        faculty_id: targetFacultyId,
-        department_id: b.department_id || (Array.isArray(subject.departments) ? subject.departments[0] : null),
-        year: b.year ? Number(b.year) : (subject.year ? Number(subject.year) : null),
-        semester: b.semester ? Number(b.semester) : (subject.semester ? Number(subject.semester) : null),
-        section: b.section ? String(b.section).trim().toUpperCase() : null,
-        batch_number: Number(b.batch_number || idx + 1),
-        batch_name: String(b.batch_name || `Batch ${idx + 1}`).trim(),
-        student_enrollments: Array.isArray(b.student_enrollments)
-          ? b.student_enrollments.map((u) => String(u).trim().toUpperCase()).filter(Boolean)
-          : [],
-      }));
-
-      const { data: inserted, error: insertErr } = await supabase
-        .from("subject_batches")
-        .insert(rowsToInsert)
-        .select("*")
-        .order("batch_number", { ascending: true });
-
-      if (insertErr) throw insertErr;
-      try {
-        const { invalidateBatchRosterCache } = require("./attendance");
-        if (typeof invalidateBatchRosterCache === "function") {
-          invalidateBatchRosterCache(subjectId);
-        }
-      } catch {}
-      return res.json({ ok: true, batches: inserted || [] });
-    }
+    // Safely sync batches in-place without deleting referenced historical records
+    const finalBatches = await syncSubjectBatches({
+      supabase,
+      subjectId,
+      facultyId: targetFacultyId,
+      subject,
+      batches,
+      actorId: req.userId,
+      actorRole: req.userRole,
+    });
 
     try {
       const { invalidateBatchRosterCache } = require("./attendance");
@@ -513,10 +500,11 @@ router.post("/:id/batches", authMiddleware, async (req, res) => {
         invalidateBatchRosterCache(subjectId);
       }
     } catch {}
-    return res.json({ ok: true, batches: [] });
+
+    return res.json({ ok: true, batches: finalBatches });
   } catch (err) {
     console.error("Save subject batches error:", err);
-    return res.status(500).json({ ok: false, error: "Failed to save batches" });
+    return res.status(500).json({ ok: false, error: err?.message || "Failed to save batches" });
   }
 });
 

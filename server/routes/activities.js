@@ -3,6 +3,7 @@ const express = require("express");
 const router = express.Router();
 const authMiddleware = require("../middleware/authMiddleware");
 const { getSupabaseClient } = require("../config/supabase");
+const { syncActivityBatches } = require("../services/batchManagementService");
 
 // Helper: Ensure authenticated faculty or admin
 function requireFaculty(req, res) {
@@ -31,7 +32,14 @@ router.get("/", authMiddleware, async (req, res) => {
       .order("created_at", { ascending: false });
 
     if (error) throw error;
-    return res.json({ ok: true, activities: activities || [] });
+    const includeArchived = req.query.includeArchived === "true";
+    const cleanedActivities = (activities || []).map((act) => ({
+      ...act,
+      batches: includeArchived
+        ? act.batches || []
+        : (act.batches || []).filter((b) => b.is_active !== false),
+    }));
+    return res.json({ ok: true, activities: cleanedActivities });
   } catch (err) {
     console.error("Fetch activities error:", err);
     return res.status(500).json({ ok: false, error: "Failed to fetch activities" });
@@ -393,7 +401,7 @@ router.post("/", authMiddleware, async (req, res) => {
         semester: primarySem,
         section: section ? section.trim().toUpperCase() : null,
       })
-      .select()
+      .select("id, faculty, department, name, type, event_date, start_date, end_date, years, semesters, semester, section, is_active, created_at")
       .single();
 
     if (actError) throw actError;
@@ -418,7 +426,7 @@ router.post("/", authMiddleware, async (req, res) => {
     const { data: insertedBatches, error: batchError } = await supabase
       .from("activity_batches")
       .insert(batchesToInsert)
-      .select();
+      .select("id, activity_id, batch_number, batch_name, student_enrollments, created_at");
 
     if (batchError) throw batchError;
 
@@ -483,7 +491,7 @@ router.put("/:id", authMiddleware, async (req, res) => {
       .update(updatePayload)
       .eq("id", id)
       .eq("faculty", req.userId)
-      .select()
+      .select("id, faculty, department, name, type, event_date, start_date, end_date, years, semesters, semester, section, is_active, updated_at")
       .single();
 
     if (updateError) throw updateError;
@@ -491,27 +499,17 @@ router.put("/:id", authMiddleware, async (req, res) => {
       return res.status(404).json({ ok: false, error: "Activity not found or not owned by faculty" });
     }
 
-    // Replace batches if provided
+    // Safely sync batches in-place if provided
     let updatedBatches = null;
     if (Array.isArray(batches)) {
-      await supabase.from("activity_batches").delete().eq("activity_id", id);
-      const batchesToInsert = batches.map((b, idx) => ({
-        activity_id: id,
-        batch_number: Number(b.batchNumber || b.batch_number || idx + 1),
-        batch_name: String(b.batchName || b.batch_name || `Batch ${idx + 1}`).trim(),
-        student_enrollments: Array.isArray(b.studentEnrollments)
-          ? b.studentEnrollments
-          : (Array.isArray(b.student_enrollments) ? b.student_enrollments : []),
-      }));
-
-      if (batchesToInsert.length > 0) {
-        const { data: insBatches, error: bErr } = await supabase
-          .from("activity_batches")
-          .insert(batchesToInsert)
-          .select();
-        if (bErr) throw bErr;
-        updatedBatches = insBatches;
-      }
+      updatedBatches = await syncActivityBatches({
+        supabase,
+        activityId: id,
+        facultyId: req.userId,
+        batches,
+        actorId: req.userId,
+        actorRole: req.userRole,
+      });
     }
 
     try {

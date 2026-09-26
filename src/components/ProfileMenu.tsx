@@ -1,8 +1,118 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, GraduationCap, LogOut, Mail, ShieldCheck, UserRound, Edit, Camera, BookOpen, Award, Building2, TrendingUp, RefreshCw } from "lucide-react";
+import {
+  ChevronDown,
+  GraduationCap,
+  LogOut,
+  Mail,
+  ShieldCheck,
+  UserRound,
+  Edit,
+  Camera,
+  BookOpen,
+  Award,
+  Building2,
+  TrendingUp,
+  RefreshCw,
+  Upload,
+  X as XIcon,
+  Trash2,
+  Link as LinkIcon,
+  Check,
+} from "lucide-react";
 import { useApp } from "../store";
 import apiClient from "../services/apiClient";
 import LivePhotoCapture from "./LivePhotoCapture";
+
+/**
+ * Uses browser-native HTMLCanvasElement to resize and compress a logo image.
+ * Constrains dimensions to maximum 512x512 while maintaining aspect ratio.
+ * Preserves PNG transparency if alpha channel is detected; otherwise uses WebP or JPEG.
+ */
+function processLogoFile(file: File): Promise<{ dataUrl: string; mimeType: string }> {
+  return new Promise((resolve, reject) => {
+    if (!file) {
+      return reject(new Error("No file selected."));
+    }
+
+    const validMimes = ["image/png", "image/jpeg", "image/jpg", "image/webp"];
+    if (!validMimes.includes(file.type.toLowerCase())) {
+      return reject(new Error("Unsupported file format. Please choose a PNG, JPEG, or WebP image."));
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      return reject(new Error("File is too large. Please select an image under 10MB."));
+    }
+
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Failed to read the selected image file."));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Could not decode image. The file may be corrupt."));
+      img.onload = () => {
+        try {
+          const maxDim = 512;
+          let width = img.naturalWidth || img.width;
+          let height = img.naturalHeight || img.height;
+
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(width, 1);
+          canvas.height = Math.max(height, 1);
+          const ctx = canvas.getContext("2d", { willReadFrequently: true });
+          if (!ctx) {
+            return reject(new Error("Browser does not support 2D canvas processing."));
+          }
+
+          ctx.drawImage(img, 0, 0, width, height);
+
+          let isTransparent = false;
+          if (file.type.toLowerCase() === "image/png") {
+            try {
+              const imgData = ctx.getImageData(0, 0, width, height).data;
+              for (let i = 3; i < imgData.length; i += 4) {
+                if (imgData[i] < 250) {
+                  isTransparent = true;
+                  break;
+                }
+              }
+            } catch {
+              isTransparent = true;
+            }
+          }
+
+          let outputMime = "image/jpeg";
+          let quality: number | undefined = 0.88;
+
+          if (isTransparent) {
+            outputMime = "image/png";
+            quality = undefined;
+          } else {
+            const testWebp = canvas.toDataURL("image/webp");
+            if (testWebp.startsWith("data:image/webp")) {
+              outputMime = "image/webp";
+            }
+          }
+
+          const dataUrl = canvas.toDataURL(outputMime, quality);
+          resolve({ dataUrl, mimeType: outputMime });
+        } catch (err: any) {
+          reject(new Error(err?.message || "Failed to process logo image on canvas."));
+        }
+      };
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 type ProfileMenuProps = {
   user?: any;
@@ -50,7 +160,7 @@ const ProfileMenu: React.FC<ProfileMenuProps> = ({
     isFaculty
       ? photoUrl || user?.facultyProfilePhotoUrl || ""
       : isAdmin
-        ? photoUrl || user?.adminProfilePhotoUrl || ""
+        ? photoUrl || user?.profilePhotoUrl || user?.adminProfilePhotoUrl || ""
       : photoUrl || user?.profilePhotoUrl || user?.studentProfilePhotoUrl || ""
   ).trim();
   const initials = useMemo(() => getInitials(displayName), [displayName]);
@@ -91,9 +201,15 @@ const ProfileMenu: React.FC<ProfileMenuProps> = ({
   const [editingCampus, setEditingCampus] = useState(false);
   const [campusName, setCampusName] = useState<string>(String(user?.collegeName || "").trim());
   const [campusPhoto, setCampusPhoto] = useState<string>(String(photoUrl || user?.profilePhotoUrl || "").trim());
+  const [selectedLogoPreview, setSelectedLogoPreview] = useState<string | null>(null);
+  const [logoRemoved, setLogoRemoved] = useState(false);
+  const [logoInputMode, setLogoInputMode] = useState<"file" | "url">("file");
+  const [urlInputValue, setUrlInputValue] = useState<string>(String(photoUrl || user?.profilePhotoUrl || "").trim());
   const [savingCampus, setSavingCampus] = useState(false);
   const [campusMsg, setCampusMsg] = useState<string | null>(null);
   const [campusErr, setCampusErr] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
   const [editingFacultyPhoto, setEditingFacultyPhoto] = useState(false);
   const [facultyPhoto, setFacultyPhoto] = useState<string>(String(photoUrl || user?.facultyProfilePhotoUrl || "").trim());
   const [savingFacultyPhoto, setSavingFacultyPhoto] = useState(false);
@@ -102,8 +218,136 @@ const ProfileMenu: React.FC<ProfileMenuProps> = ({
 
   useEffect(() => {
     setCampusName(String(user?.collegeName || "").trim());
-    setCampusPhoto(String(photoUrl || user?.profilePhotoUrl || "").trim());
-  }, [user?.collegeName, photoUrl, user?.profilePhotoUrl]);
+    const currentLogo = String(photoUrl || user?.profilePhotoUrl || "").trim();
+    setCampusPhoto(currentLogo);
+    if (!editingCampus) {
+      setSelectedLogoPreview(null);
+      setLogoRemoved(false);
+      setUrlInputValue(currentLogo);
+    }
+  }, [user?.collegeName, photoUrl, user?.profilePhotoUrl, editingCampus]);
+
+  const resetCampusEditor = () => {
+    setCampusName(String(user?.collegeName || "").trim());
+    const currentLogo = String(photoUrl || user?.profilePhotoUrl || "").trim();
+    setCampusPhoto(currentLogo);
+    setSelectedLogoPreview(null);
+    setLogoRemoved(false);
+    setLogoInputMode("file");
+    setUrlInputValue(currentLogo);
+    setCampusMsg(null);
+    setCampusErr(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    setEditingCampus(false);
+  };
+
+  const handleLogoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCampusErr(null);
+    setCampusMsg(null);
+    try {
+      const { dataUrl } = await processLogoFile(file);
+      setSelectedLogoPreview(dataUrl);
+      setLogoRemoved(false);
+    } catch (err: any) {
+      setCampusErr(err?.message || "Failed to process selected file.");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const activeLogoPreview = useMemo(() => {
+    if (logoRemoved) return null;
+    if (selectedLogoPreview) return selectedLogoPreview;
+    if (logoInputMode === "url" && urlInputValue.trim()) return urlInputValue.trim();
+    if (campusPhoto) return campusPhoto;
+    return null;
+  }, [logoRemoved, selectedLogoPreview, logoInputMode, urlInputValue, campusPhoto]);
+
+  const handleSaveCampus = async () => {
+    setCampusErr(null);
+    setCampusMsg(null);
+
+    const trimmedName = campusName.trim();
+    if (!trimmedName) {
+      setCampusErr("Institution name cannot be empty.");
+      return;
+    }
+    if (trimmedName.length > 255) {
+      setCampusErr("Institution name cannot exceed 255 characters.");
+      return;
+    }
+
+    setSavingCampus(true);
+
+    let finalLogoUrl: string | null = null;
+    let newStoragePath: string | null = null;
+
+    try {
+      if (logoRemoved) {
+        finalLogoUrl = null;
+      } else if (selectedLogoPreview) {
+        // Upload local compressed image first
+        const uploadRes: any = await apiClient.uploadAdminLogo({
+          image: selectedLogoPreview,
+        });
+
+        if (!uploadRes?.ok || !uploadRes?.url) {
+          setCampusErr(uploadRes?.error || "Failed to upload logo image. Institution name was not changed.");
+          setSavingCampus(false);
+          return;
+        }
+
+        finalLogoUrl = uploadRes.url;
+        newStoragePath = uploadRes.storagePath || null;
+      } else if (logoInputMode === "url" && urlInputValue.trim()) {
+        const cleanUrl = urlInputValue.trim();
+        if (!/^https?:\/\//i.test(cleanUrl)) {
+          setCampusErr("Logo URL must be a valid HTTP or HTTPS address.");
+          setSavingCampus(false);
+          return;
+        }
+        finalLogoUrl = cleanUrl;
+      } else {
+        finalLogoUrl = campusPhoto || null;
+      }
+
+      const res: any = await apiClient.updateAdminProfile({
+        collegeName: trimmedName,
+        profilePhotoUrl: finalLogoUrl,
+        newStoragePath,
+      });
+
+      if (!res?.ok) {
+        setCampusErr(res?.error || "Failed to save institution profile.");
+        return;
+      }
+
+      const savedName = String(res?.admin?.collegeName || trimmedName).trim();
+      const savedPhoto = String(res?.admin?.profilePhotoUrl || "").trim() || null;
+
+      updateCurrentUser({
+        collegeName: savedName,
+        profilePhotoUrl: savedPhoto,
+      });
+
+      setCampusName(savedName);
+      setCampusPhoto(savedPhoto || "");
+      setSelectedLogoPreview(null);
+      setLogoRemoved(false);
+      setUrlInputValue(savedPhoto || "");
+
+      setCampusMsg("Profile saved successfully.");
+      setTimeout(() => {
+        setEditingCampus(false);
+        setCampusMsg(null);
+      }, 1000);
+    } catch (err: any) {
+      setCampusErr(err?.message || "Failed to save institution profile.");
+    } finally {
+      setSavingCampus(false);
+    }
+  };
 
   useEffect(() => {
     if (!isFaculty || editingFacultyPhoto) return;
@@ -174,7 +418,13 @@ const ProfileMenu: React.FC<ProfileMenuProps> = ({
       </button>
 
       {open ? (
-        <div className="absolute right-0 top-[calc(100%+10px)] z-[110] w-[min(320px,calc(100vw-32px))] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_24px_70px_-34px_rgba(15,23,42,0.55)]">
+        <div
+          className={`absolute right-0 top-[calc(100%+10px)] z-[110] ${
+            editingCampus && isAdmin
+              ? "w-[min(360px,calc(100vw-24px))]"
+              : "w-[min(320px,calc(100vw-32px))]"
+          } overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_24px_70px_-34px_rgba(15,23,42,0.55)] transition-all`}
+        >
           <div className="bg-[linear-gradient(135deg,_#f8fafc_0%,_#ecfeff_55%,_#fef9c3_100%)] p-4">
             <div className="flex items-center gap-3">
               {resolvedPhoto ? (
@@ -182,6 +432,9 @@ const ProfileMenu: React.FC<ProfileMenuProps> = ({
                   src={resolvedPhoto}
                   alt={displayName}
                   className="h-14 w-14 rounded-full border border-white object-cover shadow-sm"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).src = "/icon-192.png?v=5";
+                  }}
                 />
               ) : isFaculty || isAdmin ? (
                 <span className="flex h-14 w-14 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-sm">
@@ -192,20 +445,27 @@ const ProfileMenu: React.FC<ProfileMenuProps> = ({
                   {initials}
                 </span>
               )}
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
                   <p className="truncate text-base font-semibold text-slate-950">
                     {displayName}
                   </p>
                   {/* small edit icon to toggle campus editor for admins */}
-                  {String(roleLabel || "").toUpperCase() === "ADMIN" ? (
+                  {isAdmin ? (
                     <button
                       type="button"
-                      onClick={() => setEditingCampus((s) => !s)}
-                      aria-label={editingCampus ? "Cancel campus edit" : "Edit campus profile"}
-                      className="rounded-full p-1 text-slate-600 hover:bg-slate-100"
+                      onClick={() => {
+                        if (editingCampus) {
+                          resetCampusEditor();
+                        } else {
+                          setEditingCampus(true);
+                        }
+                      }}
+                      title={editingCampus ? "Cancel edit" : "Edit institution profile"}
+                      aria-label={editingCampus ? "Cancel institution edit" : "Edit institution profile"}
+                      className="rounded-full p-1.5 text-slate-600 hover:bg-white/80 hover:text-slate-900 transition"
                     >
-                      <Edit size={14} />
+                      {editingCampus ? <XIcon size={14} /> : <Edit size={14} />}
                     </button>
                   ) : null}
                   {isFaculty ? (
@@ -227,79 +487,174 @@ const ProfileMenu: React.FC<ProfileMenuProps> = ({
                   <ShieldCheck size={12} />
                   {roleLabel}
                 </p>
+              </div>
+            </div>
 
-                {/* Inline campus editor shown in the top section when toggled */}
-                {editingCampus && String(roleLabel || "").toUpperCase() === "ADMIN" ? (
-                  <div className="mt-3 space-y-2">
-                    <label className="text-xs text-slate-600">Campus Name</label>
-                    <input
-                      value={campusName}
-                      onChange={(e) => setCampusName(e.target.value)}
-                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                      placeholder="College name"
-                    />
+            {/* Inline campus editor shown in the top section when toggled */}
+            {editingCampus && isAdmin ? (
+              <div className="mt-4 rounded-xl border border-sky-200/70 bg-white/95 p-3.5 shadow-sm space-y-3">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800 uppercase tracking-wide">
+                    <Building2 size={13} className="text-sky-600" />
+                    <span>Institution Settings</span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 font-medium">Public Branding</span>
+                </div>
 
-                    <label className="text-xs text-slate-600">Campus Photo URL</label>
-                    <input
-                      value={campusPhoto}
-                      onChange={(e) => setCampusPhoto(e.target.value)}
-                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                      placeholder="https://.../logo.jpg"
-                    />
+                {/* College / Institution Name Field */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Institution Name <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={campusName}
+                    onChange={(e) => {
+                      setCampusName(e.target.value);
+                      if (campusErr) setCampusErr(null);
+                    }}
+                    maxLength={255}
+                    disabled={savingCampus}
+                    placeholder="Enter official college name"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50/50 px-3 py-2 text-xs font-medium text-slate-900 placeholder-slate-400 focus:border-sky-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 disabled:opacity-60 transition"
+                  />
+                  <div className="mt-1 flex justify-end">
+                    <span className="text-[10px] text-slate-400">{campusName.trim().length}/255</span>
+                  </div>
+                </div>
 
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          setCampusErr(null);
-                          setCampusMsg(null);
-                          setSavingCampus(true);
-                          try {
-                            const res: any = await apiClient.updateAdminProfile({
-                              collegeName: campusName || null,
-                              profilePhotoUrl: campusPhoto || null,
-                            });
-                            if (!res?.ok) {
-                              setCampusErr(res?.error || "Failed to save campus profile.");
-                            } else {
-                              updateCurrentUser({
-                                collegeName: String(res?.admin?.collegeName || campusName || "").trim(),
-                                profilePhotoUrl: String(res?.admin?.profilePhotoUrl || campusPhoto || "").trim() || null,
-                              });
-                              setCampusMsg("Saved");
-                              setEditingCampus(false);
-                            }
-                          } catch (err: any) {
-                            setCampusErr(err?.message || "Failed to save campus profile.");
-                          } finally {
-                            setSavingCampus(false);
-                          }
+                {/* Institution Logo Picker & Preview */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Institution Logo
+                  </label>
+                  <div className="flex items-center gap-3">
+                    <div className="relative flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50 shadow-inner">
+                      {activeLogoPreview ? (
+                        <img
+                          src={activeLogoPreview}
+                          alt="Logo preview"
+                          className="h-full w-full object-contain p-1"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLImageElement).src = "/icon-192.png?v=5";
+                          }}
+                        />
+                      ) : (
+                        <Building2 size={24} className="text-slate-300" />
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1 space-y-1.5">
+                      <input
+                        type="file"
+                        ref={fileInputRef}
+                        accept="image/png,image/jpeg,image/webp"
+                        onChange={handleLogoFileChange}
+                        disabled={savingCampus}
+                        className="sr-only"
+                        id="admin-institution-logo-input"
+                      />
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <label
+                          htmlFor="admin-institution-logo-input"
+                          className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-2xs hover:bg-slate-50 hover:border-slate-300 transition ${
+                            savingCampus ? "pointer-events-none opacity-50" : ""
+                          }`}
+                        >
+                          <Upload size={12} className="text-sky-600" />
+                          <span>{activeLogoPreview ? "Change File" : "Choose File"}</span>
+                        </label>
+                        {activeLogoPreview ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setLogoRemoved(true);
+                              setSelectedLogoPreview(null);
+                              setUrlInputValue("");
+                              if (fileInputRef.current) fileInputRef.current.value = "";
+                            }}
+                            disabled={savingCampus}
+                            className="inline-flex items-center gap-1 rounded-lg border border-rose-200/70 bg-rose-50/70 px-2 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100 transition"
+                          >
+                            <Trash2 size={12} />
+                            <span>Remove</span>
+                          </button>
+                        ) : null}
+                      </div>
+                      <p className="text-[10px] text-slate-400">PNG, JPEG, or WebP. Auto-optimized to 512x512.</p>
+                    </div>
+                  </div>
+
+                  {/* Remote URL toggle option */}
+                  <div className="mt-2.5 pt-2 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => setLogoInputMode((m) => (m === "file" ? "url" : "file"))}
+                      disabled={savingCampus}
+                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-sky-600 hover:text-sky-800 transition"
+                    >
+                      <LinkIcon size={11} />
+                      <span>{logoInputMode === "file" ? "Or enter HTTPS image URL" : "Switch to device file upload"}</span>
+                    </button>
+                    {logoInputMode === "url" ? (
+                      <input
+                        type="url"
+                        value={urlInputValue}
+                        onChange={(e) => {
+                          setUrlInputValue(e.target.value);
+                          setLogoRemoved(false);
+                          if (campusErr) setCampusErr(null);
                         }}
                         disabled={savingCampus}
-                        className="rounded-xl bg-blue-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                      >
-                        {savingCampus ? "Saving..." : "Save"}
-                      </button>
+                        placeholder="https://.../institution-logo.png"
+                        className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-3 py-1.5 text-xs text-slate-800 placeholder-slate-400 focus:border-sky-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-sky-500"
+                      />
+                    ) : null}
+                  </div>
+                </div>
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingCampus(false);
-                          setCampusErr(null);
-                          setCampusMsg(null);
-                        }}
-                        className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
-                      >
-                        Cancel
-                      </button>
-                    </div>
+                {/* Save and Cancel buttons */}
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={handleSaveCampus}
+                    disabled={savingCampus}
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl bg-blue-600 px-3 py-2 text-xs font-semibold text-white shadow-xs hover:bg-blue-700 active:scale-[0.98] disabled:opacity-60 transition"
+                  >
+                    {savingCampus ? (
+                      <>
+                        <RefreshCw size={12} className="animate-spin" />
+                        <span>Saving...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Check size={12} />
+                        <span>Save Changes</span>
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetCampusEditor}
+                    disabled={savingCampus}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
+                  >
+                    Cancel
+                  </button>
+                </div>
 
-                    {campusMsg && <div className="text-xs text-emerald-700">{campusMsg}</div>}
-                    {campusErr && <div className="text-xs text-rose-700">{campusErr}</div>}
+                {campusMsg ? (
+                  <div className="flex items-center gap-1.5 rounded-lg bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 border border-emerald-200/60 animate-fade-in">
+                    <Check size={12} className="shrink-0" />
+                    <span>{campusMsg}</span>
+                  </div>
+                ) : null}
+                {campusErr ? (
+                  <div className="rounded-lg bg-rose-50 px-2.5 py-1.5 text-xs font-medium text-rose-700 border border-rose-200/60">
+                    {campusErr}
                   </div>
                 ) : null}
               </div>
-            </div>
+            ) : null}
           </div>
 
           <div className="space-y-2 p-3">

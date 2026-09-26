@@ -16,6 +16,7 @@ import {
   BookOpen,
   Save,
   AlertTriangle,
+  ShieldCheck,
 } from "lucide-react";
 import apiClient from "../../services/apiClient";
 
@@ -84,6 +85,9 @@ export const SubjectBatchModal: React.FC<SubjectBatchModalProps> = React.memo(({
     { batchName: "Batch 1", studentEnrollments: [] },
     { batchName: "Batch 2", studentEnrollments: [] },
   ]);
+  const [initialBatches, setInitialBatches] = useState<
+    Array<{ id?: string; batchName: string; studentEnrollments: string[] }>
+  >([]);
 
   const [cohortStudents, setCohortStudents] = useState<CohortStudent[]>([]);
   const [loadingCohort, setLoadingCohort] = useState(false);
@@ -91,6 +95,37 @@ export const SubjectBatchModal: React.FC<SubjectBatchModalProps> = React.memo(({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  // Compute change summary for faculty transparency
+  const changeSummary = useMemo(() => {
+    let newCount = 0;
+    let updatedCount = 0;
+    let archivedCount = 0;
+    const initialMap = new Map((initialBatches || []).map((b) => [b.id, b]));
+    const currentIds = new Set(batches.map((b) => b.id).filter(Boolean));
+
+    batches.forEach((b) => {
+      if (!b.id || !initialMap.has(b.id)) {
+        newCount++;
+      } else {
+        const init = initialMap.get(b.id);
+        const nameChanged = init?.batchName !== b.batchName;
+        const enrollChanged = JSON.stringify(init?.studentEnrollments?.slice().sort()) !== JSON.stringify(b.studentEnrollments.slice().sort());
+        if (nameChanged || enrollChanged) {
+          updatedCount++;
+        }
+      }
+    });
+
+    initialBatches.forEach((b) => {
+      if (b.id && !currentIds.has(b.id)) {
+        archivedCount++;
+      }
+    });
+
+    const hasChanges = newCount > 0 || updatedCount > 0 || archivedCount > 0;
+    return { newCount, updatedCount, archivedCount, hasChanges };
+  }, [initialBatches, batches]);
 
   // Selection & drag-sweep states
   const [selectedUsns, setSelectedUsns] = useState<Set<string>>(new Set());
@@ -134,12 +169,15 @@ export const SubjectBatchModal: React.FC<SubjectBatchModalProps> = React.memo(({
               : [],
           }));
           setBatches(loaded);
+          setInitialBatches(JSON.parse(JSON.stringify(loaded)));
           fetchCohort(selectedSection, loaded);
         } else if (isMounted) {
-          setBatches([
+          const defaults = [
             { batchName: "Batch 1", studentEnrollments: [] },
             { batchName: "Batch 2", studentEnrollments: [] },
-          ]);
+          ];
+          setBatches(defaults);
+          setInitialBatches([]);
         }
       } catch (err: any) {
         console.error("Failed to load subject batches:", err);
@@ -484,6 +522,35 @@ export const SubjectBatchModal: React.FC<SubjectBatchModalProps> = React.memo(({
           </button>
         </div>
 
+        {/* Historical Attendance Protection Banner */}
+        <div className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-2.5 bg-blue-50/90 border border-blue-200/80 rounded-2xl text-xs text-blue-900 shrink-0">
+          <div className="flex items-center gap-2">
+            <ShieldCheck size={16} className="text-blue-600 shrink-0" />
+            <span>
+              <strong>Historical Attendance Protection:</strong> Changes will apply exclusively to future sessions. Historical attendance, matrix reports, and past session rosters are permanently preserved.
+            </span>
+          </div>
+          {changeSummary.hasChanges && (
+            <div className="flex items-center gap-1.5 shrink-0 text-[11px] font-semibold">
+              {changeSummary.updatedCount > 0 && (
+                <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 border border-blue-200">
+                  {changeSummary.updatedCount} updated
+                </span>
+              )}
+              {changeSummary.newCount > 0 && (
+                <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                  {changeSummary.newCount} new
+                </span>
+              )}
+              {changeSummary.archivedCount > 0 && (
+                <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
+                  {changeSummary.archivedCount} archived
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* Section Picker & Cohort Context */}
         <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50/80 p-3 rounded-2xl border border-slate-200/80 shrink-0">
           <div className="flex items-center gap-3">
@@ -818,31 +885,42 @@ export const SubjectBatchModal: React.FC<SubjectBatchModalProps> = React.memo(({
         )}
 
         {/* Footer Actions */}
-        <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100 shrink-0">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={saving}
-            className="px-4 py-2 rounded-xl border border-slate-200 text-slate-700 text-xs font-bold hover:bg-slate-100 disabled:opacity-50 cursor-pointer"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={saving}
-            className="inline-flex items-center gap-2 px-5 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-500 disabled:opacity-50 transition cursor-pointer shadow-sm"
-          >
-            {saving ? (
-              <>
-                <RefreshCw size={13} className="animate-spin" /> Saving Batches...
-              </>
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-100 shrink-0">
+          <div className="text-xs text-slate-500 font-medium">
+            {changeSummary.hasChanges ? (
+              <span className="text-emerald-700 font-semibold flex items-center gap-1">
+                <Check size={13} /> Updates ready for future sessions
+              </span>
             ) : (
-              <>
-                <Save size={13} /> Save Batches
-              </>
+              <span>Batches match current saved state</span>
             )}
-          </button>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={saving}
+              className="px-4 py-2 rounded-xl border border-slate-200 text-slate-700 text-xs font-bold hover:bg-slate-100 disabled:opacity-50 cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving}
+              className="inline-flex items-center gap-2 px-5 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-500 disabled:opacity-50 transition cursor-pointer shadow-sm"
+            >
+              {saving ? (
+                <>
+                  <RefreshCw size={13} className="animate-spin" /> Saving Batches...
+                </>
+              ) : (
+                <>
+                  <Save size={13} /> Save Batches
+                </>
+              )}
+            </button>
+          </div>
         </div>
       </div>
     </div>

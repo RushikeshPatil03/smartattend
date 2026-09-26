@@ -12,12 +12,24 @@ let poolInstance = null;
 function getPostgresPool() {
   if (poolInstance) return poolInstance;
 
-  const connectionString = env.DATABASE_URL || env.DIRECT_URL;
+  // Prioritize DATABASE_URL (Port 6543 Transaction Pooler) over DIRECT_URL (Port 5432)
+  let connectionString = env.DATABASE_URL || env.DIRECT_URL;
   if (!connectionString) {
     return null;
   }
 
   const isPooler = connectionString.includes(":6543");
+  const isDirect = connectionString.includes(":5432");
+
+  if (isDirect && !isPooler) {
+    if (env.IS_PRODUCTION) {
+      console.warn(
+        "⚠️ WARNING: Postgres pool is connecting directly to port 5432. " +
+        "For minimal connection overhead and high-concurrency scaling, switch DATABASE_URL to Supavisor Transaction Pooler (port 6543)."
+      );
+    }
+  }
+
   const maxConnections = Number(process.env.PG_MAX_POOL_SIZE || 10);
 
   poolInstance = new Pool({
@@ -25,12 +37,12 @@ function getPostgresPool() {
     ssl: {
       rejectUnauthorized: false,
     },
-    // Keep pool size small for Render Free Tier (512MB RAM, single instance)
+    // Keep pool size small for low-overhead instances (512MB RAM free tier)
     max: maxConnections,
     min: 0,
-    idleTimeoutMillis: 30000,
+    idleTimeoutMillis: 10000, // Return idle connections rapidly to Supavisor pool
     connectionTimeoutMillis: 5000,
-    // Supavisor transaction pooler does not support session-level prepared statement caching
+    // Supavisor transaction pooler does not support session-level prepared statements
     ...(isPooler ? { allowExitOnIdle: true } : {}),
   });
 

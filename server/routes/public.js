@@ -53,7 +53,7 @@ router.get("/departments", async (req, res) => {
 
     const { data: record } = await supabase
       .from("registration_tokens")
-      .select("*")
+      .select("id, token, type, admin_id, college_name, expires_at, max_uses, uses_count, is_active")
       .eq("token", String(token))
       .single();
 

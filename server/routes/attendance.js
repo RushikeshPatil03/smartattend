@@ -19,6 +19,10 @@ const { verifyFaceAgainstStudent } = require("../services/faceVerification");
 const { normalizeFingerprint } = require("../services/deviceFingerprint");
 const { expireIfInactive, touchSession } = require("../services/sessionLifecycle");
 const { broadcastAttendance, removeSessionChannel, realtimeBroadcaster } = require("../services/realtimeService");
+const {
+  getSessionRosterSnapshot,
+  getSessionRosterSnapshotsForSessions,
+} = require("../services/sessionRosterSnapshotService");
 // In-memory sliding lock to prevent double-tap race conditions (10-second sliding window)
 const scanLocks = new Map();
 setInterval(() => {
@@ -541,6 +545,38 @@ async function validateStudentSessionEligibility(student, session, supabaseClien
 
   if (sessionBatchIds.length > 0 && supabaseClient) {
     const studentUsn = String(student.enrollment_no || "").trim().toUpperCase();
+
+    // Check immutable roster snapshot first (immune to concurrent/future batch modifications)
+    try {
+      const { data: snapMatch } = await supabaseClient
+        .from("session_roster_snapshots")
+        .select("id, batch_id, batch_name, batch_number")
+        .eq("session_id", String(session.id))
+        .eq("enrollment_no", studentUsn)
+        .maybeSingle();
+
+      if (snapMatch) {
+        if (snapMatch.batch_id) {
+          student.assignedBatchId = snapMatch.batch_id;
+        }
+        return { ok: true };
+      }
+
+      const { count: snapCount } = await supabaseClient
+        .from("session_roster_snapshots")
+        .select("id", { count: "exact", head: true })
+        .eq("session_id", String(session.id));
+
+      if (snapCount && snapCount > 0) {
+        return {
+          ok: false,
+          error: "You are not enrolled in this batch session's roster. Please scan during your assigned session.",
+        };
+      }
+    } catch (snapErr) {
+      console.warn("Snapshot enrollment check warning, falling back to cache:", snapErr.message);
+    }
+
     const isActivity = session.category === "ACTIVITY" || Boolean(session.activity_id);
     const targetId = isActivity ? session.activity_id : session.subject;
     const type = isActivity ? "act" : "sub";
@@ -2703,22 +2739,31 @@ router.get("/session/:id/attendees", auth(["FACULTY", "ADMIN"]), async (req, res
       location: att.location || null,
     }));
 
-    // Query exact total enrolled students for this class
-    let countQuery = supabase
-      .from("students")
+    // Check immutable roster snapshot first
+    const { count: snapshotTotal } = await supabase
+      .from("session_roster_snapshots")
       .select("id", { count: "exact", head: true })
-      .eq("year", Number(session.year))
-      .eq("semester", Number(session.semester));
+      .eq("session_id", sessionId);
 
-    if (session.department) {
-      countQuery = countQuery.eq("department", String(session.department));
+    let totalStudents = snapshotTotal || 0;
+    if (totalStudents === 0) {
+      // Legacy query exact total enrolled students for this class
+      let countQuery = supabase
+        .from("students")
+        .select("id", { count: "exact", head: true })
+        .eq("year", Number(session.year))
+        .eq("semester", Number(session.semester));
+
+      if (session.department) {
+        countQuery = countQuery.eq("department", String(session.department));
+      }
+      const normalizedSec = String(session.section || "").trim().toUpperCase();
+      if (normalizedSec) {
+        countQuery = countQuery.eq("section", normalizedSec);
+      }
+      const { count: classTotal } = await countQuery;
+      totalStudents = classTotal || 0;
     }
-    const normalizedSec = String(session.section || "").trim().toUpperCase();
-    if (normalizedSec) {
-      countQuery = countQuery.eq("section", normalizedSec);
-    }
-    const { count: classTotal } = await countQuery;
-    const totalStudents = classTotal || 0;
 
     return res.json({
       ok: true,
@@ -3027,10 +3072,10 @@ router.post("/matrix/batch-update", auth(["FACULTY", "ADMIN"]), async (req, res)
       }
     });
 
-    // 3. Separate into Present (Upserts) and Absent (Deletions)
+    // 3. Separate into Present and Absent Upserts (Zero Physical Deletes)
     const skippedItems = [];
     const presentPayloads = [];
-    const absentPairs = []; // { sessionId, studentId, enrollmentNo }
+    const absentPayloads = [];
 
     for (const item of updates) {
       const sid = String(item.sessionId);
@@ -3048,27 +3093,30 @@ router.post("/matrix/batch-update", auth(["FACULTY", "ADMIN"]), async (req, res)
       }
 
       const isPres = item.status === "present" || item.status === "P";
+      const statusVal = isPres ? "present" : "absent";
+      const recordPayload = {
+        session: sid,
+        student: stu.id,
+        faculty: sess.faculty,
+        subject: sess.subject || null,
+        category: sess.category || (sess.subject ? "REGULAR" : "ACTIVITY"),
+        activity_id: sess.activity_id || null,
+        batch_id: sess.batch_id || null,
+        enrollment_no: stu.enrollment_no || eno,
+        student_name: stu.name,
+        student_email: stu.email,
+        year: sess.year,
+        semester: sess.semester,
+        section: sess.section,
+        status: statusVal,
+        timestamp: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
       if (isPres) {
-        presentPayloads.push({
-          session: sid,
-          student: stu.id,
-          faculty: sess.faculty,
-          subject: sess.subject || null,
-          category: sess.category || (sess.subject ? "REGULAR" : "ACTIVITY"),
-          activity_id: sess.activity_id || null,
-          batch_id: sess.batch_id || null,
-          enrollment_no: stu.enrollment_no,
-          student_name: stu.name,
-          student_email: stu.email,
-          year: sess.year,
-          semester: sess.semester,
-          section: sess.section,
-          status: "present",
-          timestamp: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        });
+        presentPayloads.push(recordPayload);
       } else {
-        absentPairs.push({ sessionId: sid, studentId: stu.id, enrollmentNo: stu.enrollment_no || eno });
+        absentPayloads.push(recordPayload);
       }
     }
 
@@ -3098,25 +3146,29 @@ router.post("/matrix/batch-update", auth(["FACULTY", "ADMIN"]), async (req, res)
       if (upsertErr) throw upsertErr;
     }
 
-    // 4b. Delete absent records (Grouped batch DELETE with timestamp cutoff guard)
-    const absentBySession = new Map();
-    for (const pair of absentPairs) {
-      if (!absentBySession.has(pair.sessionId)) absentBySession.set(pair.sessionId, []);
-      absentBySession.get(pair.sessionId).push(pair);
-    }
-
-    const batchCutoff = batchStartedAt
-      ? new Date(batchStartedAt).toISOString()
-      : new Date(Date.now() - 30_000).toISOString();
-
-    for (const [sid, pairs] of absentBySession) {
-      const studentIds = pairs.map((p) => p.studentId);
-      await supabase
+    // 4b. Upsert absent records (Explicit status = 'absent', NEVER DELETE)
+    if (absentPayloads.length > 0) {
+      let { error: absentErr } = await supabase
         .from("attendances")
-        .delete()
-        .eq("session", sid)
-        .in("student", studentIds)
-        .lt("timestamp", batchCutoff);
+        .upsert(absentPayloads, { onConflict: "session,student" });
+
+      if (absentErr && (absentErr.code === "PGRST204" || absentErr.code === "42703" || String(absentErr.message || "").includes("column"))) {
+        const basePayloads = absentPayloads.map((p) => ({
+          session: p.session,
+          student: p.student,
+          faculty: p.faculty,
+          subject: p.subject,
+          status: "absent",
+          timestamp: p.timestamp,
+          updated_at: p.updated_at,
+        }));
+        const retryRes = await supabase
+          .from("attendances")
+          .upsert(basePayloads, { onConflict: "session,student" });
+        absentErr = retryRes.error;
+      }
+
+      if (absentErr) throw absentErr;
     }
 
     // 5. Invalidate caches for all affected sessions
@@ -3126,9 +3178,10 @@ router.post("/matrix/batch-update", auth(["FACULTY", "ADMIN"]), async (req, res)
 
     return res.json({
       ok: true,
-      modifiedCount: presentPayloads.length + absentPairs.length,
+      modifiedCount: presentPayloads.length + absentPayloads.length,
       presentUpserted: presentPayloads.length,
-      absentDeleted: absentPairs.length,
+      absentUpserted: absentPayloads.length,
+      absentDeleted: 0,
       skippedCount: skippedItems.length,
       skipped: skippedItems,
     });
@@ -3548,8 +3601,27 @@ router.get("/session-roster-history", auth(["FACULTY", "ADMIN"]), async (req, re
       });
     }
 
-    // Fetch recorded attendances for all returned sessions
+    // Fetch recorded attendances and immutable roster snapshots for all returned sessions
     const sessionIds = sessions.map((s) => String(s.id));
+    const sessionRosterSnapshots = await getSessionRosterSnapshotsForSessions(supabase, sessionIds);
+
+    // Enrich session.batchName from immutable snapshots if not already resolved
+    if (sessionRosterSnapshots.length > 0) {
+      const snapBySession = new Map();
+      sessionRosterSnapshots.forEach((sn) => {
+        const sid = String(sn.session_id);
+        if (!snapBySession.has(sid)) snapBySession.set(sid, []);
+        snapBySession.get(sid).push(sn);
+      });
+
+      sessions.forEach((s) => {
+        const snaps = snapBySession.get(String(s.id));
+        if (snaps && snaps.length > 0) {
+          const named = snaps.find((r) => r.batch_name);
+          if (named && !s.batchName) s.batchName = named.batch_name;
+        }
+      });
+    }
     if (sessionIds.length > 0) {
       const { data: rawAttendances } = await supabase
         .from("attendances")
@@ -3705,6 +3777,7 @@ router.get("/session-roster-history", auth(["FACULTY", "ADMIN"]), async (req, re
       students,
       attendance: attendances,
       attendances,
+      sessionRosterSnapshots: sessionRosterSnapshots || [],
       count: attendances.length,
     });
   } catch (err) {

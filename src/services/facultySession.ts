@@ -1,5 +1,6 @@
 // src/services/facultySession.ts
 import apiClient from "./apiClient";
+import logger from "../utils/logger";
 
 /**
  * Start a faculty session.
@@ -25,7 +26,7 @@ export async function startSession(payload: {
   try {
     return await apiClient.post("/api/faculty/session/start", payload);
   } catch (err: any) {
-    console.error("startSession error", err);
+    logger.error("startSession error", err);
     return { ok: false, error: err?.message || "Network error" };
   }
 }
@@ -40,14 +41,13 @@ export async function stopSession(sessionId: string) {
       {}
     );
   } catch (err: any) {
-    console.error("stopSession error", err);
+    logger.error("stopSession error", err);
     return { ok: false, error: err?.message || "Network error" };
   }
 }
 
 /**
  * Fetch latest dynamic QR for an active session.
- * Faculty screen should call this EVERY 4 SECONDS.
  */
 export async function fetchLiveQR(sessionId: string) {
   try {
@@ -55,7 +55,7 @@ export async function fetchLiveQR(sessionId: string) {
       `/api/faculty/session/${sessionId}/qr`
     );
   } catch (err: any) {
-    console.error("fetchLiveQR error", err);
+    logger.error("fetchLiveQR error", err);
     return { ok: false, error: err?.message || "Network error" };
   }
 }

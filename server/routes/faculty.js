@@ -23,6 +23,11 @@ const {
 } = require("../services/mobileLocationCapture");
 const authMiddleware = require("../middleware/authMiddleware");
 const { invalidateCachedSession } = require("./attendance");
+const {
+  createSessionRosterSnapshot,
+  getSessionRosterSnapshot,
+  getSessionRosterSnapshotsForSessions,
+} = require("../services/sessionRosterSnapshotService");
 const env = require("../config/env");
 
 const DEFAULT_SESSION_RADIUS_METERS = Number(
@@ -1497,7 +1502,7 @@ router.post("/session/start", authMiddleware, async (req, res) => {
     // Check for existing active session
     const { data: existingActive } = await supabase
       .from("sessions")
-      .select("*")
+      .select("id, faculty, is_active, last_activity_at, start_time, end_time, updated_at")
       .eq("faculty", facultyId)
       .eq("is_active", true)
       .single();
@@ -1541,7 +1546,7 @@ router.post("/session/start", authMiddleware, async (req, res) => {
     const { data: session, error: createError } = await supabase
       .from("sessions")
       .insert(sessionInsertPayload)
-      .select("*")
+      .select("id, faculty, subject, category, activity_id, batch_id, batch_ids, department, year, semester, section, location, is_active, last_activity_at, start_time, end_time, created_at")
       .single();
 
     if (createError || !session) {
@@ -1554,83 +1559,26 @@ router.post("/session/start", authMiddleware, async (req, res) => {
       throw createError || new Error("Failed to start session");
     }
 
-    // Query exact total enrolled students for this class or activity
-    let totalStudents = 0;
-    if (isActivity) {
-      if (resolvedBatchIds.length > 0) {
-        const { data: batchesData } = await supabase
-          .from("activity_batches")
-          .select("student_enrollments")
-          .in("id", resolvedBatchIds);
-        const uniqueEnrollments = new Set();
-        (batchesData || []).forEach((b) => {
-          if (Array.isArray(b.student_enrollments)) {
-            b.student_enrollments.forEach((e) => uniqueEnrollments.add(String(e).trim().toUpperCase()));
-          }
-        });
-        totalStudents = uniqueEnrollments.size;
-      } else {
-        const { data: batchesData } = await supabase
-          .from("activity_batches")
-          .select("student_enrollments")
-          .eq("activity_id", activityId);
-        const uniqueEnrollments = new Set();
-        (batchesData || []).forEach((b) => {
-          if (Array.isArray(b.student_enrollments)) {
-            b.student_enrollments.forEach((e) => uniqueEnrollments.add(String(e).trim().toUpperCase()));
-          }
-        });
-        totalStudents = uniqueEnrollments.size;
-      }
+    // Atomically create immutable session roster snapshot
+    let snapshotRows = [];
+    try {
+      snapshotRows = await createSessionRosterSnapshot(supabase, session);
+    } catch (snapErr) {
+      console.error("Failed to create immutable session roster snapshot, rolling back session:", snapErr);
+      await supabase.from("sessions").delete().eq("id", session.id);
+      return res.status(500).json({
+        ok: false,
+        error: "Failed to initialize session roster snapshot. Session was not started.",
+      });
+    }
 
-      if (totalStudents === 0 && resolvedDepartmentId) {
-        let countQuery = supabase
-          .from("students")
-          .select("id", { count: "exact", head: true })
-          .eq("department", String(resolvedDepartmentId));
-        if (resolvedSemester) countQuery = countQuery.eq("semester", Number(resolvedSemester));
-        if (resolvedSection && resolvedSection !== "ALL") {
-          countQuery = countQuery.eq("section", resolvedSection);
-        }
-        const { count } = await countQuery;
-        totalStudents = count || 0;
-      }
-    } else {
-      // Academic Session: Check if specific subject batches were selected
-      if (!academicBatchName && req.body?.batchName) {
+    const totalStudents = snapshotRows.length;
+    if (!academicBatchName) {
+      if (req.body?.batchName) {
         academicBatchName = req.body.batchName;
-      }
-      if (resolvedBatchIds.length > 0) {
-        const { data: batchesData } = await supabase
-          .from("subject_batches")
-          .select("batch_name, batch_number, student_enrollments")
-          .in("id", resolvedBatchIds);
-        const uniqueEnrollments = new Set();
-        (batchesData || []).forEach((b) => {
-          if (b.batch_name && !academicBatchName) academicBatchName = b.batch_name;
-          if (Array.isArray(b.student_enrollments)) {
-            b.student_enrollments.forEach((e) => uniqueEnrollments.add(String(e).trim().toUpperCase()));
-          }
-        });
-        totalStudents = uniqueEnrollments.size;
-      }
-
-      if (totalStudents === 0 && resolvedBatchIds.length === 0) {
-        let countQuery = supabase
-          .from("students")
-          .select("id", { count: "exact", head: true })
-          .eq("year", Number(year))
-          .eq("semester", Number(semester));
-
-        if (departmentId) {
-          countQuery = countQuery.eq("department", String(departmentId));
-        }
-        const normalizedSection = String(section || "").trim().toUpperCase();
-        if (normalizedSection) {
-          countQuery = countQuery.eq("section", normalizedSection);
-        }
-        const { count: totalClassStudents } = await countQuery;
-        totalStudents = totalClassStudents || 0;
+      } else {
+        const namedSnap = snapshotRows.find((r) => r.batch_name);
+        if (namedSnap) academicBatchName = namedSnap.batch_name;
       }
     }
 
@@ -1791,10 +1739,36 @@ router.get(["/sessions/:id/roster-snapshot", "/session/:id/roster-snapshot"], au
 
     const presentRecords = recordedRecords.filter((r) => r.status === "present");
 
-    // Query enrolled students for this class section OR activity batch
+    // Query enrolled students: Use immutable session roster snapshot first!
     let allRegisteredStudents = [];
 
-    if (session.category === "ACTIVITY" || session.activity_id) {
+    const snapshots = await getSessionRosterSnapshot(supabase, sessionId);
+    if (Array.isArray(snapshots) && snapshots.length > 0) {
+      const studentIds = snapshots.map((s) => s.student_id).filter(Boolean);
+      let photoMap = new Map();
+      if (studentIds.length > 0) {
+        const { data: photos } = await supabase
+          .from("students")
+          .select("id, profile_photo_url")
+          .in("id", studentIds);
+        (photos || []).forEach((p) => photoMap.set(String(p.id), p.profile_photo_url || ""));
+      }
+
+      allRegisteredStudents = snapshots.map((s) => ({
+        id: s.student_id || `ext_${s.enrollment_no}`,
+        name: s.student_name || s.enrollment_no,
+        enrollment_no: s.enrollment_no,
+        email: s.student_email || "",
+        profile_photo_url: photoMap.get(String(s.student_id)) || "",
+        department: session.department,
+        year: session.year,
+        semester: session.semester,
+        section: session.section,
+        batch_id: s.batch_id,
+        batch_name: s.batch_name,
+        batch_number: s.batch_number,
+      }));
+    } else if (session.category === "ACTIVITY" || session.activity_id) {
       let batchEnrollments = [];
       const effectiveBatchIds = Array.isArray(session.batch_ids) && session.batch_ids.length > 0
         ? session.batch_ids
@@ -2592,8 +2566,27 @@ router.get("/session-roster-history", authMiddleware, async (req, res) => {
       });
     }
 
-    // Fetch recorded attendances for all returned sessions
+    // Fetch recorded attendances and immutable roster snapshots for all returned sessions
     const sessionIds = sessions.map((s) => String(s.id));
+    const sessionRosterSnapshots = await getSessionRosterSnapshotsForSessions(supabase, sessionIds);
+
+    // Enrich session.batchName from immutable snapshots if not already resolved
+    if (sessionRosterSnapshots.length > 0) {
+      const snapBySession = new Map();
+      sessionRosterSnapshots.forEach((sn) => {
+        const sid = String(sn.session_id);
+        if (!snapBySession.has(sid)) snapBySession.set(sid, []);
+        snapBySession.get(sid).push(sn);
+      });
+
+      sessions.forEach((s) => {
+        const snaps = snapBySession.get(String(s.id));
+        if (snaps && snaps.length > 0) {
+          const named = snaps.find((r) => r.batch_name);
+          if (named && !s.batchName) s.batchName = named.batch_name;
+        }
+      });
+    }
     if (sessionIds.length > 0) {
       const { data: rawAttendances } = await supabase
         .from("attendances")
@@ -2749,6 +2742,7 @@ router.get("/session-roster-history", authMiddleware, async (req, res) => {
       students,
       attendance: attendances,
       attendances,
+      sessionRosterSnapshots: sessionRosterSnapshots || [],
       count: attendances.length,
     });
   } catch (err) {

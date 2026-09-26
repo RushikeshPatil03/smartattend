@@ -289,17 +289,6 @@ const AdminDashboard: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState<"users" | "depts" | "subjects">("users");
 
-  // 🌟 Admin College Name (local UI state)
-  const [collegeName, setCollegeName] = useState(
-    currentUser?.collegeName || "Your College Name"
-  );
-  const [collegePhotoUrl, setCollegePhotoUrl] = useState(
-    currentUser?.profilePhotoUrl || ""
-  );
-  const [profileSaving, setProfileSaving] = useState(false);
-  const [profileMsg, setProfileMsg] = useState<string | null>(null);
-  const [profileErr, setProfileErr] = useState<string | null>(null);
-
   const [showGenModal, setShowGenModal] = useState(false);
   const [genType, setGenType] = useState<"student" | "faculty">("student");
   const [expiryHours, setExpiryHours] = useState<number>(24);
@@ -404,11 +393,6 @@ const AdminDashboard: React.FC = () => {
     debouncedSearch,
     activeMetricModal,
   ]);
-
-  useEffect(() => {
-    setCollegeName(currentUser?.collegeName || "Your College Name");
-    setCollegePhotoUrl(currentUser?.profilePhotoUrl || "");
-  }, [currentUser?.collegeName, currentUser?.profilePhotoUrl]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -844,38 +828,6 @@ const AdminDashboard: React.FC = () => {
     }
   };
 
-  const handleSaveProfile = async () => {
-    setProfileErr(null);
-    setProfileMsg(null);
-    setProfileSaving(true);
-
-    try {
-      const res: any = await apiClient.updateAdminProfile({
-        collegeName,
-        profilePhotoUrl: collegePhotoUrl || null,
-      });
-
-      if (!res?.ok) {
-        setProfileErr(res?.error || "Failed to save profile.");
-        return;
-      }
-
-      const nextCollege = String(res?.admin?.collegeName || collegeName || "").trim();
-      const nextPhoto = String(res?.admin?.profilePhotoUrl || "").trim();
-      setCollegeName(nextCollege);
-      setCollegePhotoUrl(nextPhoto);
-      updateCurrentUser({
-        collegeName: nextCollege,
-        profilePhotoUrl: nextPhoto || null,
-      });
-      setProfileMsg("Profile updated.");
-    } catch (err: any) {
-      setProfileErr(err?.message || "Failed to save profile.");
-    } finally {
-      setProfileSaving(false);
-    }
-  };
-
   const openStudentAnalytics = async (student: any) => {
     setStudentAnalyticsOpen(true);
     setStudentAnalyticsLoading(true);
@@ -1010,8 +962,9 @@ const AdminDashboard: React.FC = () => {
       <div className="lg:col-span-4">
         <CollegeHeader
           className="surface-card"
-          collegeName={collegeName}
-          profilePhotoUrl={collegePhotoUrl}
+          collegeName={currentUser?.collegeName}
+          profilePhotoUrl={currentUser?.profilePhotoUrl}
+          profileMenuPhotoUrl={currentUser?.profilePhotoUrl}
           title="Admin Dashboard"
           subtitle="Manage users, departments, subjects, and registration access."
           eyebrow="Admin Portal"

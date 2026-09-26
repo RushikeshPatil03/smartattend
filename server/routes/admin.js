@@ -5,6 +5,12 @@ const crypto = require("crypto");
 
 const { getSupabaseClient } = require("../config/supabase");
 const adminAuth = require("../middleware/adminAuth");
+const {
+  uploadInstitutionLogo,
+  deleteInstitutionLogo,
+  extractStoragePath,
+} = require("../services/institutionLogoService");
+const { setAdminCollegeCache } = require("./auth");
 
 function sanitizePositiveInt(value, fallback, min = 1, max = 1000) {
   const parsed = Number(value);
@@ -118,41 +124,120 @@ router.post("/create-admin", async (req, res) => {
 });
 
 // ------------------------------------------------------
+// 1.4) UPLOAD INSTITUTION LOGO (ADMIN ONLY)
+// POST /api/admin/profile/logo
+// ------------------------------------------------------
+router.post("/profile/logo", adminAuth, async (req, res) => {
+  try {
+    const adminId = req.userId;
+    const { image } = req.body || {};
+
+    if (!image) {
+      return res.status(400).json({ ok: false, error: "Please select an image file to upload." });
+    }
+
+    const uploadResult = await uploadInstitutionLogo({
+      adminId,
+      imageDataUrl: image,
+    });
+
+    if (!uploadResult.ok) {
+      return res.status(400).json({ ok: false, error: uploadResult.error });
+    }
+
+    return res.json({
+      ok: true,
+      url: uploadResult.url,
+      storagePath: uploadResult.storagePath,
+    });
+  } catch (err) {
+    console.error("upload admin logo error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to upload logo." });
+  }
+});
+
+// ------------------------------------------------------
 // 1.5) UPDATE ADMIN PROFILE (ADMIN ONLY)
 // PUT /api/admin/profile
 // ------------------------------------------------------
 router.put("/profile", adminAuth, async (req, res) => {
-  try {
-    const { collegeName, profilePhotoUrl } = req.body || {};
-    const adminId = req.userId;
-    const supabase = getSupabaseClient();
-    if (!supabase) {
-      return res.status(503).json({ ok: false, error: "Database unavailable" });
+  const { collegeName, profilePhotoUrl, newStoragePath } = req.body || {};
+  const adminId = req.userId;
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    if (newStoragePath) {
+      await deleteInstitutionLogo(newStoragePath, adminId);
     }
+    return res.status(503).json({ ok: false, error: "Database unavailable" });
+  }
 
-    const updates = { updated_at: new Date().toISOString() };
-    if (typeof collegeName === "string") {
-      const trimmed = collegeName.trim();
-      if (!trimmed) {
-        return res.status(400).json({ ok: false, error: "College name cannot be empty" });
-      }
-      updates.college_name = trimmed;
+  const updates = { updated_at: new Date().toISOString() };
+
+  // Validate collegeName
+  if (collegeName !== undefined) {
+    if (typeof collegeName !== "string") {
+      if (newStoragePath) await deleteInstitutionLogo(newStoragePath, adminId);
+      return res.status(400).json({ ok: false, error: "College name must be a string." });
     }
-    if (typeof profilePhotoUrl === "string") {
+    const trimmedName = collegeName.trim();
+    if (!trimmedName) {
+      if (newStoragePath) await deleteInstitutionLogo(newStoragePath, adminId);
+      return res.status(400).json({ ok: false, error: "College name cannot be empty." });
+    }
+    if (trimmedName.length > 255) {
+      if (newStoragePath) await deleteInstitutionLogo(newStoragePath, adminId);
+      return res.status(400).json({ ok: false, error: "College name cannot exceed 255 characters." });
+    }
+    updates.college_name = trimmedName;
+  }
+
+  // Validate profilePhotoUrl
+  if (profilePhotoUrl !== undefined) {
+    if (profilePhotoUrl === null || profilePhotoUrl === "") {
+      updates.profile_photo_url = null;
+    } else if (typeof profilePhotoUrl === "string") {
       const cleanPhoto = profilePhotoUrl.trim();
-      if (cleanPhoto) {
-        const isDataUrl = /^data:image\/(png|jpeg|jpg|webp);base64,/i.test(cleanPhoto);
-        const isHttp = /^https?:\/\//i.test(cleanPhoto);
-        if (!isDataUrl && !isHttp) {
-          return res.status(400).json({ ok: false, error: "Invalid profile photo format. Must be PNG, JPEG, or WebP." });
+      if (!cleanPhoto) {
+        updates.profile_photo_url = null;
+      } else {
+        // Explicitly forbid new raw Base64 data URLs in PostgreSQL
+        if (/^data:image\//i.test(cleanPhoto)) {
+          if (newStoragePath) await deleteInstitutionLogo(newStoragePath, adminId);
+          return res.status(400).json({
+            ok: false,
+            error: "Raw Base64 images are not supported in profile. Please upload an image file.",
+          });
         }
-        if (cleanPhoto.length > 120000) {
-          return res.status(400).json({ ok: false, error: "Profile photo exceeds size limit (~90KB compressed / 120KB payload)." });
+        // Accept valid HTTP or HTTPS URLs
+        if (!/^https?:\/\//i.test(cleanPhoto)) {
+          if (newStoragePath) await deleteInstitutionLogo(newStoragePath, adminId);
+          return res.status(400).json({
+            ok: false,
+            error: "Invalid logo URL format. Must be a valid HTTP or HTTPS URL.",
+          });
         }
+        updates.profile_photo_url = cleanPhoto;
       }
-      updates.profile_photo_url = cleanPhoto || null;
+    } else {
+      if (newStoragePath) await deleteInstitutionLogo(newStoragePath, adminId);
+      return res.status(400).json({ ok: false, error: "Invalid profile photo URL." });
     }
+  }
 
+  // Fetch current admin profile before saving (to protect previous logo)
+  let currentAdmin = null;
+  try {
+    const { data } = await supabase
+      .from("admins")
+      .select("college_name, profile_photo_url")
+      .eq("id", adminId)
+      .single();
+    currentAdmin = data;
+  } catch (fetchErr) {
+    console.warn("Could not pre-fetch current admin profile:", fetchErr?.message || fetchErr);
+  }
+
+  try {
     const { data: updated, error } = await supabase
       .from("admins")
       .update(updates)
@@ -161,15 +246,44 @@ router.put("/profile", adminAuth, async (req, res) => {
       .single();
 
     if (error || !updated) {
+      // ATOMICITY: Clean up newly uploaded storage object if DB update fails!
+      if (newStoragePath) {
+        await deleteInstitutionLogo(newStoragePath, adminId);
+      }
       throw error || new Error("Failed to update profile");
     }
 
+    // Success! Handle old logo cleanup if it was replaced or removed
+    if (
+      currentAdmin?.profile_photo_url &&
+      updates.profile_photo_url !== undefined &&
+      currentAdmin.profile_photo_url !== updates.profile_photo_url
+    ) {
+      const oldStoragePath = extractStoragePath(currentAdmin.profile_photo_url, adminId);
+      if (oldStoragePath && oldStoragePath !== newStoragePath) {
+        // Never delete until replacement was fully saved (which just succeeded above)
+        await deleteInstitutionLogo(oldStoragePath, adminId);
+      }
+    }
+
+    // Sync college_name to students created by this admin
     if (updates.college_name) {
-      await supabase
-        .from("students")
-        .update({ college_name: updates.college_name })
-        .eq("created_by_admin", adminId)
-        .catch(() => undefined);
+      try {
+        await supabase
+          .from("students")
+          .update({ college_name: updates.college_name })
+          .eq("created_by_admin", adminId);
+      } catch (syncErr) {
+        console.warn("Could not sync college_name to students:", syncErr?.message || syncErr);
+      }
+    }
+
+    // Synchronize auth college cache so login/me/refresh reflect change immediately
+    if (setAdminCollegeCache) {
+      setAdminCollegeCache(adminId, {
+        college_name: updated.college_name,
+        profile_photo_url: updated.profile_photo_url,
+      });
     }
 
     return res.json({
@@ -184,8 +298,11 @@ router.put("/profile", adminAuth, async (req, res) => {
       },
     });
   } catch (err) {
+    if (newStoragePath) {
+      await deleteInstitutionLogo(newStoragePath, adminId).catch(() => undefined);
+    }
     console.error("update admin profile error:", err);
-    return res.status(500).json({ ok: false, error: "Server error" });
+    return res.status(500).json({ ok: false, error: err.message || "Server error" });
   }
 });
 
@@ -223,7 +340,7 @@ router.post("/generate-registration-link", adminAuth, async (req, res) => {
         uses_count: 0,
         is_active: true,
       })
-      .select("*")
+      .select("id, token, type, admin_id, college_name, expires_at, max_uses, uses_count, is_active, created_at")
       .single();
 
     if (error || !record) {
@@ -621,7 +738,7 @@ router.get("/departments", adminAuth, async (req, res) => {
 
     const { data: list, error } = await supabase
       .from("departments")
-      .select("*")
+      .select("id, name, code, created_by_admin, created_at")
       .eq("created_by_admin", req.userId)
       .order("name", { ascending: true });
 
@@ -667,7 +784,7 @@ router.post("/departments", adminAuth, async (req, res) => {
         code,
         created_by_admin: req.userId,
       })
-      .select("*")
+      .select("id, name, code, created_by_admin, created_at")
       .single();
 
     if (error || !dept) throw error || new Error("Failed to create department");
@@ -707,7 +824,7 @@ router.get("/subjects", adminAuth, async (req, res) => {
 
     const { data: rawSubjects, error } = await supabase
       .from("subjects")
-      .select("*")
+      .select("id, name, code, created_by_admin, departments, allotted_faculties, year, semester, created_at")
       .eq("created_by_admin", req.userId)
       .order("name", { ascending: true });
 
@@ -766,7 +883,7 @@ router.post("/subjects", adminAuth, async (req, res) => {
         departments: deps,
         created_by_admin: req.userId,
       })
-      .select("*")
+      .select("id, name, code, created_by_admin, departments, allotted_faculties, year, semester, created_at")
       .single();
 
     if (error || !subj) throw error || new Error("Failed to create subject");

@@ -42,6 +42,18 @@ async function expireIfInactive(session) {
       .single();
 
     if (data) {
+      try {
+        const channel = supabase.channel(`session:${sessionId}`);
+        channel.send({
+          type: "broadcast",
+          event: "SESSION_ENDED",
+          payload: { sessionId, reason: "inactivity_expired" },
+        }).catch(() => {});
+        supabase.removeChannel(channel).catch(() => {});
+      } catch {
+        // Ignored
+      }
+
       return {
         ...data,
         _id: data.id,

@@ -160,7 +160,9 @@ const CollegeHeader: React.FC<CollegeHeaderProps> = ({
               roleLabel={roleLabel}
               onLogout={onLogout}
               photoUrl={
-                focusCollegeBrand
+                normalizedRole === "ADMIN"
+                  ? profilePhotoUrl ?? profileMenuPhotoUrl ?? user?.profilePhotoUrl
+                  : focusCollegeBrand
                   ? profileMenuPhotoUrl
                   : profileMenuPhotoUrl ?? profilePhotoUrl
               }

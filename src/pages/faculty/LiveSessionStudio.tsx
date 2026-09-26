@@ -658,14 +658,16 @@ const IsolatedRotatingQrEngine: React.FC<IsolatedRotatingQrEngineProps> = React.
 
   useEffect(() => {
     if (!isActive || !sessionId) return;
+    // Infrequent safety fallback check (every 180s) that yields to Supabase Realtime SESSION_ENDED push
     const interval = setInterval(async () => {
+      if (typeof document !== "undefined" && document.hidden) return;
       try {
         const res: any = await apiClient.getSessionStatus(sessionId);
         if (res?.ok && !res.isActive) {
           onSessionExpired?.();
         }
       } catch {}
-    }, 60_000);
+    }, 180_000);
     return () => clearInterval(interval);
   }, [sessionId, isActive, onSessionExpired]);
 

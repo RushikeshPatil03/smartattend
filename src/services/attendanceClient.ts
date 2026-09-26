@@ -1,5 +1,6 @@
 // src/services/attendanceClient.ts
 import apiClient from "./apiClient";
+import logger from "../utils/logger";
 
 let markInFlightKey: string | null = null;
 let markInFlightPromise: Promise<any> | null = null;
@@ -261,7 +262,7 @@ export async function markAttendanceTwoStep(
     const result = await markInFlightPromise;
     return result;
   } catch (err: any) {
-    console.error("markAttendanceTwoStep error", err);
+    logger.error("markAttendanceTwoStep error", err);
     return { ok: false, error: err?.message || "Network error" };
   } finally {
     markInFlightKey = null;
@@ -309,7 +310,7 @@ export async function fetchAttendance(filters: Record<string, any> = {}) {
     const qs = new URLSearchParams(filters).toString();
     return await apiClient.get(`/api/attendance?${qs}`);
   } catch (err: any) {
-    console.error("fetchAttendance error", err);
+    logger.error("fetchAttendance error", err);
     return { ok: false, error: err?.message || "Network error" };
   }
 }

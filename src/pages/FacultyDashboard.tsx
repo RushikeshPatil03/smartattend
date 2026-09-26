@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import apiClient from "../services/apiClient";
 import CollegeHeader from "../components/CollegeHeader";
-import { subscribeToSessionAttendance } from "../services/supabaseClient";
+import { getSupabase, subscribeToSessionAttendance } from "../services/supabaseClient";
 
 // Modular Sub-Components
 import {
@@ -135,6 +135,7 @@ const FacultyDashboard: React.FC = () => {
   const [mobileLocateStatus, setMobileLocateStatus] = useState("");
   const [mobileLocateExpiresAt, setMobileLocateExpiresAt] = useState<number | null>(null);
   const mobileLocatePollRef = useRef<number | null>(null);
+  const mobileLocateChannelRef = useRef<any>(null);
 
   // Live Session & Attendance States
   const [activeSessionSecretKey, setActiveSessionSecretKey] = useState<string | null>(null);
@@ -441,12 +442,22 @@ const FacultyDashboard: React.FC = () => {
     };
   }, [createSessionLocal]);
 
-  // Clean Mobile Location Polling on Unmount
+  // Clean Mobile Location Polling & Realtime on Unmount
   useEffect(() => {
     return () => {
       if (mobileLocatePollRef.current) {
         window.clearInterval(mobileLocatePollRef.current);
         mobileLocatePollRef.current = null;
+      }
+      if (mobileLocateChannelRef.current) {
+        try {
+          const client = getSupabase();
+          mobileLocateChannelRef.current.unsubscribe();
+          client.removeChannel(mobileLocateChannelRef.current);
+        } catch {
+          // Ignored
+        }
+        mobileLocateChannelRef.current = null;
       }
     };
   }, []);
@@ -616,6 +627,16 @@ const FacultyDashboard: React.FC = () => {
       window.clearInterval(mobileLocatePollRef.current);
       mobileLocatePollRef.current = null;
     }
+    if (mobileLocateChannelRef.current) {
+      try {
+        const client = getSupabase();
+        mobileLocateChannelRef.current.unsubscribe();
+        client.removeChannel(mobileLocateChannelRef.current);
+      } catch {
+        // Ignored
+      }
+      mobileLocateChannelRef.current = null;
+    }
   }, []);
 
   const closeMobileLocate = useCallback(() => {
@@ -647,28 +668,9 @@ const FacultyDashboard: React.FC = () => {
     setMobileLocateStatus("Scan this QR from a mobile phone to send live GPS.");
     setMobileLocateLoading(false);
 
-    const poll = async () => {
-      const capture: any = await apiClient.getMobileLocationCapture(
-        token,
-        facultyId || undefined
-      );
-      if (!capture?.ok) {
-        setMobileLocateStatus(
-          capture?.error || "Mobile location request expired."
-        );
-        stopMobileLocatePolling();
-        return;
-      }
-      const loc = capture.location || capture.coords;
-      if (
-        (capture.status === "captured" || (capture?.ok && loc)) &&
-        loc?.lat != null &&
-        loc?.lng != null
-      ) {
-        if (mobileLocatePollRef.current) {
-          window.clearInterval(mobileLocatePollRef.current);
-          mobileLocatePollRef.current = null;
-        }
+    const applyLocationCapture = (capture: any) => {
+      const loc = capture?.location || capture?.coords;
+      if (loc?.lat != null && loc?.lng != null) {
         const nextLat = Number(loc.lat);
         const nextLng = Number(loc.lng);
         setLocationState({ lat: nextLat, lng: nextLng });
@@ -686,11 +688,57 @@ const FacultyDashboard: React.FC = () => {
           }.`
         );
         stopMobileLocatePolling();
+        return true;
+      }
+      return false;
+    };
+
+    // 1. Subscribe to Supabase Realtime channel for zero-latency push from mobile phone
+    try {
+      const client = getSupabase();
+      const channel = client.channel(`session:capture:${token}`, {
+        config: { broadcast: { self: false } },
+      });
+
+      channel
+        .on("broadcast", { event: "LOCATION_CAPTURED" }, (response: any) => {
+          if (response?.payload) {
+            applyLocationCapture(response.payload);
+          }
+        })
+        .subscribe();
+
+      mobileLocateChannelRef.current = channel;
+    } catch {
+      // Ignored: fallback poll handles capture if Realtime connection is offline
+    }
+
+    // 2. Infrequent safety fallback check (every 12s, max 8 attempts) to eliminate request hammering
+    let attempts = 0;
+    const maxAttempts = 8;
+    const fallbackPoll = async () => {
+      attempts++;
+      if (attempts > maxAttempts) {
+        stopMobileLocatePolling();
+        return;
+      }
+      const capture: any = await apiClient.getMobileLocationCapture(
+        token,
+        facultyId || undefined
+      );
+      if (!capture?.ok) {
+        setMobileLocateStatus(
+          capture?.error || "Mobile location request expired."
+        );
+        stopMobileLocatePolling();
+        return;
+      }
+      if (capture.status === "captured" || capture?.coords) {
+        applyLocationCapture(capture);
       }
     };
 
-    await poll();
-    mobileLocatePollRef.current = window.setInterval(poll, 6000);
+    mobileLocatePollRef.current = window.setInterval(fallbackPoll, 12000);
   }, [facultyId, stopMobileLocatePolling]);
 
   // Start Activity Session Handler
@@ -1654,6 +1702,43 @@ const FacultyDashboard: React.FC = () => {
             studentList = Array.from(stuMap.values());
           }
 
+          // Index immutable session roster snapshots if available
+          const rawSnapshots = Array.isArray(res.sessionRosterSnapshots) ? res.sessionRosterSnapshots : [];
+          const sessionSnapshotMap = new Map<string, Set<string>>();
+          const sessionsWithSnapshots = new Set<string>();
+
+          rawSnapshots.forEach((sn: any) => {
+            const sid = String(sn.session_id || sn.sessionId || "");
+            const usn = String(sn.enrollment_no || sn.enrollmentNo || "").trim().toUpperCase();
+            if (sid) {
+              sessionsWithSnapshots.add(sid);
+              if (usn) {
+                if (!sessionSnapshotMap.has(sid)) sessionSnapshotMap.set(sid, new Set());
+                sessionSnapshotMap.get(sid)!.add(usn);
+              }
+            }
+          });
+
+          // Ensure students preserved in snapshots are never dropped from studentList
+          if (rawSnapshots.length > 0) {
+            const knownUsns = new Set(studentList.map((s: any) => String(s.enrollmentNo || s.enrollment_no || "").trim().toUpperCase()));
+            rawSnapshots.forEach((sn: any) => {
+              const usn = String(sn.enrollment_no || sn.enrollmentNo || "").trim().toUpperCase();
+              if (usn && !knownUsns.has(usn)) {
+                knownUsns.add(usn);
+                studentList.push({
+                  id: sn.student_id || `snap_${usn}`,
+                  name: sn.student_name || usn,
+                  enrollmentNo: usn,
+                  enrollment_no: usn,
+                  email: sn.student_email || "",
+                  batchId: sn.batch_id || null,
+                  batchName: sn.batch_name || null,
+                });
+              }
+            });
+          }
+
           // 1. If viewing a specific batch:
           // Strict roster isolation: display ONLY enrolled batch students
           // Session continuity: display full-class sessions + this batch's sessions
@@ -1776,9 +1861,14 @@ const FacultyDashboard: React.FC = () => {
               const attRec: Record<string, "P" | "A" | "—"> = {};
               for (let i = 0; i < parsedCols.length; i++) {
                 const { colStr, colKey, batchId } = parsedCols[i];
-                const isEntireClass = !batchId || batchId === "null" || batchId === "undefined" || batchId === "";
-                const isStudentInBatch = Boolean(batchId && stuBatchSet.has(String(batchId)));
-                const isEligible = isEntireClass || isStudentInBatch || Boolean(activeBatchId);
+                let isEligible = false;
+                if (sessionsWithSnapshots.has(colKey)) {
+                  isEligible = Boolean(sessionSnapshotMap.get(colKey)?.has(eno)) || presentSet.has(`${eno}|${colKey}`);
+                } else {
+                  const isEntireClass = !batchId || batchId === "null" || batchId === "undefined" || batchId === "";
+                  const isStudentInBatch = Boolean(batchId && stuBatchSet.has(String(batchId)));
+                  isEligible = isEntireClass || isStudentInBatch || Boolean(activeBatchId);
+                }
 
                 if (!isEligible) {
                   attRec[colStr] = "—";

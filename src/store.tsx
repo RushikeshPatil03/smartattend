@@ -365,7 +365,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
 
     return inflightSubjectsPromise;
-  }, [subjects]);
+  }, [subjects.length]);
 
   const fetchUsers = useCallback(async (signal?: AbortSignal) => {
     if (!apiClient.token || signal?.aborted) return [];

@@ -39,7 +39,7 @@ router.post("/", adminAuth, async (req, res) => {
         code,
         created_by_admin: req.userId,
       })
-      .select("*")
+      .select("id, name, code, created_by_admin, created_at")
       .single();
 
     if (error || !dept) {
@@ -76,7 +76,7 @@ router.get("/", authMiddleware, async (req, res) => {
 
     const { data: departments, error } = await supabase
       .from("departments")
-      .select("*")
+      .select("id, name, code, created_by_admin, created_at")
       .eq("created_by_admin", String(adminId))
       .order("name", { ascending: true });
 

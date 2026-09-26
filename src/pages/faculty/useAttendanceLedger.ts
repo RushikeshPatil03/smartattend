@@ -9,6 +9,7 @@ export interface UseAttendanceLedgerParams {
   selectedBatchId?: string;
   searchQuery?: string;
   filterAtRisk?: boolean;
+  sessionRosterSnapshots?: any[];
 }
 
 /**
@@ -24,10 +25,28 @@ export function useAttendanceLedger({
   selectedBatchId = "ALL",
   searchQuery = "",
   filterAtRisk = false,
+  sessionRosterSnapshots,
 }: UseAttendanceLedgerParams) {
   return useMemo(() => {
     const isAll = !selectedBatchId || selectedBatchId === "ALL" || selectedBatchId === "all";
     const batchMap = new Map((batches || []).map((b: any) => [String(b.id), b]));
+
+    // Index immutable session roster snapshots if available
+    const rawSnapshots = Array.isArray(sessionRosterSnapshots) ? sessionRosterSnapshots : [];
+    const sessionSnapshotMap = new Map<string, Set<string>>();
+    const sessionsWithSnapshots = new Set<string>();
+
+    rawSnapshots.forEach((sn: any) => {
+      const sid = String(sn.session_id || sn.sessionId || "");
+      const usn = String(sn.enrollment_no || sn.enrollmentNo || "").trim().toUpperCase();
+      if (sid) {
+        sessionsWithSnapshots.add(sid);
+        if (usn) {
+          if (!sessionSnapshotMap.has(sid)) sessionSnapshotMap.set(sid, new Set());
+          sessionSnapshotMap.get(sid)!.add(usn);
+        }
+      }
+    });
 
     // 1. Build map of student USN -> Set of batch IDs they belong to
     const studentBatches = new Map<string, Set<string>>();
@@ -110,9 +129,14 @@ export function useAttendanceLedger({
 
       for (let i = 0; i < parsedCols.length; i++) {
         const { colStr, sessionId, batchId } = parsedCols[i];
-        const isEntireClass = !batchId || batchId === "null" || batchId === "undefined" || batchId === "";
-        const isStudentInBatch = Boolean(batchId && stuBatchSet.has(String(batchId)));
-        const isEligible = isEntireClass || isStudentInBatch || !isAll;
+        let isEligible = false;
+        if (sessionsWithSnapshots.has(sessionId)) {
+          isEligible = Boolean(sessionSnapshotMap.get(sessionId)?.has(eno)) || presentSet.has(`${eno}|${sessionId}`);
+        } else {
+          const isEntireClass = !batchId || batchId === "null" || batchId === "undefined" || batchId === "";
+          const isStudentInBatch = Boolean(batchId && stuBatchSet.has(String(batchId)));
+          isEligible = isEntireClass || isStudentInBatch || !isAll;
+        }
 
         if (!isEligible) {
           attRec[colStr] = "—";

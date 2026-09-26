@@ -28,7 +28,7 @@ module.exports = async function adminAuth(req, res, next) {
 
     const { data: admin } = await supabase
       .from("admins")
-      .select("*")
+      .select("id, name, email, college_name, profile_photo_url, created_at")
       .eq("id", String(decoded.id))
       .single();
 

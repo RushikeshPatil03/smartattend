@@ -35,17 +35,35 @@ module.exports = async function authMiddleware(req, res, next) {
 
     switch (decoded.role) {
       case "ADMIN": {
-        const { data } = await supabase.from("admins").select("*").eq("id", userId).single();
+        const { data } = await supabase
+          .from("admins")
+          .select("id, name, email, college_name, profile_photo_url, created_at")
+          .eq("id", userId)
+          .single();
         user = data;
         break;
       }
       case "FACULTY": {
-        const { data } = await supabase.from("faculties").select("*").eq("id", userId).single();
+        const { data } = await supabase
+          .from("faculties")
+          .select(
+            "id, name, email, department, created_by_admin, " +
+            "profile_photo_url, device_fingerprint, device_lock_enabled, allotted_subjects, created_at"
+          )
+          .eq("id", userId)
+          .single();
         user = data;
         break;
       }
       case "STUDENT": {
-        const { data } = await supabase.from("students").select("*").eq("id", userId).single();
+        const { data } = await supabase
+          .from("students")
+          .select(
+            "id, name, email, enrollment_no, department, college_name, created_by_admin, " +
+            "profile_photo_url, device_fingerprint, year, semester, section, created_at"
+          )
+          .eq("id", userId)
+          .single();
         user = data;
         break;
       }
@@ -57,8 +75,29 @@ module.exports = async function authMiddleware(req, res, next) {
       return res.status(401).json({ ok: false, error: "User not found" });
     }
 
+    // Resolve college name/branding from creator admin if not on user record (e.g. faculties)
+    if (!user.college_name && user.created_by_admin) {
+      try {
+        const { data: adminProfile } = await supabase
+          .from("admins")
+          .select("college_name, profile_photo_url")
+          .eq("id", user.created_by_admin)
+          .single();
+        if (adminProfile) {
+          user.college_name = adminProfile.college_name || null;
+          if (!user.profile_photo_url) {
+            user.profile_photo_url = adminProfile.profile_photo_url || null;
+          }
+        }
+      } catch {
+        // Non-blocking
+      }
+    }
+
     // Map snake_case to camelCase & provide dual _id and id
     user._id = user.id;
+    user.departmentId = user.department || null;
+    user.department_id = user.department || null;
     user.createdByAdmin = user.created_by_admin || null;
     user.collegeName = user.college_name || null;
     user.profilePhotoUrl = user.profile_photo_url || null;
