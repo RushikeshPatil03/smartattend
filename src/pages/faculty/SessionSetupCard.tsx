@@ -35,6 +35,7 @@ export interface SessionFormState {
   year: string;
   sem: string;
   section: string;
+  selectedSections?: string[];
   subject: string;
   radius: string;
   locationState: { lat: number; lng: number } | null;
@@ -60,6 +61,7 @@ export interface SessionHandlers {
   setYear: (val: string) => void;
   setSem: (val: string) => void;
   setSection: (val: string) => void;
+  setSelectedSections?: (val: string[]) => void;
   setSubject: (val: string) => void;
   setRadius: (val: string) => void;
   setManualLat: (val: string) => void;
@@ -281,6 +283,75 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
     return `${activeBatchIds.length} Batches Selected`;
   }, [form.subject, loadingSubjectBatches, subjectBatches, activeBatchIds]);
 
+  // Multi-Section Selector State & Handlers
+  const [isSectionDropdownOpen, setIsSectionDropdownOpen] = useState(false);
+  const sectionDropdownRef = useRef<HTMLDivElement | null>(null);
+
+  // Close section dropdown on click outside
+  useEffect(() => {
+    if (!isSectionDropdownOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (sectionDropdownRef.current && !sectionDropdownRef.current.contains(e.target as Node)) {
+        setIsSectionDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [isSectionDropdownOpen]);
+
+  const selectedSections = useMemo(() => {
+    if (Array.isArray(form.selectedSections) && form.selectedSections.length > 0) {
+      return form.selectedSections.map((s) => s.trim().toUpperCase()).filter(Boolean);
+    }
+    const raw = String(form.section || "A").trim().toUpperCase();
+    if (!raw || raw === "ALL") return [...SECTION_OPTIONS];
+    const parsed = raw.split(/[,/&|+]/).map((s) => s.trim().toUpperCase()).filter(Boolean);
+    return parsed.length > 0 ? parsed : ["A"];
+  }, [form.section, form.selectedSections]);
+
+  const isAllSectionsSelected = selectedSections.length === SECTION_OPTIONS.length;
+
+  const toggleSection = (sec: string) => {
+    const s = sec.toUpperCase();
+    let next: string[];
+    if (selectedSections.includes(s)) {
+      if (selectedSections.length === 1) return; // Keep at least one section selected
+      next = selectedSections.filter((item) => item !== s);
+    } else {
+      next = [...selectedSections, s].sort();
+    }
+    const combinedStr = next.join(", ");
+    handlers.setSection(combinedStr);
+    if (handlers.setSelectedSections) {
+      handlers.setSelectedSections(next);
+    }
+    handlers.onResetConfirmedLocation();
+  };
+
+  const toggleAllSections = () => {
+    let next: string[];
+    if (isAllSectionsSelected) {
+      next = ["A"]; // Default back to Section A if unchecking all
+    } else {
+      next = [...SECTION_OPTIONS];
+    }
+    const combinedStr = next.join(", ");
+    handlers.setSection(combinedStr);
+    if (handlers.setSelectedSections) {
+      handlers.setSelectedSections(next);
+    }
+    handlers.onResetConfirmedLocation();
+  };
+
+  const sectionDisplayLabel = useMemo(() => {
+    if (isAllSectionsSelected) return "All Sections";
+    if (selectedSections.length === 1) return `Section ${selectedSections[0]}`;
+    if (selectedSections.length > 1) {
+      return `Combined (${selectedSections.join(" + ")})`;
+    }
+    return "Select Section";
+  }, [isAllSectionsSelected, selectedSections]);
+
   const isAcademicValid = Boolean(
     form.department &&
       form.subject &&
@@ -334,9 +405,14 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
                   String(form.section || "").trim().toUpperCase() &&
                 String(preset.subjectId) === String(form.subject);
 
-              // Formatted chip title, e.g., "CSE-4A • Advanced DB" or "CSE Sec A • DBMS"
+              // Formatted chip title, e.g., "CSE-4A • Advanced DB" or "CSE-4[A+B] • DBMS"
               const deptCode = preset.departmentCode || preset.departmentName?.slice(0, 4)?.toUpperCase() || "CLS";
-              const classChipLabel = `${deptCode}-${preset.year || ""}${preset.section || ""}`.trim();
+              const rawPresetSec = String(preset.section || "").trim().toUpperCase();
+              const isCombinedPreset = rawPresetSec.includes(",") || rawPresetSec.includes("+") || rawPresetSec.includes("/");
+              const formattedSecChip = isCombinedPreset
+                ? `[${rawPresetSec.split(/[,/&|+]/).map(s => s.trim()).filter(Boolean).join("+")}]`
+                : (rawPresetSec || "");
+              const classChipLabel = `${deptCode}-${preset.year || ""}${formattedSecChip}`.trim();
 
               return (
                 <div
@@ -374,6 +450,11 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
                         >
                           {preset.label}
                         </p>
+                        {isCombinedPreset && (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-black bg-teal-100 text-teal-800 border border-teal-200 shadow-2xs">
+                            Combined
+                          </span>
+                        )}
                         {isSelected && (
                           <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-600 px-1.5 py-0.5 text-[9px] font-extrabold text-white shadow-2xs">
                             <CheckCircle2 size={10} /> Active
@@ -704,27 +785,99 @@ export const SessionSetupCard: React.FC<SessionSetupCardProps> = React.memo(({
               </select>
             </div>
 
-            {/* Section */}
-            <div>
-              <label className="block h-5 text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center gap-1">
-                <Clock size={13} className="text-emerald-600 shrink-0" />
-                Section
+            {/* Section Multi-Select */}
+            <div className="relative" ref={sectionDropdownRef}>
+              <label className="block h-5 text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5 flex items-center justify-between">
+                <span className="flex items-center gap-1">
+                  <Clock size={13} className="text-emerald-600 shrink-0" />
+                  Section
+                </span>
+                {selectedSections.length > 1 && (
+                  <span className="text-[10px] font-bold text-teal-800 bg-teal-50 px-1.5 py-0.2 rounded-md border border-teal-200">
+                    Combined ({selectedSections.length})
+                  </span>
+                )}
               </label>
-              <select
-                className="w-full rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400"
-                value={form.section}
-                onChange={(e) => {
-                  handlers.setSection(e.target.value);
-                  handlers.onResetConfirmedLocation();
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (form.department) {
+                    setIsSectionDropdownOpen((prev) => !prev);
+                  }
                 }}
                 disabled={!form.department}
+                className="w-full flex items-center justify-between rounded-2xl border border-slate-200/90 bg-white px-3.5 py-3 text-xs font-semibold text-slate-800 transition-all duration-200 focus:border-emerald-500/90 focus:bg-white focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs hover:border-slate-300 disabled:bg-slate-100/70 disabled:text-slate-400 cursor-pointer disabled:cursor-not-allowed text-left"
               >
-                {SECTION_OPTIONS.map((sec) => (
-                  <option key={sec} value={sec}>
-                    Section {sec}
-                  </option>
-                ))}
-              </select>
+                <span className="truncate">{sectionDisplayLabel}</span>
+                <ChevronDown
+                  size={15}
+                  className={`text-slate-400 shrink-0 ml-1 transition-transform duration-200 ${
+                    isSectionDropdownOpen ? "rotate-180" : ""
+                  }`}
+                />
+              </button>
+
+              {/* Floating Multi-Section Panel */}
+              <AnimatePresence>
+                {isSectionDropdownOpen && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -4, scale: 0.98 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -4, scale: 0.98 }}
+                    transition={{ duration: 0.15 }}
+                    className="absolute left-0 right-0 z-50 mt-1.5 max-h-64 overflow-y-auto rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-xl backdrop-blur-xl space-y-1 min-w-[200px]"
+                  >
+                    {/* All Sections Option */}
+                    <button
+                      type="button"
+                      onClick={toggleAllSections}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-800 hover:bg-emerald-50/70 hover:text-emerald-900 transition cursor-pointer text-left"
+                    >
+                      {isAllSectionsSelected ? (
+                        <CheckSquare size={16} className="text-emerald-600 shrink-0" />
+                      ) : (
+                        <Square size={16} className="text-slate-400 shrink-0" />
+                      )}
+                      <span className="flex-1">All Sections</span>
+                      <span className="text-[10px] font-semibold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
+                        {SECTION_OPTIONS.length} Sec
+                      </span>
+                    </button>
+
+                    <div className="border-t border-slate-100 my-1" />
+
+                    {/* Individual Sections */}
+                    {SECTION_OPTIONS.map((sec) => {
+                      const isSelected = selectedSections.includes(sec);
+                      return (
+                        <button
+                          key={sec}
+                          type="button"
+                          onClick={() => toggleSection(sec)}
+                          className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer text-left ${
+                            isSelected
+                              ? "bg-emerald-50 text-emerald-900 font-bold"
+                              : "text-slate-700 hover:bg-slate-50"
+                          }`}
+                        >
+                          {isSelected ? (
+                            <CheckSquare size={16} className="text-emerald-600 shrink-0" />
+                          ) : (
+                            <Square size={16} className="text-slate-400 shrink-0" />
+                          )}
+                          <span className="flex-1">Section {sec}</span>
+                          {isSelected && (
+                            <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-100/60 px-2 py-0.5 rounded-full shrink-0">
+                              Selected
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
 
             {/* Subject */}

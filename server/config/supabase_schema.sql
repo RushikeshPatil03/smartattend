@@ -753,11 +753,14 @@ CREATE TABLE IF NOT EXISTS activities (
     semesters INT[] DEFAULT '{}',
     semester SMALLINT DEFAULT NULL,
     section VARCHAR(50) DEFAULT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE IF EXISTS activities ADD COLUMN IF NOT EXISTS years INT[] DEFAULT '{}';
 ALTER TABLE IF EXISTS activities ADD COLUMN IF NOT EXISTS semesters INT[] DEFAULT '{}';
+ALTER TABLE IF EXISTS activities ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
+CREATE INDEX IF NOT EXISTS idx_activities_faculty_active ON activities (faculty, is_active);
 
 CREATE TABLE IF NOT EXISTS activity_batches (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -827,6 +830,8 @@ CREATE TABLE IF NOT EXISTS session_roster_snapshots (
     category VARCHAR(50) DEFAULT 'REGULAR',
     subject_id UUID DEFAULT NULL,
     activity_id UUID DEFAULT NULL,
+    transferred_to_batch_id UUID REFERENCES subject_batches(id) ON DELETE SET NULL,
+    transfer_note TEXT DEFAULT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT uq_session_roster_snapshot UNIQUE (session_id, enrollment_no)
 );
@@ -837,6 +842,8 @@ CREATE INDEX IF NOT EXISTS idx_roster_snap_batch ON session_roster_snapshots(bat
 CREATE INDEX IF NOT EXISTS idx_roster_snap_subj ON session_roster_snapshots(subject_id);
 CREATE INDEX IF NOT EXISTS idx_roster_snap_act ON session_roster_snapshots(activity_id);
 CREATE INDEX IF NOT EXISTS idx_roster_snap_student_session ON session_roster_snapshots(student_id, session_id);
+CREATE INDEX IF NOT EXISTS idx_snapshots_student_subject ON session_roster_snapshots(subject_id, enrollment_no);
+CREATE INDEX IF NOT EXISTS idx_attendances_student_subject ON attendances(subject, student, timestamp DESC);
 
 -- 2.12 BATCH CONFIGURATION AUDITS TABLE
 CREATE TABLE IF NOT EXISTS batch_configuration_audits (

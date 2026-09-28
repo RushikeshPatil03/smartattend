@@ -1,5 +1,5 @@
 // src/pages/Register.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   GraduationCap,
@@ -69,10 +69,10 @@ const FloatingInput: React.FC<FloatingInputProps> = React.memo(({
   return (
     <div className="relative w-full group">
       <div
-        className={`relative flex items-center w-full rounded-2xl border transition-all duration-300 bg-white/80 backdrop-blur-md ${
+        className={`relative flex items-center w-full rounded-2xl border transition-colors duration-200 bg-white ${
           isFocused
-            ? "border-blue-500/90 bg-white ring-4 ring-blue-500/10 shadow-[0_8px_24px_-8px_rgba(59,130,246,0.25)]"
-            : "border-slate-200/90 hover:border-slate-300/90 hover:bg-white/95"
+            ? "border-blue-500/90 ring-4 ring-blue-500/10 shadow-[0_4px_16px_-4px_rgba(59,130,246,0.2)]"
+            : "border-slate-200/90 hover:border-slate-300/90"
         }`}
       >
         {/* Leading Icon */}
@@ -85,7 +85,7 @@ const FloatingInput: React.FC<FloatingInputProps> = React.memo(({
         </div>
 
         {/* Input & Floating Label */}
-        <div className="relative flex-1 py-3.5 pr-3">
+        <div className="relative flex-1 py-3 pr-3">
           <input
             {...props}
             type={isPassword ? (showPassword ? "text" : "password") : props.type}
@@ -99,16 +99,16 @@ const FloatingInput: React.FC<FloatingInputProps> = React.memo(({
               setIsFocused(false);
               props.onBlur?.(e);
             }}
-            className="w-full bg-transparent text-slate-900 text-sm font-medium focus:outline-none placeholder-transparent pt-3 pb-0"
+            className="w-full bg-transparent text-slate-900 text-base sm:text-sm font-medium focus:outline-none placeholder-transparent pt-3.5 pb-0"
             placeholder={label}
             id={props.id || label.toLowerCase().replace(/\s+/g, "-")}
           />
           <label
             htmlFor={props.id || label.toLowerCase().replace(/\s+/g, "-")}
-            className={`absolute left-0 pointer-events-none transition-all duration-200 select-none ${
+            className={`absolute left-0 pointer-events-none select-none origin-left transition-all duration-150 ${
               isFloating
-                ? "top-1.5 text-[11px] font-semibold tracking-wider uppercase text-blue-600"
-                : "top-3.5 text-sm font-normal text-slate-500"
+                ? "top-1 text-[10px] font-bold tracking-wider uppercase text-blue-600"
+                : "top-3.5 text-base sm:text-sm font-normal text-slate-500"
             }`}
           >
             {label}
@@ -134,15 +134,25 @@ const FloatingInput: React.FC<FloatingInputProps> = React.memo(({
 const Register: React.FC = () => {
   const { navigateTo } = useApp();
 
-  const params = new URLSearchParams(window.location.search);
-  const urlToken = params.get("token")?.trim() || "";
-  const urlRole = params.get("role")?.trim().toLowerCase() || "";
+  const searchParams = useMemo(() => {
+    return typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
+  }, []);
+  const urlToken = searchParams.get("token")?.trim() || "";
+  const urlRole = searchParams.get("role")?.trim().toLowerCase() || "";
+
+  const initialRole: RoleType =
+    urlRole === "admin"
+      ? "admin"
+      : urlRole === "student" || urlRole === "faculty"
+      ? (urlRole as RoleType)
+      : null;
 
   const [departments, setDepartments] = useState<Department[]>([]);
-  const [roleType, setRoleType] = useState<RoleType>(null);
-  const [token, setToken] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [roleType, setRoleType] = useState<RoleType>(initialRole);
+  const [token, setToken] = useState<string | null>(urlToken || null);
+  const [loading, setLoading] = useState<boolean>(Boolean(initialRole && initialRole !== "admin" && urlToken));
   const [submitting, setSubmitting] = useState(false);
+  const inFlightSubmitRef = useRef(false);
 
   const [name, setName] = useState("");
   const [collegeName, setCollegeName] = useState("");
@@ -155,7 +165,11 @@ const Register: React.FC = () => {
   const [departmentId, setDepartmentId] = useState("");
   const [profilePhotoUrl, setProfilePhotoUrl] = useState("");
 
-  const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkError, setLinkError] = useState<string | null>(() => {
+    if (urlRole === "admin") return null;
+    if (urlToken && (urlRole === "student" || urlRole === "faculty")) return null;
+    return "Invalid or incomplete registration link. Please ask your administrator for a fresh registration link.";
+  });
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [registrationMeta, setRegistrationMeta] = useState<RegistrationMeta | null>(null);
@@ -174,19 +188,11 @@ const Register: React.FC = () => {
       return;
     }
 
-    setLinkError("Invalid or incomplete registration link. Please ask your administrator for a fresh registration link.");
-    setLoading(false);
-  }, []);
-
-  // Only warm up models if roleType === "student" after 3000ms idle time
-  useEffect(() => {
-    if (roleType === "student") {
-      const timer = setTimeout(() => {
-        void import("../utils/faceApiLoader").then((m) => m.loadModelsIfNeeded());
-      }, 3000);
-      return () => clearTimeout(timer);
+    if (!urlRole && !urlToken) {
+      setLinkError("Invalid or incomplete registration link. Please ask your administrator for a fresh registration link.");
+      setLoading(false);
     }
-  }, [roleType]);
+  }, [urlRole, urlToken]);
 
   const fetchRegistrationContext = async (registrationToken: string) => {
     setLoading(true);
@@ -265,6 +271,8 @@ const Register: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (inFlightSubmitRef.current) return;
+    inFlightSubmitRef.current = true;
     setSubmitError(null);
     setSubmitting(true);
 
@@ -273,6 +281,7 @@ const Register: React.FC = () => {
         if (!name.trim() || !email.trim() || !password || !collegeName.trim()) {
           setSubmitError("All administrator fields are required.");
           setSubmitting(false);
+          inFlightSubmitRef.current = false;
           return;
         }
 
@@ -286,12 +295,14 @@ const Register: React.FC = () => {
         if (!res?.ok) {
           setSubmitError(res?.error || "Admin registration failed.");
           setSubmitting(false);
+          inFlightSubmitRef.current = false;
           return;
         }
       } else {
         if (!token) {
           setSubmitError("Invalid or missing registration token.");
           setSubmitting(false);
+          inFlightSubmitRef.current = false;
           return;
         }
 
@@ -312,6 +323,7 @@ const Register: React.FC = () => {
           ) {
             setSubmitError("All student fields including profile photo are required.");
             setSubmitting(false);
+            inFlightSubmitRef.current = false;
             return;
           }
 
@@ -337,6 +349,7 @@ const Register: React.FC = () => {
           if (!res?.ok) {
             setSubmitError(res?.error || "Student registration failed.");
             setSubmitting(false);
+            inFlightSubmitRef.current = false;
             return;
           }
         }
@@ -345,6 +358,7 @@ const Register: React.FC = () => {
           if (!name.trim() || !email.trim() || !password || !departmentId) {
             setSubmitError("All faculty fields are required.");
             setSubmitting(false);
+            inFlightSubmitRef.current = false;
             return;
           }
 
@@ -360,6 +374,7 @@ const Register: React.FC = () => {
           if (!res?.ok) {
             setSubmitError(res?.error || "Faculty registration failed.");
             setSubmitting(false);
+            inFlightSubmitRef.current = false;
             return;
           }
         }
@@ -371,18 +386,19 @@ const Register: React.FC = () => {
     } catch (err: any) {
       setSubmitError(err?.message || "A network error occurred. Please check your connection.");
     } finally {
+      inFlightSubmitRef.current = false;
       setSubmitting(false);
     }
   };
 
-  // --- Loading State (Matches Dark Aesthetic) ---
-  if (loading) {
+  // --- Loading State (Only if role is unknown and checking link) ---
+  if (!roleType && loading) {
     return (
       <div className="relative min-h-screen w-full overflow-x-hidden bg-[#070b14] text-slate-100 flex flex-col justify-center items-center px-4 selection:bg-blue-500 selection:text-white">
         <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-          <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[650px] h-[650px] rounded-full bg-[radial-gradient(circle,rgba(59,130,246,0.22)_0%,rgba(37,99,235,0.14)_45%,transparent_70%)] blur-3xl will-change-transform" />
+          <div className="absolute -top-28 left-1/2 -translate-x-1/2 w-[540px] h-[540px] rounded-full bg-[radial-gradient(circle,rgba(59,130,246,0.18)_0%,rgba(37,99,235,0.08)_45%,transparent_70%)]" />
         </div>
-        <div className="relative z-10 w-full max-w-md overflow-hidden rounded-[32px] border border-white/80 bg-white/95 p-8 shadow-[0_25px_70px_-20px_rgba(0,0,0,0.35)] backdrop-blur-2xl text-slate-800 text-center space-y-4">
+        <div className="relative z-10 w-full max-w-md overflow-hidden rounded-[32px] border border-white/80 bg-white/95 p-8 shadow-[0_20px_60px_-15px_rgba(0,0,0,0.3)] text-slate-800 text-center space-y-4">
           <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-50 text-blue-600 shadow-sm">
             <RefreshCw size={24} className="animate-spin" />
           </div>
@@ -398,12 +414,12 @@ const Register: React.FC = () => {
     return (
       <div className="relative min-h-screen w-full overflow-x-hidden bg-[#070b14] text-slate-100 flex flex-col justify-between selection:bg-blue-500 selection:text-white">
         <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-          <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[650px] h-[650px] rounded-full bg-[radial-gradient(circle,rgba(239,68,68,0.18)_0%,rgba(99,102,241,0.12)_45%,transparent_70%)] blur-3xl will-change-transform" />
+          <div className="absolute -top-28 left-1/2 -translate-x-1/2 w-[540px] h-[540px] rounded-full bg-[radial-gradient(circle,rgba(239,68,68,0.16)_0%,rgba(99,102,241,0.08)_45%,transparent_70%)]" />
         </div>
 
         <div className="relative z-10 mx-auto w-full max-w-md px-4 py-8 sm:px-6 flex-1 flex flex-col justify-center items-center">
           <div className="relative w-full">
-            <div className="relative overflow-hidden rounded-[32px] border border-white/80 bg-white/95 p-6 sm:p-8 shadow-[0_25px_70px_-20px_rgba(0,0,0,0.35)] backdrop-blur-2xl text-slate-800 text-center">
+            <div className="relative overflow-hidden rounded-[32px] border border-white/80 bg-white/95 p-6 sm:p-8 shadow-[0_20px_60px_-15px_rgba(0,0,0,0.3)] text-slate-800 text-center">
               <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-red-50 text-red-600 shadow-sm">
                 <Link2 size={24} />
               </div>
@@ -446,12 +462,12 @@ const Register: React.FC = () => {
     return (
       <div className="relative min-h-screen w-full overflow-x-hidden bg-[#070b14] text-slate-100 flex flex-col justify-between selection:bg-emerald-500 selection:text-white">
         <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-          <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[650px] h-[650px] rounded-full bg-[radial-gradient(circle,rgba(16,185,129,0.22)_0%,rgba(59,130,246,0.12)_45%,transparent_70%)] blur-3xl will-change-transform" />
+          <div className="absolute -top-28 left-1/2 -translate-x-1/2 w-[540px] h-[540px] rounded-full bg-[radial-gradient(circle,rgba(16,185,129,0.18)_0%,rgba(59,130,246,0.08)_45%,transparent_70%)]" />
         </div>
 
         <div className="relative z-10 mx-auto w-full max-w-md px-4 py-8 sm:px-6 flex-1 flex flex-col justify-center items-center">
           <div className="relative w-full">
-            <div className="relative overflow-hidden rounded-[32px] border border-white/80 bg-white/95 p-6 sm:p-8 shadow-[0_25px_70px_-20px_rgba(0,0,0,0.35)] backdrop-blur-2xl text-slate-800 text-center">
+            <div className="relative overflow-hidden rounded-[32px] border border-white/80 bg-white/95 p-6 sm:p-8 shadow-[0_20px_60px_-15px_rgba(0,0,0,0.3)] text-slate-800 text-center">
               <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600 shadow-sm">
                 <ShieldCheck size={28} />
               </div>
@@ -479,8 +495,8 @@ const Register: React.FC = () => {
     <div className="relative min-h-screen w-full overflow-x-hidden bg-[#070b14] text-slate-100 flex flex-col justify-between selection:bg-blue-500 selection:text-white">
       {/* Ambient Gradient Mesh Background (Hardware Accelerated) */}
       <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-        <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[650px] h-[650px] rounded-full bg-[radial-gradient(circle,rgba(59,130,246,0.22)_0%,rgba(37,99,235,0.14)_45%,transparent_70%)] blur-3xl will-change-transform" />
-        <div className="absolute -bottom-40 right-1/4 w-[600px] h-[600px] rounded-full bg-[radial-gradient(circle,rgba(168,85,247,0.18)_0%,rgba(59,130,246,0.10)_45%,transparent_70%)] blur-3xl will-change-transform" />
+        <div className="absolute -top-28 left-1/2 -translate-x-1/2 w-[540px] h-[540px] rounded-full bg-[radial-gradient(circle,rgba(59,130,246,0.18)_0%,rgba(37,99,235,0.08)_45%,transparent_70%)]" />
+        <div className="absolute -bottom-36 right-1/4 w-[480px] h-[480px] rounded-full bg-[radial-gradient(circle,rgba(168,85,247,0.14)_0%,rgba(59,130,246,0.06)_45%,transparent_70%)]" />
 
         {/* Subtle Geometric Grid Matrix */}
         <div
@@ -497,9 +513,9 @@ const Register: React.FC = () => {
         
         {/* Dynamic Top Brand Identity & System Header */}
         <motion.div
-          initial={{ opacity: 0, y: -16 }}
+          initial={{ opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ duration: 0.25, ease: "easeOut" }}
           className="flex flex-col items-center text-center mb-6 space-y-2"
         >
           {/* Logo Pill */}
@@ -526,23 +542,23 @@ const Register: React.FC = () => {
           </div>
         </motion.div>
 
-        {/* Elevated Glassmorphism Registration Card */}
+        {/* Elevated Registration Card */}
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ duration: 0.25, ease: "easeOut" }}
           className="relative w-full"
         >
           {/* Outer Card Ambient Glow */}
           <div
-            className="absolute -inset-1 rounded-[36px] opacity-70 blur-xl transition-all duration-500"
+            className="absolute -inset-1 rounded-[36px] opacity-60 blur-lg transition-all duration-300"
             style={{
               background: `linear-gradient(135deg, ${roleConfig.glowGradient}, transparent 70%)`,
             }}
           />
 
           {/* Elevated Card */}
-          <div className="relative overflow-hidden rounded-[32px] border border-white/80 bg-white/95 p-6 sm:p-8 shadow-[0_25px_70px_-20px_rgba(0,0,0,0.35)] backdrop-blur-2xl text-slate-800">
+          <div className="relative overflow-hidden rounded-[32px] border border-white/80 bg-white/95 p-6 sm:p-8 shadow-[0_20px_60px_-15px_rgba(0,0,0,0.3)] text-slate-800">
             
             {/* Centered Form Header */}
             <div className="text-center space-y-1.5 mb-6">
@@ -684,7 +700,7 @@ const Register: React.FC = () => {
               {/* Department Dropdown for Student & Faculty */}
               {(roleType === "student" || roleType === "faculty") && (
                 <div className="relative w-full group">
-                  <div className="relative flex items-center w-full rounded-2xl border border-slate-200/90 hover:border-slate-300/90 focus-within:border-blue-500/90 focus-within:bg-white focus-within:ring-4 focus-within:ring-blue-500/10 transition-all duration-300 bg-white/80 backdrop-blur-md">
+                  <div className="relative flex items-center w-full rounded-2xl border border-slate-200/90 hover:border-slate-300/90 focus-within:border-blue-500/90 focus-within:bg-white focus-within:ring-4 focus-within:ring-blue-500/10 transition-colors duration-150 bg-white">
                     <div className="pl-4 pr-2 flex items-center text-slate-400 group-hover:text-slate-600 transition-colors">
                       <Building2 size={19} />
                     </div>
@@ -696,9 +712,12 @@ const Register: React.FC = () => {
                         value={departmentId}
                         onChange={(e) => setDepartmentId(e.target.value)}
                         required
-                        className="w-full bg-transparent text-slate-900 text-sm font-medium focus:outline-none cursor-pointer"
+                        disabled={loading && departments.length === 0}
+                        className="w-full bg-transparent text-slate-900 text-sm font-medium focus:outline-none cursor-pointer disabled:opacity-60"
                       >
-                        <option value="">Select your department</option>
+                        <option value="">
+                          {loading && departments.length === 0 ? "Loading departments..." : "Select your department"}
+                        </option>
                         {departments.map((dept: any) => (
                           <option key={dept._id || dept.id} value={dept._id || dept.id}>
                             {dept.name} {dept.code ? `(${dept.code})` : ""}

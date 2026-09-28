@@ -80,9 +80,12 @@ const RootRedirect = () => {
   return <Navigate to="/login" replace />;
 };
 
-const Container = ({ children }: { children: React.ReactNode }) => {
+const Container = ({ children, isAuthOrMobile }: { children: React.ReactNode; isAuthOrMobile: boolean }) => {
   const { currentUser } = useApp();
   const role = (currentUser?.role?.toLowerCase() || "default") as "admin" | "faculty" | "student" | "default";
+  if (isAuthOrMobile) {
+    return <div className="min-h-screen w-full flex flex-col">{children}</div>;
+  }
   return (
     <DashboardBackground role={role} className="flex flex-col page-enter">
       {children}
@@ -91,46 +94,32 @@ const Container = ({ children }: { children: React.ReactNode }) => {
 };
 
 const PageLoader = () => (
-  <div className="flex min-h-screen flex-col items-center justify-center gap-5 px-4">
+  <div className="flex min-h-screen flex-col items-center justify-center gap-4 px-4 bg-[#070b14] text-slate-100">
     <div className="flex flex-col items-center gap-3 text-center">
-      {/* Brand ring with spinner */}
-      <div className="relative flex h-16 w-16 items-center justify-center">
-        <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-blue-600 via-indigo-600 to-violet-600 opacity-10 blur-xl" />
-        <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl border border-slate-200 bg-white shadow-md">
-          <svg
-            className="h-8 w-8 animate-spin text-blue-600"
-            xmlns="http://www.w3.org/2000/svg"
-            fill="none"
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-          >
-            <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-            <path className="opacity-80" fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-          </svg>
+      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 via-indigo-500 to-cyan-400 p-[1.5px] shadow-[0_12px_30px_-8px_rgba(59,130,246,0.8)]">
+        <div className="flex h-full w-full items-center justify-center rounded-[14px] bg-slate-950/95 p-1 backdrop-blur overflow-hidden">
+          <img src="/icon-192.png?v=5" alt="SmartAttend Logo" className="h-full w-full object-contain" />
         </div>
       </div>
-      <p className="text-sm font-semibold text-slate-600 tracking-wide">
-        SmartAttend
-      </p>
-      <p className="text-xs text-slate-400">Loading your workspace…</p>
-    </div>
-
-    {/* Skeleton preview consistent with Card component */}
-    <div className="w-full max-w-md animate-pulse space-y-3 rounded-2xl border border-slate-200/80 bg-white/80 p-5 shadow-sm backdrop-blur-md">
-      <div className="flex items-center gap-3">
-        <div className="h-10 w-10 rounded-xl bg-slate-200/80" />
-        <div className="flex-1 space-y-2">
-          <div className="h-3.5 w-36 rounded-md bg-slate-200/80" />
-          <div className="h-2.5 w-24 rounded-md bg-slate-100" />
-        </div>
+      <div className="flex items-center gap-2 pt-1">
+        <span className="text-xl font-black tracking-tight font-display text-transparent bg-clip-text bg-gradient-to-r from-sky-400 via-cyan-300 to-teal-300">
+          SmartAttend
+        </span>
       </div>
-      <div className="grid grid-cols-3 gap-3 pt-1">
-        <div className="h-16 rounded-xl bg-slate-100/90" />
-        <div className="h-16 rounded-xl bg-slate-100/90" />
-        <div className="h-16 rounded-xl bg-slate-100/90" />
+      <div className="flex items-center gap-2 text-xs text-slate-400">
+        <svg
+          className="h-4 w-4 animate-spin text-blue-400"
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+        >
+          <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+          <path className="opacity-80" fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+        <span>Loading workspace...</span>
       </div>
-      <div className="h-24 rounded-xl bg-slate-100/70" />
     </div>
   </div>
 );
@@ -175,7 +164,7 @@ const App = () => {
     location.pathname === "/mobile-location";
 
   return (
-    <Container>
+    <Container isAuthOrMobile={isAuthOrMobile}>
       {!isAuthOrMobile ? <HeaderBar /> : null}
       <div className="flex-1">
         <Suspense fallback={<PageLoader />}>

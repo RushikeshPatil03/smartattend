@@ -47,9 +47,10 @@ export interface AssignedClassOption {
 export interface SheetRow {
   name: string;
   enrollmentNo: string;
-  attendance: Record<string, "P" | "A" | "—">;
+  attendance: Record<string, "P" | "P*" | "A" | "—">;
   batchId?: string | null;
   batchName?: string | null;
+  section?: string | null;
 }
 
 export interface EnrichedSheetRow extends SheetRow {
@@ -237,13 +238,13 @@ const AttendanceTableRow = React.memo<{
     ? "bg-amber-100 text-amber-800 border border-amber-400"
     : "bg-emerald-100 text-emerald-800 border border-emerald-300";
 
-  const getEffectiveStatus = (enrollmentNo: string, colStr: string): "P" | "A" | "—" => {
+  const getEffectiveStatus = (enrollmentNo: string, colStr: string): "P" | "P*" | "A" | "—" => {
     const sid = colStr.split("::")[0];
     const key = `${enrollmentNo}|${sid}`;
     if (stagedChanges.has(key)) {
       return stagedChanges.get(key)!;
     }
-    return (row.attendance[colStr] as "P" | "A" | "—") || "A";
+    return (row.attendance[colStr] as "P" | "P*" | "A" | "—") || "A";
   };
 
   return (
@@ -279,6 +280,11 @@ const AttendanceTableRow = React.memo<{
           <span className="truncate max-w-[170px]" title={row.name}>
             {row.name}
           </span>
+          {row.section && (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200/80 shrink-0">
+              Sec {row.section}
+            </span>
+          )}
         </div>
       </td>
       {/* 3. Sticky Quorum Score (left: 350px) + Right Divider Shadow */}
@@ -305,13 +311,13 @@ const AttendanceTableRow = React.memo<{
             onClick={() => {
               if (tableMode !== "edit") return;
               if (effectiveStatus === "—" || (effectiveStatus as any) === "-") return;
-              const next = effectiveStatus === "P" ? "A" : "P";
+              const next = effectiveStatus === "P" || effectiveStatus === "P*" ? "A" : "P";
               toggleCell(row.enrollmentNo, sid, next);
             }}
             onDoubleClick={() => {
               if (tableMode !== "edit") return;
               if (effectiveStatus === "—" || (effectiveStatus as any) === "-") return;
-              const next = effectiveStatus === "P" ? "A" : "P";
+              const next = effectiveStatus === "P" || effectiveStatus === "P*" ? "A" : "P";
               toggleCell(row.enrollmentNo, sid, next);
             }}
             className={`text-center font-mono font-bold text-xs select-none transition-colors duration-100 border-b border-l border-slate-100 ${
@@ -319,10 +325,12 @@ const AttendanceTableRow = React.memo<{
             } ${
               isStaged ? "ring-2 ring-amber-400 ring-inset" : ""
             }`}
-            title={tableMode === "edit" && effectiveStatus !== "—" ? "Double-click to flip P/A" : effectiveStatus === "—" ? "Exempt (session conducted for another batch)" : undefined}
+            title={tableMode === "edit" && effectiveStatus !== "—" ? "Double-click to flip P/A" : effectiveStatus === "P*" ? "Transferred Credit (Attended in alternate batch)" : effectiveStatus === "—" ? "Exempt (session conducted for another batch)" : undefined}
           >
             {effectiveStatus === "P" ? (
               <span className="inline-block px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">P</span>
+            ) : effectiveStatus === "P*" ? (
+              <span className="inline-block px-1.5 py-0.5 rounded bg-teal-100 text-teal-800 border border-teal-300 font-bold shadow-2xs" title="Transferred Credit (Attended in alternate batch)">P*</span>
             ) : effectiveStatus === "—" || (effectiveStatus as any) === "-" ? (
               <span className="inline-block px-1.5 py-0.5 rounded bg-slate-100 text-slate-400 font-medium" title="Exempt / Session conducted for another batch">—</span>
             ) : (
@@ -872,7 +880,7 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
       let totalEligible = 0;
       for (let i = 0; i < sheetColumns.length; i++) {
         const val = row.attendance[sheetColumns[i]];
-        if (val === "P") {
+        if (val === "P" || val === "P*") {
           attended++;
           totalEligible++;
         } else if (val === "A") {
@@ -1456,9 +1464,11 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
                     </th>
                     {/* Horizontally scrollable Session Date Headers */}
                     {sheetColumns.map((colStr) => {
-                      const [sessionId, dateLabel, batchId, batchName] = colStr.split("::");
+                      const [sessionId, dateLabel, batchId, batchName, sessionSection] = colStr.split("::");
                       const isMenuOpen = activeHeaderMenuSessionId === sessionId;
                       const isBatchSession = Boolean(batchId && batchId !== "null" && batchId !== "undefined" && batchId !== "");
+                      const cleanSec = String(sessionSection || "").trim();
+                      const isCombinedSession = cleanSec.includes(",") || cleanSec.includes("+") || cleanSec.includes("/");
                       return (
                         <th
                           key={colStr}
@@ -1473,9 +1483,13 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
                                 <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 shadow-2xs">
                                   [{batchName || "Batch"}]
                                 </span>
+                              ) : isCombinedSession ? (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-100 text-teal-800 border border-teal-300 shadow-2xs" title={`Combined Session: Section ${cleanSec}`}>
+                                  [Sec {cleanSec.replace(/\s+/g, "")}]
+                                </span>
                               ) : (
                                 <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-300 shadow-2xs">
-                                  [Class]
+                                  {cleanSec ? `[Sec ${cleanSec}]` : "[Class]"}
                                 </span>
                               )}
                               <span className="text-xs text-slate-800 font-medium">{dateLabel || sessionId}</span>
@@ -1532,7 +1546,7 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
                                   setActiveHeaderMenuSessionId(null);
                                   const colStr = sheetColumns.find((c) => c.split("::")[0] === sessionId);
                                   const presentCount = colStr
-                                    ? sheetRows.filter((r) => r.attendance[colStr] === "P").length
+                                    ? sheetRows.filter((r) => r.attendance[colStr] === "P" || r.attendance[colStr] === "P*").length
                                     : 0;
                                   setDeleteConfirmSession({ sessionId, dateLabel: dateLabel || sessionId, presentCount });
                                 }}

@@ -63,11 +63,27 @@ export function useAttendanceLedger({
 
     // 2. Visible sessions with bidirectional continuity:
     // If specific batch: keep unbatched class sessions (batch_id is null) PLUS sessions for selectedBatchId
+    // PLUS any historical sessions attended by students currently in this batch
+    const currentBatchUsns = new Set(
+      batches?.find((b: any) => String(b.id) === String(selectedBatchId))?.student_enrollments?.map((u: any) => String(u || "").trim().toUpperCase()) || []
+    );
+
     const visibleSessions = (sessions || []).filter((s: any) => {
       if (isAll) return true;
       const bId = s.batch_id || (Array.isArray(s.batch_ids) && s.batch_ids.length === 1 ? s.batch_ids[0] : null);
-      if (!bId) return true; // Entire class session - preserved in batch view!
-      return String(bId) === String(selectedBatchId) || (Array.isArray(s.batch_ids) && s.batch_ids.some((id: any) => String(id) === String(selectedBatchId)));
+      const isWholeClass = !bId && (!s.batch_ids || s.batch_ids.length === 0);
+      const isThisBatch =
+        String(bId) === String(selectedBatchId) ||
+        (Array.isArray(s.batch_ids) && s.batch_ids.some((id: any) => String(id) === String(selectedBatchId)));
+
+      const hasTransferredAttendee = (attendances || []).some(
+        (att: any) =>
+          String(att.session?._id || att.session || att.sessionId) === String(s.id || s._id) &&
+          currentBatchUsns.has(String(att.student?.enrollmentNo || att.student?.enrollment_no || att.enrollment_no || att.enrollmentNo || "").toUpperCase()) &&
+          String(att.status).toLowerCase() === "present"
+      );
+
+      return isWholeClass || isThisBatch || hasTransferredAttendee;
     }).sort((a: any, b: any) => {
       const tA = new Date(a.start_time || a.startTime || 0).getTime();
       const tB = new Date(b.start_time || b.startTime || 0).getTime();
@@ -125,7 +141,7 @@ export function useAttendanceLedger({
 
       let attended = 0;
       let totalEligible = 0;
-      const attRec: Record<string, "P" | "A" | "—"> = {};
+      const attRec: Record<string, "P" | "P*" | "A" | "—"> = {};
 
       for (let i = 0; i < parsedCols.length; i++) {
         const { colStr, sessionId, batchId } = parsedCols[i];
@@ -146,7 +162,19 @@ export function useAttendanceLedger({
             attRec[colStr] = "P";
             attended++;
           } else {
-            attRec[colStr] = "A";
+            // Check if student attended in an alternate batch
+            const attendedElsewhere = (attendances || []).some((att: any) => {
+              const attEno = String(att.student?.enrollmentNo || att.student?.enrollment_no || att.enrollment_no || att.enrollmentNo || "").trim().toUpperCase();
+              const attSid = String(att.session?._id || att.session || att.sessionId || "").trim();
+              return attEno === eno && attSid === sessionId && String(att.status).toLowerCase() === "present";
+            });
+
+            if (attendedElsewhere) {
+              attRec[colStr] = "P*";
+              attended++;
+            } else {
+              attRec[colStr] = "A";
+            }
           }
         }
       }

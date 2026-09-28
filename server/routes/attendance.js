@@ -1276,7 +1276,7 @@ const handleMarkAttendance = async (req, res) => {
       student_email: student.email || null,
       department_code: student.dept?.code || student.departmentCode || null,
       semester: Number(student.semester || session.semester) || null,
-      section: String(student.section || session.section || "").toUpperCase() || null,
+      section: String(student.section || "").toUpperCase() || null,
       year: Number(student.year || session.year) || null,
       batch_id: session.batch_id || null,
       category: session.category || "REGULAR",
@@ -2539,7 +2539,7 @@ async function handleTotpAttendanceSubmission(req, res) {
       student_email: student.email || null,
       department_code: student.dept?.code || student.departmentCode || null,
       semester: Number(student.semester || session.semester) || null,
-      section: String(student.section || session.section || "").toUpperCase() || null,
+      section: String(student.section || "").toUpperCase() || null,
       year: Number(student.year || session.year) || null,
       batch_id: session.batch_id || null,
       category: session.category || "REGULAR",
@@ -2757,9 +2757,14 @@ router.get("/session/:id/attendees", auth(["FACULTY", "ADMIN"]), async (req, res
       if (session.department) {
         countQuery = countQuery.eq("department", String(session.department));
       }
-      const normalizedSec = String(session.section || "").trim().toUpperCase();
-      if (normalizedSec) {
-        countQuery = countQuery.eq("section", normalizedSec);
+      const rawSec = String(session.section || "").trim().toUpperCase();
+      if (rawSec && rawSec !== "ALL" && rawSec !== "*") {
+        const secList = rawSec.split(/[,/&|+]/).map((s) => s.trim()).filter(Boolean);
+        if (secList.length === 1) {
+          countQuery = countQuery.eq("section", secList[0]);
+        } else if (secList.length > 1) {
+          countQuery = countQuery.in("section", secList);
+        }
       }
       const { count: classTotal } = await countQuery;
       totalStudents = classTotal || 0;
@@ -2857,7 +2862,7 @@ async function handleManualAttendance(req, res) {
         student_email: student.email || null,
         department_code: student.dept?.code || student.departmentCode || null,
         semester: Number(student.semester || session.semester) || null,
-        section: String(student.section || session.section || "").toUpperCase() || null,
+        section: String(student.section || "").toUpperCase() || null,
         year: Number(student.year || session.year) || null,
         batch_id: session.batch_id || null,
         category: session.category || "REGULAR",
@@ -2927,7 +2932,7 @@ async function handleManualAttendance(req, res) {
         student_email: student.email || null,
         department_code: student.dept?.code || student.departmentCode || null,
         semester: Number(student.semester || session.semester) || null,
-        section: String(student.section || session.section || "").toUpperCase() || null,
+        section: String(student.section || "").toUpperCase() || null,
         year: Number(student.year || session.year) || null,
         status: "absent",
         timestamp: new Date().toISOString(),
@@ -3524,7 +3529,8 @@ router.get("/session-roster-history", auth(["FACULTY", "ADMIN"]), async (req, re
         sessQuery = sessQuery.eq("semester", Number(semester));
       }
       if (section && String(section).trim() && String(section).toUpperCase() !== "ALL") {
-        sessQuery = sessQuery.eq("section", String(section).trim().toUpperCase());
+        const cleanSec = String(section).trim().toUpperCase();
+        sessQuery = sessQuery.or(`section.eq.${cleanSec},section.ilike.%${cleanSec}%`);
       }
 
       const { data: rawSessions } = await sessQuery;
@@ -3547,6 +3553,7 @@ router.get("/session-roster-history", auth(["FACULTY", "ADMIN"]), async (req, re
           batch_id: s.batch_id || null,
           batch_ids: s.batch_ids || [],
           batchName: bName,
+          section: s.section,
           faculty: s.faculty,
           fac: s.fac,
         };
@@ -3574,7 +3581,13 @@ router.get("/session-roster-history", auth(["FACULTY", "ADMIN"]), async (req, re
       if (targetSem) stuQuery = stuQuery.eq("semester", targetSem);
 
       if (section && String(section).trim() && String(section).toUpperCase() !== "ALL") {
-        stuQuery = stuQuery.eq("section", String(section).trim().toUpperCase());
+        const cleanSec = String(section).trim().toUpperCase();
+        const secList = cleanSec.split(/[,/&|+]/).map((s) => s.trim()).filter(Boolean);
+        if (secList.length === 1) {
+          stuQuery = stuQuery.eq("section", secList[0]);
+        } else if (secList.length > 1) {
+          stuQuery = stuQuery.in("section", secList);
+        }
       }
 
       const { data: rawStudents } = await stuQuery;
@@ -3644,131 +3657,12 @@ router.get("/session-roster-history", auth(["FACULTY", "ADMIN"]), async (req, re
       }));
     }
 
-    if (cleanBatchId) {
-      const targetBatch = batches.find((b) => String(b.id) === String(cleanBatchId));
-      if (targetBatch && Array.isArray(targetBatch.student_enrollments)) {
-        const batchUsnSet = new Set(
-          targetBatch.student_enrollments.map((u) => String(u || "").trim().toUpperCase())
-        );
-
-        // 1. Filter students to ONLY enrolled students of this batch
-        students = students.filter((s) => {
-          const usn = String(s.enrollmentNo || s.enrollment_no || "").trim().toUpperCase();
-          return batchUsnSet.has(usn);
-        });
-
-        // 2. Filter sessions to full-strength class sessions (batch_id is null / empty)
-        // PLUS sessions specifically conducted for this batch (batch_id === cleanBatchId or batch_ids contains cleanBatchId)
-        sessions = sessions.filter((s) => {
-          const isFullClass = !s.batch_id && (!s.batch_ids || s.batch_ids.length === 0);
-          const isThisBatch =
-            String(s.batch_id) === String(cleanBatchId) ||
-            (Array.isArray(s.batch_ids) && s.batch_ids.map(String).includes(String(cleanBatchId)));
-          return isFullClass || isThisBatch;
-        });
-
-        // 3. Filter attendances to only records for this batch's students and sessions
-        const allowedSessionIds = new Set(sessions.map((s) => String(s.id)));
-        attendances = attendances.filter((att) => {
-          const usn = String(att.enrollmentNo || att.enrollment_no || "").trim().toUpperCase();
-          const sid = String(att.sessionId || att.session || "");
-          return batchUsnSet.has(usn) && allowedSessionIds.has(sid);
-        });
-      }
-    } else {
-      // BATCHES REMOVED or NO BATCH SELECTED (Single default batch view for entire class):
-      // "date will be assigned based on majority records"
-      // If multiple sessions occurred on the same calendar date (e.g. historical batch sessions),
-      // collapse them into 1 canonical session having the majority attendance records on that date.
-      if (sessions.length > 0) {
-        // 1. Count attendance per session
-        const sessionAttCount = new Map();
-        attendances.forEach((att) => {
-          const sid = String(att.sessionId || att.session || "");
-          sessionAttCount.set(sid, (sessionAttCount.get(sid) || 0) + 1);
-        });
-
-        // 2. Group sessions by calendar date (YYYY-MM-DD in UTC / local)
-        const sessionsByDate = new Map();
-        sessions.forEach((s) => {
-          const rawDate = s.start_time || s.startTime || "";
-          const dateKey = rawDate ? String(rawDate).slice(0, 10) : `session_${s.id}`;
-          if (!sessionsByDate.has(dateKey)) sessionsByDate.set(dateKey, []);
-          sessionsByDate.get(dateKey).push(s);
-        });
-
-        const canonicalSessions = [];
-        const sessionAliasMap = new Map(); // otherSessionId -> canonicalSessionId
-
-        sessionsByDate.forEach((dateSessions) => {
-          if (dateSessions.length === 1) {
-            canonicalSessions.push(dateSessions[0]);
-          } else {
-            // Find majority session (session with the maximum attendances on this date)
-            let majoritySession = dateSessions[0];
-            let maxCount = sessionAttCount.get(String(majoritySession.id)) || 0;
-
-            for (let i = 1; i < dateSessions.length; i++) {
-              const cur = dateSessions[i];
-              const curCount = sessionAttCount.get(String(cur.id)) || 0;
-              if (curCount > maxCount) {
-                majoritySession = cur;
-                maxCount = curCount;
-              }
-            }
-
-            canonicalSessions.push({
-              ...majoritySession,
-              batch_id: null,
-              batch_ids: [],
-              batchName: null,
-            });
-
-            const canonId = String(majoritySession.id);
-            dateSessions.forEach((s) => {
-              sessionAliasMap.set(String(s.id), canonId);
-            });
-          }
-        });
-
-        sessions = canonicalSessions.sort((a, b) => {
-          const tA = new Date(a.start_time || a.startTime || 0).getTime();
-          const tB = new Date(b.start_time || b.startTime || 0).getTime();
-          return tA - tB;
-        });
-
-        // 3. Remap and deduplicate attendances onto canonical session columns
-        const seenStudentSession = new Set();
-        const mergedAttendances = [];
-
-        attendances.forEach((att) => {
-          const originalSid = String(att.sessionId || att.session || "");
-          const canonicalSid = sessionAliasMap.get(originalSid) || originalSid;
-          const usn = String(att.enrollmentNo || att.enrollment_no || att.student || "").trim().toUpperCase();
-          const dedupeKey = `${usn}|${canonicalSid}`;
-
-          if (!seenStudentSession.has(dedupeKey)) {
-            seenStudentSession.add(dedupeKey);
-            mergedAttendances.push({
-              ...att,
-              session: canonicalSid,
-              sessionId: canonicalSid,
-            });
-          } else if (String(att.status).toLowerCase() === "present") {
-            const existing = mergedAttendances.find(
-              (m) =>
-                String(m.enrollmentNo || m.enrollment_no || "").trim().toUpperCase() === usn &&
-                String(m.sessionId || m.session) === canonicalSid
-            );
-            if (existing) {
-              existing.status = "present";
-            }
-          }
-        });
-
-        attendances = mergedAttendances;
-      }
-    }
+    // Sort sessions chronologically without destructive date-aliasing or dropping
+    sessions = (sessions || []).sort((a, b) => {
+      const tA = new Date(a.start_time || a.startTime || 0).getTime();
+      const tB = new Date(b.start_time || b.startTime || 0).getTime();
+      return tA - tB;
+    });
 
     return res.json({
       ok: true,

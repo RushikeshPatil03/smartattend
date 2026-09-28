@@ -43,6 +43,7 @@ export interface Activity {
   semesters?: number[] | null;
   semester?: number | null;
   section?: string | null;
+  is_active?: boolean;
   created_at?: string;
   dept?: { id: string; name: string; code: string };
   batches?: ActivityBatch[];

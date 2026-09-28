@@ -29,7 +29,7 @@ import {
 } from "./faculty/types";
 import LiveSessionStudio from "./faculty/LiveSessionStudio";
 import SessionSetupCard from "./faculty/SessionSetupCard";
-import AttendanceRosterTable from "./faculty/AttendanceRosterTable";
+import AttendanceRosterTable, { SheetRow } from "./faculty/AttendanceRosterTable";
 import DeviceRequestsView from "./faculty/DeviceRequestsView";
 import FacultyAnalyticsModal from "./faculty/FacultyAnalyticsModal";
 import ManageSubjectsView from "./faculty/ManageSubjectsView";
@@ -51,6 +51,24 @@ const recentClassStorageKey = (facultyId: string | null) =>
 const sessionDraftStorageKey = (facultyId: string | null) =>
   `faculty_session_draft_${facultyId || "anonymous"}`;
 
+const formatPresetSectionKey = (section: string) => {
+  const clean = String(section || "").trim().toUpperCase();
+  const parts = clean.split(/[,/&|+]/).map((s) => s.trim()).filter(Boolean);
+  if (parts.length > 1) {
+    return `(${parts.join(",")})`;
+  }
+  return clean || "A";
+};
+
+const formatPresetSectionLabel = (section: string) => {
+  const clean = String(section || "").trim().toUpperCase();
+  const parts = clean.split(/[,/&|+]/).map((s) => s.trim()).filter(Boolean);
+  if (parts.length > 1) {
+    return `[${parts.join("+")}]`;
+  }
+  return clean ? `[${clean}]` : "[A]";
+};
+
 const buildRecentClassKey = ({
   departmentCode,
   year,
@@ -63,8 +81,35 @@ const buildRecentClassKey = ({
   semester: string;
   section: string;
   subjectCode?: string;
-}) =>
-  `${String(departmentCode || "DEPT").trim().toUpperCase()}${String(year || "").trim()}${String(semester || "").trim()}${String(section || "").trim().toUpperCase()}-${String(subjectCode || "SUB").trim().toUpperCase()}`;
+}) => {
+  const secKey = formatPresetSectionKey(section);
+  const dept = String(departmentCode || "DEPT").trim().toUpperCase();
+  const yr = String(year || "").trim();
+  const sub = String(subjectCode || "SUB").trim().toUpperCase();
+  return `${dept}-${yr}${secKey}-${sub}`;
+};
+
+const buildRecentClassLabel = ({
+  departmentCode,
+  year,
+  semester,
+  section,
+  subjectCode,
+  subjectName,
+}: {
+  departmentCode?: string;
+  year: string;
+  semester: string;
+  section: string;
+  subjectCode?: string;
+  subjectName?: string;
+}) => {
+  const secLabel = formatPresetSectionLabel(section);
+  const dept = String(departmentCode || "DEPT").trim().toUpperCase();
+  const yr = String(year || "").trim();
+  const sub = String(subjectCode || subjectName || "SUB").trim().toUpperCase();
+  return `${dept}-${yr}${secLabel} • ${sub}`;
+};
 
 const formatCoordinate = (value: number) => Number(value).toFixed(6);
 
@@ -170,9 +215,7 @@ const FacultyDashboard: React.FC = () => {
     batchId: "",
   });
   const [sheetColumns, setSheetColumns] = useState<string[]>([]);
-  const [sheetRows, setSheetRows] = useState<
-    { name: string; enrollmentNo: string; attendance: Record<string, "P" | "A"> }[]
-  >([]);
+  const [sheetRows, setSheetRows] = useState<SheetRow[]>([]);
   const [sheetLoading, setSheetLoading] = useState(false);
   const sheetMatrixCacheRef = useRef<
     Map<string, { columns: string[]; rows: any[]; cachedAt: number }>
@@ -903,12 +946,13 @@ const FacultyDashboard: React.FC = () => {
         section: formSection,
         subjectCode: selectedSubject?.code || selectedSubject?.name,
       }),
-      label: buildRecentClassKey({
+      label: buildRecentClassLabel({
         departmentCode: selectedDepartment?.code || selectedDepartment?.name,
         year: formYear,
         semester: formSem,
         section: formSection,
         subjectCode: selectedSubject?.code || selectedSubject?.name,
+        subjectName: selectedSubject?.name,
       }),
       departmentId: formDepartment,
       departmentName: selectedDepartment?.name || "Department",
@@ -927,6 +971,11 @@ const FacultyDashboard: React.FC = () => {
       updatedAt: Date.now(),
     };
 
+    const parsedSections = String(formSection)
+      .split(/[,/&|+]/)
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
+
     const res: any = await createSession({
       facultyId,
       subjectId: formSubject,
@@ -934,6 +983,7 @@ const FacultyDashboard: React.FC = () => {
       year: Number(formYear),
       semester: Number(formSem),
       section: String(formSection).toUpperCase(),
+      sections: parsedSections.length > 0 ? parsedSections : undefined,
       batchIds: selectedBatchIds && selectedBatchIds.length > 0 ? selectedBatchIds : undefined,
       location: {
         lat: Number(locationState.lat),
@@ -1761,69 +1811,32 @@ const FacultyDashboard: React.FC = () => {
               );
             });
 
+            const currentBatchUsns = new Set(targetUsns);
+
             sessionList = sessionList.filter((s: any) => {
-              const isFullClass = !s.batch_id && (!s.batch_ids || s.batch_ids.length === 0);
+              const isWholeClass = !s.batch_id && (!s.batch_ids || s.batch_ids.length === 0);
               const isThisBatch =
                 String(s.batch_id) === activeBatchId ||
                 (Array.isArray(s.batch_ids) && s.batch_ids.some((id: any) => String(id) === activeBatchId));
-              return isFullClass || isThisBatch;
+
+              // Keep session if any student now in this batch attended it in their previous batch
+              const hasTransferredAttendee = rawAttendanceList.some(
+                (att: any) =>
+                  String(att.session?._id || att.session || att.sessionId) === String(s.id || s._id) &&
+                  currentBatchUsns.has(String(att.student?.enrollmentNo || att.student?.enrollment_no || att.enrollment_no || att.enrollmentNo || "").toUpperCase()) &&
+                  String(att.status).toLowerCase() === "present"
+              );
+
+              return isWholeClass || isThisBatch || hasTransferredAttendee;
             });
-          }
-
-          // 2. If batches removed / single default batch:
-          // "date will be assigned based on majority records"
-          const attCountBySession = new Map<string, number>();
-          rawAttendanceList.forEach((att: any) => {
-            const sid = String(att.session?._id || att.session || att.sessionId || "").trim();
-            if (sid && String(att.status).toLowerCase() === "present") {
-              attCountBySession.set(sid, (attCountBySession.get(sid) || 0) + 1);
-            }
-          });
-
-          const aliasMap = new Map<string, string>();
-          if (!activeBatchId && sessionList.length > 0) {
-            const byDate = new Map<string, any[]>();
-            sessionList.forEach((s: any) => {
-              const rawDate = s.start_time || s.startTime || s.created_at || "";
-              const dKey = rawDate ? String(rawDate).slice(0, 10) : `sess_${s.id || s._id}`;
-              if (!byDate.has(dKey)) byDate.set(dKey, []);
-              byDate.get(dKey)!.push(s);
-            });
-
-            const canonicalSessions: any[] = [];
-
-            byDate.forEach((dateSessions) => {
-              if (dateSessions.length === 1) {
-                canonicalSessions.push(dateSessions[0]);
-              } else {
-                let majority = dateSessions[0];
-                let maxCt = attCountBySession.get(String(majority.id || majority._id)) || 0;
-                for (let i = 1; i < dateSessions.length; i++) {
-                  const cur = dateSessions[i];
-                  const curCt = attCountBySession.get(String(cur.id || cur._id)) || 0;
-                  if (curCt > maxCt) {
-                    majority = cur;
-                    maxCt = curCt;
-                  }
-                }
-                canonicalSessions.push(majority);
-                const canonId = String(majority.id || majority._id);
-                dateSessions.forEach((ds: any) => {
-                  aliasMap.set(String(ds.id || ds._id), canonId);
-                });
-              }
-            });
-
-            sessionList = canonicalSessions;
           }
 
           const presentSet = new Set<string>(); // Stores "enrollmentNo|sessionId"
           rawAttendanceList.forEach((att: any) => {
-            const eno = String(att.student?.enrollmentNo || att.student?.enrollment_no || att.enrollment_no || "").trim().toUpperCase();
+            const eno = String(att.student?.enrollmentNo || att.student?.enrollment_no || att.enrollment_no || att.enrollmentNo || "").trim().toUpperCase();
             const rawSid = String(att.session?._id || att.session || att.sessionId || "").trim();
-            const effectiveSid = aliasMap.get(rawSid) || rawSid;
-            if (eno && effectiveSid && String(att.status).toLowerCase() === "present") {
-              presentSet.add(`${eno}|${effectiveSid}`);
+            if (eno && rawSid && String(att.status).toLowerCase() === "present") {
+              presentSet.add(`${eno}|${rawSid}`);
             }
           });
 
@@ -1832,14 +1845,15 @@ const FacultyDashboard: React.FC = () => {
             const dateObj = new Date(sess.start_time || sess.startTime || sess.created_at || Date.now());
             const dateLabel = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, "0")}-${String(dateObj.getDate()).padStart(2, "0")} ${String(dateObj.getHours()).padStart(2, "0")}:${String(dateObj.getMinutes()).padStart(2, "0")}`;
             const facName = sess.fac?.name || sess.faculty?.name || "";
-            const label = facName ? `${dateLabel} (${facName})` : dateLabel;
             const bId = sess.batch_id || "";
             let bName = sess.batchName || "";
             if (!bName && bId && batchMap.has(String(bId))) {
               const mb = batchMap.get(String(bId));
               bName = mb?.batch_name || `Batch ${mb?.batch_number}`;
             }
-            return `${sess.id || sess._id}::${label}::${bId}::${bName}`;
+            const batchTag = bName ? ` [${bName}]` : (sess.batch_id ? ` [Batch]` : ` [Class]`);
+            const label = facName ? `${dateLabel}${batchTag} (${facName})` : `${dateLabel}${batchTag}`;
+            return `${sess.id || sess._id}::${label}::${bId}::${bName}::${sess.section || ""}`;
           });
 
           // Pre-cache split keys to avoid repeated string splitting inside inner cell loop
@@ -1849,6 +1863,7 @@ const FacultyDashboard: React.FC = () => {
               colStr: c,
               colKey: parts[0],
               batchId: parts[2] || null,
+              section: parts[4] || null,
             };
           });
 
@@ -1858,7 +1873,7 @@ const FacultyDashboard: React.FC = () => {
               const stuBatchSet = studentBatches.get(eno) || new Set<string>();
               if (stu.batchId) stuBatchSet.add(String(stu.batchId));
 
-              const attRec: Record<string, "P" | "A" | "—"> = {};
+              const attRec: Record<string, "P" | "P*" | "A" | "—"> = {};
               for (let i = 0; i < parsedCols.length; i++) {
                 const { colStr, colKey, batchId } = parsedCols[i];
                 let isEligible = false;
@@ -1870,12 +1885,23 @@ const FacultyDashboard: React.FC = () => {
                   isEligible = isEntireClass || isStudentInBatch || Boolean(activeBatchId);
                 }
 
-                if (!isEligible) {
-                  attRec[colStr] = "—";
-                } else if (presentSet.has(`${eno}|${colKey}`)) {
+                if (presentSet.has(`${eno}|${colKey}`)) {
                   attRec[colStr] = "P";
                 } else {
-                  attRec[colStr] = "A";
+                  // Check if student attended in an alternate batch
+                  const attendedElsewhere = rawAttendanceList.some((att: any) => {
+                    const attEno = String(att.student?.enrollmentNo || att.student?.enrollment_no || att.enrollment_no || att.enrollmentNo || "").trim().toUpperCase();
+                    const attSid = String(att.session?._id || att.session || att.sessionId || "").trim();
+                    return attEno === eno && attSid === colKey && String(att.status).toLowerCase() === "present";
+                  });
+
+                  if (attendedElsewhere) {
+                    attRec[colStr] = "P*"; // Mark as Transferred Credit
+                  } else if (isEligible) {
+                    attRec[colStr] = "A";
+                  } else {
+                    attRec[colStr] = "—";
+                  }
                 }
               }
               return {
@@ -1884,6 +1910,7 @@ const FacultyDashboard: React.FC = () => {
                 attendance: attRec,
                 batchId: stu.batchId || null,
                 batchName: stu.batchName || null,
+                section: stu.section || null,
               };
             })
             .sort((a, b) => a.enrollmentNo.localeCompare(b.enrollmentNo));
@@ -1940,7 +1967,7 @@ const FacultyDashboard: React.FC = () => {
         let totalEligible = 0;
         sheetColumns.forEach((c) => {
           const val = r.attendance[c];
-          if (val === "P") {
+          if (val === "P" || val === "P*") {
             attended++;
             totalEligible++;
           } else if (val === "A") {
@@ -2251,6 +2278,9 @@ const FacultyDashboard: React.FC = () => {
               mySubjects={mySubjects}
               onOpenSubjectAnalytics={openSubjectAnalytics}
               departments={departments}
+              onBatchesSaved={() => {
+                sheetMatrixCacheRef.current.clear();
+              }}
             />
           )}
 

@@ -1,5 +1,5 @@
 // src/pages/AdminRegister.tsx
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Shield,
@@ -44,10 +44,10 @@ const FloatingInput: React.FC<FloatingInputProps> = React.memo(({
   return (
     <div className="relative w-full group">
       <div
-        className={`relative flex items-center w-full rounded-2xl border transition-all duration-300 bg-white/80 backdrop-blur-md ${
+        className={`relative flex items-center w-full rounded-2xl border transition-colors duration-200 bg-white ${
           isFocused
-            ? "border-indigo-500/90 bg-white ring-4 ring-indigo-500/10 shadow-[0_8px_24px_-8px_rgba(99,102,241,0.25)]"
-            : "border-slate-200/90 hover:border-slate-300/90 hover:bg-white/95"
+            ? "border-indigo-500/90 ring-4 ring-indigo-500/10 shadow-[0_4px_16px_-4px_rgba(99,102,241,0.2)]"
+            : "border-slate-200/90 hover:border-slate-300/90"
         }`}
       >
         {/* Leading Icon */}
@@ -60,7 +60,7 @@ const FloatingInput: React.FC<FloatingInputProps> = React.memo(({
         </div>
 
         {/* Input & Floating Label */}
-        <div className="relative flex-1 py-3.5 pr-3">
+        <div className="relative flex-1 py-3 pr-3">
           <input
             {...props}
             type={isPassword ? (showPassword ? "text" : "password") : props.type}
@@ -74,16 +74,16 @@ const FloatingInput: React.FC<FloatingInputProps> = React.memo(({
               setIsFocused(false);
               props.onBlur?.(e);
             }}
-            className="w-full bg-transparent text-slate-900 text-sm font-medium focus:outline-none placeholder-transparent pt-3 pb-0"
+            className="w-full bg-transparent text-slate-900 text-base sm:text-sm font-medium focus:outline-none placeholder-transparent pt-3.5 pb-0"
             placeholder={label}
             id={props.id || label.toLowerCase().replace(/\s+/g, "-")}
           />
           <label
             htmlFor={props.id || label.toLowerCase().replace(/\s+/g, "-")}
-            className={`absolute left-0 pointer-events-none transition-all duration-200 select-none ${
+            className={`absolute left-0 pointer-events-none select-none origin-left transition-all duration-150 ${
               isFloating
-                ? "top-1.5 text-[11px] font-semibold tracking-wider uppercase text-indigo-600"
-                : "top-3.5 text-sm font-normal text-slate-500"
+                ? "top-1 text-[10px] font-bold tracking-wider uppercase text-indigo-600"
+                : "top-3.5 text-base sm:text-sm font-normal text-slate-500"
             }`}
           >
             {label}
@@ -118,13 +118,16 @@ const AdminRegister: React.FC = () => {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const inFlightSubmitRef = useRef(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (inFlightSubmitRef.current) return;
     if (!form.name.trim() || !form.collegeName.trim() || !form.email.trim() || !form.password) {
       setError("Please fill in all required fields.");
       return;
     }
+    inFlightSubmitRef.current = true;
     setError(null);
     setLoading(true);
 
@@ -139,12 +142,14 @@ const AdminRegister: React.FC = () => {
       setLoading(false);
 
       if (!res?.ok) {
+        inFlightSubmitRef.current = false;
         setError(res?.error || "Admin registration failed");
         return;
       }
 
       navigateTo(View.LOGIN);
     } catch (err: any) {
+      inFlightSubmitRef.current = false;
       setLoading(false);
       setError(err?.message || "A network error occurred while creating the account.");
     }
@@ -152,10 +157,10 @@ const AdminRegister: React.FC = () => {
 
   return (
     <div className="relative min-h-screen w-full overflow-x-hidden bg-[#070b14] text-slate-100 flex flex-col justify-between selection:bg-indigo-500 selection:text-white">
-      {/* Ambient Gradient Mesh Background (Hardware Accelerated, Zero CPU Load) */}
+      {/* Ambient Gradient Mesh Background (Clean Hardware Accelerated) */}
       <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-        <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[650px] h-[650px] rounded-full bg-[radial-gradient(circle,rgba(99,102,241,0.22)_0%,rgba(37,99,235,0.14)_45%,transparent_70%)] blur-3xl will-change-transform" />
-        <div className="absolute -bottom-40 right-1/4 w-[600px] h-[600px] rounded-full bg-[radial-gradient(circle,rgba(168,85,247,0.18)_0%,rgba(99,102,241,0.10)_45%,transparent_70%)] blur-3xl will-change-transform" />
+        <div className="absolute -top-28 left-1/2 -translate-x-1/2 w-[540px] h-[540px] rounded-full bg-[radial-gradient(circle,rgba(99,102,241,0.18)_0%,rgba(37,99,235,0.08)_45%,transparent_70%)]" />
+        <div className="absolute -bottom-36 right-1/4 w-[480px] h-[480px] rounded-full bg-[radial-gradient(circle,rgba(168,85,247,0.14)_0%,rgba(99,102,241,0.06)_45%,transparent_70%)]" />
 
         {/* Subtle Geometric Grid Matrix */}
         <div
@@ -172,9 +177,9 @@ const AdminRegister: React.FC = () => {
         
         {/* Dynamic Top Brand Identity & System Header */}
         <motion.div
-          initial={{ opacity: 0, y: -16 }}
+          initial={{ opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ duration: 0.25, ease: "easeOut" }}
           className="flex flex-col items-center text-center mb-6 space-y-2"
         >
           {/* Logo Pill */}
@@ -199,23 +204,23 @@ const AdminRegister: React.FC = () => {
           </div>
         </motion.div>
 
-        {/* Elevated Glassmorphism Registration Card */}
+        {/* Elevated Registration Card */}
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ duration: 0.25, ease: "easeOut" }}
           className="relative w-full"
         >
           {/* Outer Card Ambient Glow */}
           <div
-            className="absolute -inset-1 rounded-[36px] opacity-70 blur-xl transition-all duration-500"
+            className="absolute -inset-1 rounded-[36px] opacity-60 blur-lg transition-all duration-300"
             style={{
               background: `linear-gradient(135deg, rgba(99, 102, 241, 0.35), transparent 70%)`,
             }}
           />
 
           {/* Elevated Card */}
-          <div className="relative overflow-hidden rounded-[32px] border border-white/80 bg-white/95 p-6 sm:p-8 shadow-[0_25px_70px_-20px_rgba(0,0,0,0.35)] backdrop-blur-2xl text-slate-800">
+          <div className="relative overflow-hidden rounded-[32px] border border-white/80 bg-white/95 p-6 sm:p-8 shadow-[0_20px_60px_-15px_rgba(0,0,0,0.3)] text-slate-800">
             
             {/* Centered Form Header */}
             <div className="text-center space-y-1.5 mb-6">

@@ -35,6 +35,15 @@ export type SessionFormDraft = {
   manualLng: string;
 };
 
+export type SheetRow = {
+  name: string;
+  enrollmentNo: string;
+  attendance: Record<string, "P" | "P*" | "A" | "—">;
+  batchId?: string | null;
+  batchName?: string | null;
+  section?: string | null;
+};
+
 export type FacultySubjectAnalyticsData = {
   subject: {
     id: string;

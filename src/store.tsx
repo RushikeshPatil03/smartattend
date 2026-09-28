@@ -94,6 +94,7 @@ interface AppContextValue {
     year?: number;
     semester?: number;
     section?: string;
+    sections?: string[];
     category?: string;
     activityId?: string;
     batchId?: string | null;

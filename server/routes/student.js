@@ -342,8 +342,11 @@ router.get("/session/active", auth(["STUDENT"]), async (req, res) => {
     let matchingSession = null;
     for (const s of (rawSessions || [])) {
       const sSec = String(s.section || "").trim().toUpperCase();
-      if (sSec && normalizedSection && sSec !== normalizedSection && sSec !== "ALL") {
-        continue;
+      if (sSec && normalizedSection && sSec !== "ALL" && sSec !== "*") {
+        const allowedSections = new Set(sSec.split(/[,/&|+]/).map((x) => x.trim()).filter(Boolean));
+        if (!allowedSections.has(normalizedSection)) {
+          continue;
+        }
       }
 
       // Check batch eligibility if session is held for a specific batch
@@ -492,15 +495,21 @@ const handleStudentAttendanceOverview = async (req, res) => {
 
     const studentUsn = String(student.enrollment_no || "").trim().toUpperCase();
 
-    const { data: rawSessions } = await supabase
+    const studentSec = String(student.section || "").trim().toUpperCase();
+    let sessQuery = supabase
       .from("sessions")
-      .select("id, subject, faculty, department, start_time, end_time, is_active, batch_id, batch_ids")
+      .select("id, subject, faculty, department, section, start_time, end_time, is_active, batch_id, batch_ids")
       .in("subject", subjectIds)
       .eq("year", Number(student.year))
       .eq("semester", Number(student.semester))
-      .eq("section", String(student.section || "").toUpperCase())
       .eq("is_active", false)
       .not("end_time", "is", null);
+
+    if (studentSec && studentSec !== "ALL" && studentSec !== "*") {
+      sessQuery = sessQuery.or(`section.eq.${studentSec},section.ilike.%${studentSec}%`);
+    }
+
+    const { data: rawSessions } = await sessQuery;
 
     const sessions = (rawSessions || []).filter(
       (s) => !s.department || String(s.department) === studentDeptId

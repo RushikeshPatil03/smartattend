@@ -181,7 +181,72 @@ async function syncSubjectBatches({
 
   const resultBatches = finalActiveBatches || [];
 
-  // 5. Audit Log (append-only)
+  // 5. Diff Detection & Snapshot Reconciliation for Transferred Students
+  try {
+    const oldStudentBatchMap = new Map();
+    for (const oldBatch of existingList) {
+      const bId = String(oldBatch.id);
+      const bName = oldBatch.batch_name || `Batch ${oldBatch.batch_number}`;
+      if (Array.isArray(oldBatch.student_enrollments)) {
+        for (const u of oldBatch.student_enrollments) {
+          const clean = String(u || "").trim().toUpperCase();
+          if (clean) oldStudentBatchMap.set(clean, { batchId: bId, batchName: bName });
+        }
+      }
+    }
+
+    const newStudentBatchMap = new Map();
+    for (const newBatch of resultBatches) {
+      const bId = String(newBatch.id);
+      const bName = newBatch.batch_name || `Batch ${newBatch.batch_number}`;
+      if (Array.isArray(newBatch.student_enrollments)) {
+        for (const u of newBatch.student_enrollments) {
+          const clean = String(u || "").trim().toUpperCase();
+          if (clean) newStudentBatchMap.set(clean, { batchId: bId, batchName: bName });
+        }
+      }
+    }
+
+    const movedStudents = [];
+    for (const [studentUsn, oldInfo] of oldStudentBatchMap.entries()) {
+      const newInfo = newStudentBatchMap.get(studentUsn);
+      if (newInfo && newInfo.batchId !== oldInfo.batchId) {
+        movedStudents.push({
+          studentUsn,
+          fromBatchId: oldInfo.batchId,
+          fromBatchName: oldInfo.batchName,
+          toBatchId: newInfo.batchId,
+          toBatchName: newInfo.batchName,
+        });
+      }
+    }
+
+    for (const transfer of movedStudents) {
+      const { studentUsn, fromBatchId, fromBatchName, toBatchId, toBatchName } = transfer;
+      await supabase
+        .from("session_roster_snapshots")
+        .update({
+          batch_id: toBatchId,
+          batch_name: toBatchName,
+          transferred_to_batch_id: toBatchId,
+          transfer_note: `Transferred from batch ${fromBatchId} (${fromBatchName}) on ${new Date().toISOString()}`,
+        })
+        .eq("subject_id", cleanSubjectId)
+        .eq("enrollment_no", studentUsn);
+    }
+  } catch (reconcileErr) {
+    console.warn("[batchManagementService] Snapshot reconciliation error:", reconcileErr.message);
+  }
+
+  // 6. Cache Invalidation Hook
+  try {
+    const { invalidateBatchRosterCache } = require("../routes/attendance");
+    if (typeof invalidateBatchRosterCache === "function") {
+      invalidateBatchRosterCache(cleanSubjectId);
+    }
+  } catch {}
+
+  // 7. Audit Log (append-only)
   try {
     await supabase
       .from("batch_configuration_audits")
@@ -310,7 +375,72 @@ async function syncActivityBatches({
 
   const resultBatches = finalActiveBatches || [];
 
-  // 5. Audit Log (append-only)
+  // 5. Diff Detection & Snapshot Reconciliation for Transferred Activity Students
+  try {
+    const oldStudentBatchMap = new Map();
+    for (const oldBatch of existingList) {
+      const bId = String(oldBatch.id);
+      const bName = oldBatch.batch_name || `Batch ${oldBatch.batch_number}`;
+      if (Array.isArray(oldBatch.student_enrollments)) {
+        for (const u of oldBatch.student_enrollments) {
+          const clean = String(u || "").trim().toUpperCase();
+          if (clean) oldStudentBatchMap.set(clean, { batchId: bId, batchName: bName });
+        }
+      }
+    }
+
+    const newStudentBatchMap = new Map();
+    for (const newBatch of resultBatches) {
+      const bId = String(newBatch.id);
+      const bName = newBatch.batch_name || `Batch ${newBatch.batch_number}`;
+      if (Array.isArray(newBatch.student_enrollments)) {
+        for (const u of newBatch.student_enrollments) {
+          const clean = String(u || "").trim().toUpperCase();
+          if (clean) newStudentBatchMap.set(clean, { batchId: bId, batchName: bName });
+        }
+      }
+    }
+
+    const movedStudents = [];
+    for (const [studentUsn, oldInfo] of oldStudentBatchMap.entries()) {
+      const newInfo = newStudentBatchMap.get(studentUsn);
+      if (newInfo && newInfo.batchId !== oldInfo.batchId) {
+        movedStudents.push({
+          studentUsn,
+          fromBatchId: oldInfo.batchId,
+          fromBatchName: oldInfo.batchName,
+          toBatchId: newInfo.batchId,
+          toBatchName: newInfo.batchName,
+        });
+      }
+    }
+
+    for (const transfer of movedStudents) {
+      const { studentUsn, fromBatchId, fromBatchName, toBatchId, toBatchName } = transfer;
+      await supabase
+        .from("session_roster_snapshots")
+        .update({
+          batch_id: toBatchId,
+          batch_name: toBatchName,
+          transferred_to_batch_id: toBatchId,
+          transfer_note: `Transferred from batch ${fromBatchId} (${fromBatchName}) on ${new Date().toISOString()}`,
+        })
+        .eq("activity_id", cleanActivityId)
+        .eq("enrollment_no", studentUsn);
+    }
+  } catch (reconcileErr) {
+    console.warn("[batchManagementService] Activity snapshot reconciliation error:", reconcileErr.message);
+  }
+
+  // 6. Cache Invalidation Hook
+  try {
+    const { invalidateBatchRosterCache } = require("../routes/attendance");
+    if (typeof invalidateBatchRosterCache === "function") {
+      invalidateBatchRosterCache(cleanActivityId);
+    }
+  } catch {}
+
+  // 7. Audit Log (append-only)
   try {
     await supabase
       .from("batch_configuration_audits")

@@ -7,12 +7,14 @@ interface ManageSubjectsViewProps {
   mySubjects: any[];
   onOpenSubjectAnalytics: (subject: any) => Promise<void>;
   departments?: any[];
+  onBatchesSaved?: (batches: any[]) => void;
 }
 
 export const ManageSubjectsView: React.FC<ManageSubjectsViewProps> = React.memo(({
   mySubjects,
   onOpenSubjectAnalytics,
   departments = [],
+  onBatchesSaved,
 }) => {
   const [configuringSubject, setConfiguringSubject] = useState<any | null>(null);
 
@@ -112,6 +114,9 @@ export const ManageSubjectsView: React.FC<ManageSubjectsViewProps> = React.memo(
           isOpen={Boolean(configuringSubject)}
           onClose={() => setConfiguringSubject(null)}
           departments={departments}
+          onSaved={(newBatches) => {
+            onBatchesSaved?.(newBatches);
+          }}
         />
       )}
     </div>

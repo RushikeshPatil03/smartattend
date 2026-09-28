@@ -467,10 +467,12 @@ const LivePhotoCapture: React.FC<{
   }, []);
 
   useEffect(() => {
-    // Kick off model loading AND reference-descriptor pre-computation in parallel.
-    // preloadForStudent() uses Promise.allSettled internally — it never throws, so
-    // this effect is always safe to fire-and-forget from a mount side-effect.
-    void preloadForStudent(faceVerificationReferenceUrl);
+    // Only preload face recognition neural network models when a reference photo is provided
+    // (i.e. during attendance verification). Initial registration has no reference photo
+    // and only performs a photo snapshot + canvas signature.
+    if (faceVerificationReferenceUrl && faceVerificationReferenceUrl.trim().length > 5) {
+      void preloadForStudent(faceVerificationReferenceUrl);
+    }
   }, [faceVerificationReferenceUrl]);
 
   useEffect(() => {

@@ -33,12 +33,14 @@ router.get("/", authMiddleware, async (req, res) => {
 
     if (error) throw error;
     const includeArchived = req.query.includeArchived === "true";
-    const cleanedActivities = (activities || []).map((act) => ({
-      ...act,
-      batches: includeArchived
-        ? act.batches || []
-        : (act.batches || []).filter((b) => b.is_active !== false),
-    }));
+    const cleanedActivities = (activities || [])
+      .filter((act) => includeArchived || act.is_active !== false)
+      .map((act) => ({
+        ...act,
+        batches: includeArchived
+          ? act.batches || []
+          : (act.batches || []).filter((b) => b.is_active !== false),
+      }));
     return res.json({ ok: true, activities: cleanedActivities });
   } catch (err) {
     console.error("Fetch activities error:", err);
@@ -194,6 +196,7 @@ router.get("/student", authMiddleware, async (req, res) => {
     const studentSec = (student.section || "").trim().toUpperCase();
 
     const matchedActivities = (activities || []).filter((act) => {
+      if (act.is_active === false) return false;
       // Year match (or ALL)
       if (Array.isArray(act.years) && act.years.length > 0) {
         if (!act.years.map(Number).includes(studentYear)) return false;
@@ -400,6 +403,7 @@ router.post("/", authMiddleware, async (req, res) => {
         semesters: parsedSemesters,
         semester: primarySem,
         section: section ? section.trim().toUpperCase() : null,
+        is_active: true,
       })
       .select("id, faculty, department, name, type, event_date, start_date, end_date, years, semesters, semester, section, is_active, created_at")
       .single();
@@ -485,6 +489,7 @@ router.put("/:id", authMiddleware, async (req, res) => {
     }
 
     if (section !== undefined) updatePayload.section = section ? section.trim().toUpperCase() : null;
+    if (req.body.is_active !== undefined) updatePayload.is_active = Boolean(req.body.is_active);
 
     const { data: updatedActivity, error: updateError } = await supabase
       .from("activities")
@@ -541,6 +546,24 @@ router.delete("/:id", authMiddleware, async (req, res) => {
   if (!supabase) return res.status(503).json({ ok: false, error: "Database unavailable" });
 
   try {
+    // Check if any sessions reference this activity
+    const { count: sessionCount } = await supabase
+      .from("sessions")
+      .select("id", { count: "exact", head: true })
+      .eq("activity_id", id);
+
+    if (sessionCount && sessionCount > 0) {
+      // Soft-archive to preserve historical attendance sessions
+      const { error: archiveError } = await supabase
+        .from("activities")
+        .update({ is_active: false, updated_at: new Date().toISOString() })
+        .eq("id", id)
+        .eq("faculty", req.userId);
+
+      if (archiveError) throw archiveError;
+      return res.json({ ok: true, message: "Activity archived (preserved historical attendance records)" });
+    }
+
     const { error } = await supabase
       .from("activities")
       .delete()

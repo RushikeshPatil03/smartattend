@@ -28,6 +28,7 @@ export default defineConfig(({ mode }) => {
           navigateFallback: "/index.html",
           navigateFallbackDenylist: [/^\/api\//, /^\/assets\//, /\.[a-zA-Z0-9]+$/],
           globPatterns: ["**/*.{js,css,html,ico,png,svg,json}"],
+          globIgnores: ["**/models/**"],
           maximumFileSizeToCacheInBytes: 20 * 1024 * 1024, // 20 MB for face models & wasm
         },
       }),

@@ -101,8 +101,14 @@ async function createSessionRosterSnapshot(supabase, session, options = {}) {
         .select("id, name, enrollment_no, email")
         .eq("department", String(session.department));
       if (session.semester) query = query.eq("semester", Number(session.semester));
-      if (session.section && String(session.section).toUpperCase() !== "ALL") {
-        query = query.eq("section", String(session.section).trim().toUpperCase());
+      const rawSec = String(session.section || "").trim().toUpperCase();
+      if (rawSec && rawSec !== "ALL" && rawSec !== "*") {
+        const secList = rawSec.split(/[,/&|+]/).map((s) => s.trim()).filter(Boolean);
+        if (secList.length === 1) {
+          query = query.eq("section", secList[0]);
+        } else if (secList.length > 1) {
+          query = query.in("section", secList);
+        }
       }
       const { data: deptStudents } = await query;
       (deptStudents || []).forEach((s) => {
@@ -189,9 +195,14 @@ async function createSessionRosterSnapshot(supabase, session, options = {}) {
       if (session.department) {
         query = query.eq("department", String(session.department));
       }
-      const normalizedSec = String(session.section || "").trim().toUpperCase();
-      if (normalizedSec && normalizedSec !== "ALL") {
-        query = query.eq("section", normalizedSec);
+      const rawSec = String(session.section || "").trim().toUpperCase();
+      if (rawSec && rawSec !== "ALL" && rawSec !== "*") {
+        const secList = rawSec.split(/[,/&|+]/).map((s) => s.trim()).filter(Boolean);
+        if (secList.length === 1) {
+          query = query.eq("section", secList[0]);
+        } else if (secList.length > 1) {
+          query = query.in("section", secList);
+        }
       }
 
       const { data: cohortStudents } = await query;
