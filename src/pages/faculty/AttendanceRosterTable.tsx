@@ -382,7 +382,7 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
   const [selectedAcademicBatchId, setSelectedAcademicBatchId] = useState<string>(
     sheetFilters.batchId && sheetFilters.batchId !== "ALL" && sheetFilters.batchId !== "all"
       ? sheetFilters.batchId
-      : ""
+      : "ALL"
   );
 
   // Keep category state in sync if sheetFilters.category changes externally
@@ -446,7 +446,7 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
   useEffect(() => {
     if (category !== "ACADEMICS" || !sheetFilters.subjectId) {
       setAcademicBatches([]);
-      setSelectedAcademicBatchId("");
+      setSelectedAcademicBatchId("ALL");
       return;
     }
 
@@ -459,20 +459,20 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
         if (res?.ok && Array.isArray(res.batches) && res.batches.length > 0) {
           setAcademicBatches(res.batches);
           setSelectedAcademicBatchId((prev) => {
-            if (!prev || prev === "ALL" || prev === "all") return String(res.batches[0].id);
+            if (!prev || prev === "ALL" || prev === "all") return "ALL";
             const exists = res.batches.some((b: any) => String(b.id) === String(prev));
-            return exists ? prev : String(res.batches[0].id);
+            return exists ? prev : "ALL";
           });
         } else {
           setAcademicBatches([]);
-          setSelectedAcademicBatchId("");
+          setSelectedAcademicBatchId("ALL");
         }
       })
       .catch((err) => {
         console.error("Failed to load subject batches:", err);
         if (isMounted) {
           setAcademicBatches([]);
-          setSelectedAcademicBatchId("");
+          setSelectedAcademicBatchId("ALL");
         }
       })
       .finally(() => {
@@ -496,11 +496,21 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
     setSelectedActivityId(actId);
     const act = activitiesList.find((a) => String(a.id) === String(actId));
     const batches = Array.isArray(act?.batches) ? act.batches : [];
+    const bId = batches.length > 0 ? String(batches[0].id) : undefined;
     if (batches.length > 0) {
       setSelectedBatchId(String(batches[0].id));
     } else {
       setSelectedBatchId("");
     }
+    const nextFilters = {
+      ...sheetFilters,
+      category: "ACTIVITIES" as const,
+      activityId: actId,
+      batchId: bId,
+      subjectId: "",
+    };
+    setSheetFilters(nextFilters);
+    void onLoadSheet(true, nextFilters);
   };
 
   // Extract all admin-assigned class code presets across faculty subjects
@@ -587,60 +597,94 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
 
   const [selectedPresetKey, setSelectedPresetKey] = useState<string>(() => {
     if (sheetFilters.subjectId) {
-      const match = assignedClassPresets.find(
-        (p) =>
-          p.subjectId === sheetFilters.subjectId &&
-          (!sheetFilters.section || p.section === sheetFilters.section)
-      );
+      const match =
+        assignedClassPresets.find((p) => p.subjectId === sheetFilters.subjectId && (!sheetFilters.section || p.section === sheetFilters.section)) ||
+        assignedClassPresets.find((p) => p.subjectId === sheetFilters.subjectId);
       return match ? match.key : "";
     }
     return assignedClassPresets[0]?.key || "";
   });
+
+  const hasAutoLoadedRef = useRef<string | null>(null);
 
   // Handler when faculty picks a class preset:
   const handleSelectPreset = (presetKey: string) => {
     setSelectedPresetKey(presetKey);
     const selected = assignedClassPresets.find((p) => p.key === presetKey);
     if (!selected) return;
-    // Atomically update all underlying sheet filters
-    setSheetFilters((prev) => ({
-      ...prev,
-      category: "ACADEMICS",
+    const nextFilters = {
+      ...sheetFilters,
+      category: "ACADEMICS" as const,
       subjectId: selected.subjectId,
       departmentId: selected.departmentId,
       year: String(selected.year || ""),
       semester: String(selected.semester || ""),
       section: selected.section,
-    }));
+      batchId: "ALL",
+    };
+    setSelectedAcademicBatchId("ALL");
+    setSheetFilters(nextFilters);
+    hasAutoLoadedRef.current = `${selected.subjectId}_ALL`;
+    void onLoadSheet(true, nextFilters);
   };
 
-  // Auto-select first assigned class preset if no filter is currently active
+  // Auto-select and auto-load preset attendance matrix on mount or when presets become ready
   useEffect(() => {
-    if (category === "ACADEMICS" && !sheetFilters.subjectId && assignedClassPresets.length > 0) {
-      const first = assignedClassPresets[0];
-      if (first) {
+    if (category !== "ACADEMICS" || assignedClassPresets.length === 0) return;
+
+    if (sheetFilters.subjectId) {
+      const activeBatch = selectedAcademicBatchId && selectedAcademicBatchId !== "all" ? selectedAcademicBatchId : "ALL";
+      const currentKey = `${sheetFilters.subjectId}_${activeBatch}`;
+      if (hasAutoLoadedRef.current !== currentKey && sheetRows.length === 0 && !sheetLoading) {
+        hasAutoLoadedRef.current = currentKey;
+        const nextFilters = {
+          ...sheetFilters,
+          category: "ACADEMICS" as const,
+          batchId: activeBatch,
+        };
+        void onLoadSheet(false, nextFilters);
+      }
+      return;
+    }
+
+    const first = assignedClassPresets[0];
+    if (first) {
+      const currentKey = `${first.subjectId}_ALL`;
+      if (hasAutoLoadedRef.current !== currentKey) {
+        hasAutoLoadedRef.current = currentKey;
         setSelectedPresetKey(first.key);
-        setSheetFilters((prev) => ({
-          ...prev,
-          category: "ACADEMICS",
+        setSelectedAcademicBatchId("ALL");
+        const nextFilters = {
+          ...sheetFilters,
+          category: "ACADEMICS" as const,
           subjectId: first.subjectId,
           departmentId: first.departmentId,
           year: String(first.year || ""),
           semester: String(first.semester || ""),
           section: first.section,
-        }));
+          batchId: "ALL",
+        };
+        setSheetFilters(nextFilters);
+        void onLoadSheet(false, nextFilters);
       }
     }
-  }, [category, assignedClassPresets, sheetFilters.subjectId, setSheetFilters]);
+  }, [
+    category,
+    assignedClassPresets,
+    sheetFilters,
+    sheetRows.length,
+    sheetLoading,
+    selectedAcademicBatchId,
+    setSheetFilters,
+    onLoadSheet,
+  ]);
 
   // Keep selectedPresetKey in sync if sheetFilters changes externally
   useEffect(() => {
     if (sheetFilters.subjectId) {
-      const match = assignedClassPresets.find(
-        (p) =>
-          p.subjectId === sheetFilters.subjectId &&
-          (!sheetFilters.section || p.section === sheetFilters.section)
-      );
+      const match =
+        assignedClassPresets.find((p) => p.subjectId === sheetFilters.subjectId && (!sheetFilters.section || p.section === sheetFilters.section)) ||
+        assignedClassPresets.find((p) => p.subjectId === sheetFilters.subjectId);
       if (match && match.key !== selectedPresetKey) {
         setSelectedPresetKey(match.key);
       }
@@ -683,9 +727,9 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
   // Handler to generate matrix based on category selection
   const handleGenerateMatrix = async () => {
     if (category === "ACADEMICS") {
-      const bId = academicBatches.length > 0
-        ? (selectedAcademicBatchId || String(academicBatches[0]?.id || ""))
-        : undefined;
+      const bId = selectedAcademicBatchId && selectedAcademicBatchId !== "all"
+        ? selectedAcademicBatchId
+        : "ALL";
       const nextFilters = {
         ...sheetFilters,
         category: "ACADEMICS" as const,
@@ -1129,7 +1173,7 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
                 </label>
                 {academicBatches.length > 0 ? (
                   <select
-                    value={selectedAcademicBatchId || (academicBatches[0]?.id ? String(academicBatches[0].id) : "")}
+                    value={selectedAcademicBatchId || "ALL"}
                     onChange={(e) => {
                       const nextBatchId = e.target.value;
                       setSelectedAcademicBatchId(nextBatchId);
@@ -1139,10 +1183,12 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
                         batchId: nextBatchId,
                       };
                       setSheetFilters(nextFilters);
+                      hasAutoLoadedRef.current = `${sheetFilters.subjectId}_${nextBatchId}`;
                       void onLoadSheet(true, nextFilters);
                     }}
                     className="w-full rounded-xl border border-slate-300/90 bg-white px-4 py-2.5 text-xs font-bold text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 shadow-xs transition hover:border-slate-400 cursor-pointer"
                   >
+                    <option value="ALL">All Batches (Full Class Strength)</option>
                     {academicBatches.map((b: any, idx: number) => (
                       <option key={b.id || idx} value={b.id}>
                         Batch {b.batch_number || idx + 1}: {b.batch_name} ({b.student_enrollments?.length || 0} students)
@@ -1151,11 +1197,11 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
                   </select>
                 ) : (
                   <select
-                    value=""
+                    value="ALL"
                     disabled
                     className="w-full rounded-xl border border-slate-300/90 bg-slate-100 px-4 py-2.5 text-xs font-bold text-slate-600 cursor-not-allowed"
                   >
-                    <option value="">All Students (Full Class Strength)</option>
+                    <option value="ALL">All Students (Full Class Strength)</option>
                   </select>
                 )}
               </div>
@@ -1301,7 +1347,7 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
               )}
               {academicBatches.length > 0 && selectedAcademicBatchId && (
                 <span className="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-md border border-emerald-200 font-bold">
-                  Batch: {academicBatches.find((b: any) => String(b.id) === String(selectedAcademicBatchId))?.batch_name || selectedAcademicBatchId}
+                  Batch: {selectedAcademicBatchId === "ALL" ? "All Batches" : (academicBatches.find((b: any) => String(b.id) === String(selectedAcademicBatchId))?.batch_name || selectedAcademicBatchId)}
                 </span>
               )}
             </div>
@@ -1571,9 +1617,24 @@ export const AttendanceRosterTable: React.FC<AttendanceRosterTableProps> = React
                       >
                         <Users size={32} className="mx-auto mb-2 text-slate-300" />
                         <p className="font-bold text-sm text-slate-700">No attendance records loaded</p>
-                        <p className="text-slate-400 text-xs mt-0.5">
-                          Select your assigned subject above and click "Generate" to construct the matrix.
+                        <p className="text-slate-400 text-xs mt-0.5 max-w-sm mx-auto">
+                          {sheetFilters.subjectId
+                            ? "No attendance entries match the current subject and batch filters. Click below to load or refresh records."
+                            : "Select your assigned subject above to view the attendance ledger."}
                         </p>
+                        {sheetFilters.subjectId && (
+                          <div className="mt-4">
+                            <button
+                              type="button"
+                              onClick={handleGenerateMatrix}
+                              disabled={sheetLoading}
+                              className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-emerald-500 transition cursor-pointer"
+                            >
+                              <RefreshCw size={13} className={sheetLoading ? "animate-spin" : ""} />
+                              <span>{sheetLoading ? "Loading..." : "Load Attendance Ledger"}</span>
+                            </button>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   ) : (

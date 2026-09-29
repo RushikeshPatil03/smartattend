@@ -1796,6 +1796,26 @@ const FacultyDashboard: React.FC = () => {
             });
           }
 
+          // Ensure any student with recorded attendance is also preserved in studentList
+          if (rawAttendanceList.length > 0) {
+            const knownUsns = new Set(studentList.map((s: any) => String(s.enrollmentNo || s.enrollment_no || "").trim().toUpperCase()));
+            rawAttendanceList.forEach((att: any) => {
+              const usn = String(att.student?.enrollmentNo || att.student?.enrollment_no || att.enrollment_no || att.enrollmentNo || "").trim().toUpperCase();
+              if (usn && !knownUsns.has(usn)) {
+                knownUsns.add(usn);
+                studentList.push({
+                  id: att.student?.id || att.student?._id || att.student || `att_${usn}`,
+                  name: att.student?.name || att.student_name || usn,
+                  enrollmentNo: usn,
+                  enrollment_no: usn,
+                  email: att.student?.email || att.student_email || "",
+                  batchId: att.batch_id || null,
+                  batchName: null,
+                });
+              }
+            });
+          }
+
           // 1. If viewing a specific batch:
           // Strict roster isolation: display ONLY enrolled batch students
           // Session continuity: display full-class sessions + this batch's sessions
@@ -1946,6 +1966,43 @@ const FacultyDashboard: React.FC = () => {
       setSheetLoading(false);
     }
   }, [sheetFilters]);
+
+  // Automatically sync active subject and load sheet when switching to MANAGE_ATTENDANCE
+  useEffect(() => {
+    if (activeTab === "MANAGE_ATTENDANCE") {
+      const preferredSubject =
+        formSubject ||
+        (Array.isArray(sessions) && sessions.length > 0 ? (sessions[0].subject || sessions[0].subject_id) : "");
+      if (preferredSubject && !sheetFilters.subjectId) {
+        const nextFilters = {
+          ...sheetFilters,
+          category: "ACADEMICS" as const,
+          subjectId: preferredSubject,
+          departmentId: formDepartment || sheetFilters.departmentId,
+          year: formYear || sheetFilters.year,
+          semester: formSem || sheetFilters.semester,
+          section: formSection || sheetFilters.section,
+          batchId: "ALL",
+        };
+        setSheetFilters(nextFilters);
+        void loadSheet(false, nextFilters);
+      } else if (sheetFilters.subjectId && sheetRows.length === 0 && !sheetLoading) {
+        void loadSheet(false, sheetFilters);
+      }
+    }
+  }, [
+    activeTab,
+    formSubject,
+    formDepartment,
+    formYear,
+    formSem,
+    formSection,
+    sessions,
+    sheetFilters,
+    sheetRows.length,
+    sheetLoading,
+    loadSheet,
+  ]);
 
   const exportCsv = useCallback(() => {
     if (!sheetRows.length) return;
