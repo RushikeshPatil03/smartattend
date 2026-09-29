@@ -13,6 +13,7 @@ const {
   recordManualAbsent,
   removeManualAbsent,
   isManualAbsent,
+  TOTP_BLOCK_DURATION_MS,
 } = require("../services/totpVerification");
 const { validateStudentLocation, checkSuspiciousLocationJump } = require("../services/locationValidation");
 const { verifyFaceAgainstStudent } = require("../services/faceVerification");
@@ -2377,6 +2378,7 @@ async function handleTotpAttendanceSubmission(req, res) {
     faceMatch,
     faceMetrics,
     faceEmbedding,
+    secondQrScannedAtMs,
   } = req.body || {};
 
   const rawSessionId =
@@ -2618,6 +2620,41 @@ async function handleTotpAttendanceSubmission(req, res) {
       });
     }
 
+    // --- QR-2 TIMING MEASUREMENT (informational only, never blocks attendance) ---
+    let qr2ScanTimingMs = null;
+    const secondBlockIndex =
+      totpValidation.secondBlockIndex ??
+      (Array.isArray(sequence) && sequence[1] && typeof sequence[1].index === "number" ? sequence[1].index : null) ??
+      totpValidation.blockIndex;
+
+    if (typeof secondBlockIndex === "number") {
+      const qr2IssuedAtMs = secondBlockIndex * TOTP_BLOCK_DURATION_MS;
+      let clientScanMs = null;
+      if (typeof secondQrScannedAtMs === "number" && secondQrScannedAtMs > 0) {
+        clientScanMs = secondQrScannedAtMs;
+      } else if (Array.isArray(sequence) && sequence[1] && typeof sequence[1].scannedAt === "number" && sequence[1].scannedAt > 0) {
+        clientScanMs = sequence[1].scannedAt;
+      }
+
+      if (typeof clientScanMs === "number") {
+        const estimatedAgeMs = clientScanMs - qr2IssuedAtMs;
+        if (estimatedAgeMs >= 0 && estimatedAgeMs <= 60000) {
+          qr2ScanTimingMs = Math.round(estimatedAgeMs);
+        } else {
+          // If slight client clock skew or drift, check server-received time fallback
+          const serverAgeMs = Date.now() - qr2IssuedAtMs;
+          if (serverAgeMs >= 0 && serverAgeMs <= 60000) {
+            qr2ScanTimingMs = Math.round(serverAgeMs);
+          }
+        }
+      } else {
+        const serverAgeMs = Date.now() - qr2IssuedAtMs;
+        if (serverAgeMs >= 0 && serverAgeMs <= 60000) {
+          qr2ScanTimingMs = Math.round(serverAgeMs);
+        }
+      }
+    }
+
     // Atomic upsert into attendances table using micro-batched pipeline
     const fullAttendancePayload = {
       session: sessionId,
@@ -2646,6 +2683,7 @@ async function handleTotpAttendanceSubmission(req, res) {
         : null,
       device_fingerprint: normalizedFp,
       face_verification: faceVerificationResult,
+      qr2_scan_timing_ms: qr2ScanTimingMs,
     };
 
     let attendance;
@@ -2741,6 +2779,7 @@ async function handleTotpAttendanceSubmission(req, res) {
       timestamp: attendance.timestamp,
       status: "present",
       method: "QR_TOTP",
+      ...(qr2ScanTimingMs !== null ? { qr2ScanTimingMs } : {}),
     };
 
     realtimeBroadcaster.enqueue(sessionId, attendanceBroadcastPayload);
@@ -2751,6 +2790,7 @@ async function handleTotpAttendanceSubmission(req, res) {
       _id: attendance.id,
       status: "present",
       markedAt: attendance.timestamp,
+      qr2ScanTimingMs,
       session: {
         id: session.id,
         _id: session.id,
@@ -2799,7 +2839,7 @@ router.get("/session/:id/attendees", auth(["FACULTY", "ADMIN"]), async (req, res
       return res.status(403).json({ ok: false, error: "Forbidden" });
     }
 
-    const { data: rawAttendances } = await supabase
+    let { data: rawAttendances, error: attFetchErr } = await supabase
       .from("attendances")
       .select(`
         id,
@@ -2808,10 +2848,28 @@ router.get("/session/:id/attendees", auth(["FACULTY", "ADMIN"]), async (req, res
         device_fingerprint,
         face_verification,
         location,
+        qr2_scan_timing_ms,
         student:students(id, name, enrollment_no, email, profile_photo_url)
       `)
       .eq("session", sessionId)
       .order("timestamp", { ascending: false });
+
+    if (attFetchErr && (attFetchErr.code === "PGRST204" || attFetchErr.code === "42703" || String(attFetchErr.message || "").toLowerCase().includes("qr2_scan_timing_ms"))) {
+      const fallbackRes = await supabase
+        .from("attendances")
+        .select(`
+          id,
+          timestamp,
+          status,
+          device_fingerprint,
+          face_verification,
+          location,
+          student:students(id, name, enrollment_no, email, profile_photo_url)
+        `)
+        .eq("session", sessionId)
+        .order("timestamp", { ascending: false });
+      rawAttendances = fallbackRes.data;
+    }
 
     const attendees = (rawAttendances || []).map((att) => ({
       id: att.id,
@@ -2827,6 +2885,7 @@ router.get("/session/:id/attendees", auth(["FACULTY", "ADMIN"]), async (req, res
       deviceFingerprint: att.device_fingerprint || "",
       faceVerification: att.face_verification || null,
       location: att.location || null,
+      qr2ScanTimingMs: typeof att.qr2_scan_timing_ms === "number" && att.qr2_scan_timing_ms > 0 ? att.qr2_scan_timing_ms : null,
     }));
 
     // Check immutable roster snapshot first

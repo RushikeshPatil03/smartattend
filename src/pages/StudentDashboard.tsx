@@ -57,10 +57,10 @@ const MAX_DYNAMIC_SEQUENCE_GAP_SECONDS = Math.max(
   Number(import.meta.env.VITE_QR_SEQUENCE_GAP_SECONDS || 6)
 );
 const FACE_VERIFICATION_WINDOW_MS = 15000;
-type ScannerResult = string | { first: string; second: string; secondScannedAt?: number } | { sequence: RotatingQrPayload[] } | null;
+type ScannerResult = string | { first: string; second: string; secondScannedAt?: number } | { sequence: RotatingQrPayload[]; secondScannedAt?: number } | null;
 type DynamicPairScanResult =
   | { kind: "legacy"; first: string; second: string; secondScannedAt?: number }
-  | { kind: "totp"; sequence: RotatingQrPayload[] };
+  | { kind: "totp"; sequence: RotatingQrPayload[]; secondScannedAt?: number };
 type DynamicQrPayload = {
   type?: string;
   sessionId?: string;
@@ -1438,7 +1438,11 @@ const StudentDashboard: React.FC = () => {
           )
         ) {
           if ("sequence" in v) {
-            resolve({ kind: "totp", sequence: (v as any).sequence });
+            resolve({
+              kind: "totp",
+              sequence: (v as any).sequence,
+              secondScannedAt: (v as any).secondScannedAt || Date.now(),
+            });
           } else {
             resolve({
               kind: "legacy",
@@ -1666,11 +1670,13 @@ const StudentDashboard: React.FC = () => {
       const submitPromise = (async () => {
         if (pendingQrPairRef.current?.kind === "totp") {
           const seq = pendingQrPairRef.current.sequence;
+          const secondScannedAtMs = pendingQrPairRef.current.secondScannedAt || Date.now();
           const targetSessionId = seq?.[0]?.classId || (seq?.[0] as any)?.sessionId;
           return await apiClient.post("/api/attendance/submit", {
             sessionId: targetSessionId,
             sequence: seq,
             fingerprint,
+            secondQrScannedAtMs: secondScannedAtMs,
             lat: coords.lat,
             lng: coords.lng,
             accuracy: coords.accuracy,
@@ -2017,8 +2023,10 @@ const StudentDashboard: React.FC = () => {
                   return false;
                 }
                 if (status === "ready") {
-                  const sequence = sequentialQrBufferRef.current.getPayloads();
-                  closeScanner({ sequence });
+                  const blocks = sequentialQrBufferRef.current.getBlocks();
+                  const sequence = blocks.map((b) => b.payload);
+                  const secondScannedAt = blocks[1]?.scannedAt || Date.now();
+                  closeScanner({ sequence, secondScannedAt });
                   return true;
                 }
                 setScannerStatusTone("success");

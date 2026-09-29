@@ -180,6 +180,7 @@ async function verifyConsecutiveTotpTokens(sessionId, token1, token2, nowMs = Da
       return {
         ok: true,
         blockIndex: block1Index,
+        secondBlockIndex: block2Index,
         validatedAt: nowMs,
       };
     }

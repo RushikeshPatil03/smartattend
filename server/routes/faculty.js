@@ -29,6 +29,9 @@ const {
   getSessionRosterSnapshotsForSessions,
 } = require("../services/sessionRosterSnapshotService");
 const env = require("../config/env");
+const { computeRobustStats, shouldFlagForReview } = require("../services/timingReview");
+const NEEDS_REVIEW_MIN_QR2_AGE_MS = env.NEEDS_REVIEW_MIN_QR2_AGE_MS;
+const NEEDS_REVIEW_MIN_SAMPLES = env.NEEDS_REVIEW_MIN_SAMPLES;
 
 const DEFAULT_SESSION_RADIUS_METERS = Number(
   process.env.DEFAULT_SESSION_RADIUS_METERS || 50
@@ -1690,17 +1693,37 @@ router.get(["/sessions/:id/roster-snapshot", "/session/:id/roster-snapshot"], au
     }
 
     // Fetch recorded attendances
-    const { data: rawAttendances } = await supabase
+    let { data: rawAttendances, error: rawErr } = await supabase
       .from("attendances")
       .select(`
         id, student, timestamp, status, device_fingerprint, face_verification, location,
-        enrollment_no, student_name, student_email,
+        enrollment_no, student_name, student_email, qr2_scan_timing_ms,
         profile:students(id, name, enrollment_no, email, profile_photo_url)
       `)
       .eq("session", sessionId)
       .order("timestamp", { ascending: false });
 
+    if (rawErr && (rawErr.code === "PGRST204" || rawErr.code === "42703" || String(rawErr.message || "").toLowerCase().includes("qr2_scan_timing_ms"))) {
+      const fallbackRes = await supabase
+        .from("attendances")
+        .select(`
+          id, student, timestamp, status, device_fingerprint, face_verification, location,
+          enrollment_no, student_name, student_email,
+          profile:students(id, name, enrollment_no, email, profile_photo_url)
+        `)
+        .eq("session", sessionId)
+        .order("timestamp", { ascending: false });
+      rawAttendances = fallbackRes.data;
+    }
+
     const rawList = rawAttendances || [];
+
+    // Compute robust session timing stats for the "Needs Review" feature
+    const sessionTimingValues = rawList
+      .filter((a) => a.status === "present" && typeof a.qr2_scan_timing_ms === "number" && a.qr2_scan_timing_ms > 0)
+      .map((a) => a.qr2_scan_timing_ms);
+    const timingStats = computeRobustStats(sessionTimingValues);
+
     const recordedStudentIds = new Set();
     const recordedEnrollmentNos = new Set();
     const presentStudentIds = new Set();
@@ -1722,6 +1745,13 @@ router.get(["/sessions/:id/roster-snapshot", "/session/:id/roster-snapshot"], au
         if (effectiveEnrollmentNo) presentEnrollmentNos.add(String(effectiveEnrollmentNo).trim().toUpperCase());
       }
 
+      const attQr2Timing = typeof att.qr2_scan_timing_ms === "number" && att.qr2_scan_timing_ms > 0
+        ? att.qr2_scan_timing_ms
+        : null;
+      const needsReview = status === "present" && attQr2Timing !== null
+        ? shouldFlagForReview(attQr2Timing, timingStats, NEEDS_REVIEW_MIN_QR2_AGE_MS, NEEDS_REVIEW_MIN_SAMPLES)
+        : false;
+
       return {
         id: att.id,
         _id: att.id,
@@ -1738,6 +1768,9 @@ router.get(["/sessions/:id/roster-snapshot", "/session/:id/roster-snapshot"], au
         status,
         timestamp: att.timestamp,
         markedAt: att.timestamp,
+        ...(attQr2Timing !== null ? { qr2ScanTimingMs: attQr2Timing } : {}),
+        ...(needsReview ? { needsReview: true } : {}),
+        ...(timingStats.count >= NEEDS_REVIEW_MIN_SAMPLES ? { sessionMedianQr2Ms: timingStats.median } : {}),
       };
     });
 
@@ -2605,11 +2638,20 @@ router.get("/session-roster-history", authMiddleware, async (req, res) => {
       });
     }
     if (sessionIds.length > 0) {
-      const { data: rawAttendances } = await supabase
+      let { data: rawAttendances, error: rawErr } = await supabase
         .from("attendances")
-        .select("id, session, student, faculty, enrollment_no, student_name, student_email, timestamp, status, batch_id")
+        .select("id, session, student, faculty, enrollment_no, student_name, student_email, timestamp, status, batch_id, qr2_scan_timing_ms")
         .in("session", sessionIds)
         .order("timestamp", { ascending: false });
+
+      if (rawErr && (rawErr.code === "PGRST204" || rawErr.code === "42703" || String(rawErr.message || "").toLowerCase().includes("qr2_scan_timing_ms"))) {
+        const fallbackRes = await supabase
+          .from("attendances")
+          .select("id, session, student, faculty, enrollment_no, student_name, student_email, timestamp, status, batch_id")
+          .in("session", sessionIds)
+          .order("timestamp", { ascending: false });
+        rawAttendances = fallbackRes.data;
+      }
 
       attendances = (rawAttendances || []).map((att) => ({
         id: att.id,
@@ -2623,6 +2665,7 @@ router.get("/session-roster-history", authMiddleware, async (req, res) => {
         status: att.status || "present",
         timestamp: att.timestamp,
         batch_id: att.batch_id || null,
+        qr2ScanTimingMs: typeof att.qr2_scan_timing_ms === "number" && att.qr2_scan_timing_ms > 0 ? att.qr2_scan_timing_ms : null,
       }));
     }
 
