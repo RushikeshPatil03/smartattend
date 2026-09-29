@@ -731,7 +731,8 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
 }) => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isReviewMode, setIsReviewMode] = useState(false);
-  const [reviewTab, setReviewTab] = useState<"present" | "absent">("present");
+  const [reviewTab, setReviewTab] = useState<"present" | "absent" | "review">("present");
+  const [liveStreamTab, setLiveStreamTab] = useState<"all" | "review">("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [liveSearchQuery, setLiveSearchQuery] = useState("");
   const [isCancelling, setIsCancelling] = useState(false);
@@ -986,6 +987,74 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
       a.enrollmentNo.localeCompare(b.enrollmentNo)
     );
   }, [liveAttendance, attendanceStatusMap]);
+
+  // ── Robust Timing Stats & "Needs Review" Derivation ──────────────────────
+  const timingStats = useMemo(() => {
+    const values: number[] = [];
+    (liveAttendance || []).forEach((item: any) => {
+      const timing = item?.qr2ScanTimingMs ?? item?.qr2Ms;
+      if (typeof timing === "number" && timing > 0) {
+        values.push(timing);
+      }
+    });
+
+    if (values.length === 0) {
+      return { median: 0, robustDeviation: 0, count: 0, hasBaseline: false };
+    }
+
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    const med = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+    const absDevs = sorted.map((v) => Math.abs(v - med)).sort((a, b) => a - b);
+    const madMid = Math.floor(absDevs.length / 2);
+    const mad = absDevs.length % 2 === 0 ? (absDevs[madMid - 1] + absDevs[madMid]) / 2 : absDevs[madMid];
+    const robustDev = 1.4826 * mad;
+
+    return {
+      median: Math.round(med),
+      robustDeviation: Math.round(robustDev),
+      count: values.length,
+      hasBaseline: values.length >= 5, // minimum sample count for reliable baseline
+    };
+  }, [liveAttendance]);
+
+  const isItemFlaggedForReview = useCallback((item: any): boolean => {
+    const raw = item?.rawItem || item;
+    if (raw?.needsReview === true) return true;
+    const timing = raw?.qr2ScanTimingMs ?? raw?.qr2Ms;
+    if (timingStats.hasBaseline && typeof timing === "number" && timing >= 500) {
+      return timing > timingStats.median + 3 * timingStats.robustDeviation;
+    }
+    return false;
+  }, [timingStats]);
+
+  const needsReviewList = useMemo(() => {
+    return presentList
+      .filter((item) => isItemFlaggedForReview(item))
+      .sort((a, b) => {
+        const tA = a.rawItem?.qr2ScanTimingMs ?? a.rawItem?.qr2Ms ?? 0;
+        const tB = b.rawItem?.qr2ScanTimingMs ?? b.rawItem?.qr2Ms ?? 0;
+        return tB - tA; // sorted from newest/most delayed down to least delayed
+      });
+  }, [presentList, isItemFlaggedForReview]);
+
+  const needsReviewCount = needsReviewList.length;
+
+  const filteredNeedsReviewList = useMemo(() => {
+    if (!liveSearchQuery.trim()) return needsReviewList;
+    const q = liveSearchQuery.toLowerCase().trim();
+    return needsReviewList.filter(
+      (s) => s.name.toLowerCase().includes(q) || s.enrollmentNo.toLowerCase().includes(q)
+    );
+  }, [needsReviewList, liveSearchQuery]);
+
+  const filteredReviewModeNeedsReviewList = useMemo(() => {
+    if (!searchQuery.trim()) return needsReviewList;
+    const q = searchQuery.toLowerCase().trim();
+    return needsReviewList.filter(
+      (s) => s.name.toLowerCase().includes(q) || s.enrollmentNo.toLowerCase().includes(q)
+    );
+  }, [needsReviewList, searchQuery]);
 
   const presentCount = presentList.length;
   const absentCount = absentList.length;
@@ -1825,6 +1894,19 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                       <UserX size={14} />
                       Absentees ({absentCount})
                     </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setReviewTab("review")}
+                      className={`rounded-xl px-3.5 py-2 text-xs font-bold transition duration-150 flex items-center gap-1.5 cursor-pointer ${
+                        reviewTab === "review"
+                          ? "bg-amber-600 text-white shadow-sm"
+                          : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/60"
+                      }`}
+                    >
+                      <Clock size={14} />
+                      Needs Review ({needsReviewCount})
+                    </button>
                   </div>
 
                   {/* Upgraded Quick-Add Search Bar (Supports last 3 digits, USN, or name + Enter) */}
@@ -1985,6 +2067,72 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                           </div>
                         </div>
                       ))
+                    )
+                  )}
+
+                  {/* 3. Needs Review Tab View */}
+                  {reviewTab === "review" && (
+                    filteredReviewModeNeedsReviewList.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-16 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
+                        <CheckCircle2 size={28} className="mb-2 text-emerald-500" />
+                        <p className="font-extrabold text-xs text-slate-800">No Scans Need Review</p>
+                        <p className="mt-0.5 text-[11px]">All student QR-2 scan timings are consistent with the session baseline.</p>
+                      </div>
+                    ) : (
+                      filteredReviewModeNeedsReviewList.map((item) => {
+                        const itemTiming = item.rawItem?.qr2ScanTimingMs ?? item.rawItem?.qr2Ms;
+                        const medianMs = item.rawItem?.sessionMedianQr2Ms ?? timingStats.median;
+                        const timingText = itemTiming != null ? `QR 2: ${itemTiming} ms | Session median: ${medianMs || itemTiming} ms` : null;
+
+                        return (
+                          <div
+                            key={item.enrollmentNo}
+                            className="flex items-center justify-between rounded-xl border border-rose-200/90 bg-rose-50/60 hover:bg-rose-50/80 p-2.5 transition-colors duration-150"
+                          >
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white border border-rose-200 overflow-hidden shadow-2xs">
+                                {item.photoUrl ? (
+                                  <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
+                                ) : (
+                                  <span className="font-extrabold text-[11px] text-rose-700">
+                                    {item.name.slice(0, 1).toUpperCase()}
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="min-w-0">
+                                <p className="truncate text-xs font-bold text-slate-900 leading-tight">{item.name}</p>
+                                <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                                  <span className="font-mono text-[10px] text-slate-500 font-semibold leading-tight">
+                                    {item.enrollmentNo}
+                                  </span>
+                                  <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-rose-700 bg-rose-100/90 border border-rose-200 px-1.5 py-0.2 rounded">
+                                    Needs Review
+                                  </span>
+                                </div>
+                                {timingText && (
+                                  <p className="font-mono text-[10px] text-rose-600 font-medium mt-0.5">
+                                    {timingText}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* 1-Click Toggle: Mark Absent */}
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => onManualAttendance("absent", item.enrollmentNo)}
+                                className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-100/80 px-2.5 py-1 text-[11px] font-bold text-rose-700 hover:bg-rose-200 active:scale-95 transition cursor-pointer shadow-2xs"
+                                title={`Mark ${item.name} as absent`}
+                              >
+                                <Trash2 size={12} className="text-rose-700" />
+                                <span>Mark Absent</span>
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
                     )
                   )}
                 </div>
@@ -2293,16 +2441,41 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                   </div>
                 </div>
 
-                {/* Live Feed Status Bar */}
-                <div className="mt-3.5 flex items-center justify-between rounded-2xl bg-emerald-50/90 border border-emerald-200/80 px-3.5 py-2 text-xs shadow-2xs">
-                  <span className="flex items-center gap-1.5 font-extrabold text-emerald-800">
+                {/* Live Feed Status Bar & Tabs */}
+                <div className="mt-3.5 flex items-center justify-between rounded-2xl bg-slate-100/90 border border-slate-200/80 p-1 text-xs shadow-2xs">
+                  <button
+                    type="button"
+                    onClick={() => setLiveStreamTab("all")}
+                    className={`flex-1 rounded-xl py-1.5 px-2.5 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                      liveStreamTab === "all"
+                        ? "bg-white text-slate-900 shadow-sm"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
                     <span className="h-2 w-2 rounded-full bg-emerald-500 animate-ping" />
-                    Live Scanning Active
-                  </span>
-                  <span className="font-mono font-bold text-emerald-700">
-                    {presentCount}
-                    {effectiveTotalStudents > 0 ? ` / ${effectiveTotalStudents}` : ""} Present
-                  </span>
+                    <span>All Scans ({presentCount})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLiveStreamTab("review")}
+                    className={`flex-1 rounded-xl py-1.5 px-2.5 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                      liveStreamTab === "review"
+                        ? "bg-white text-rose-700 shadow-sm"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    <Clock size={12} />
+                    <span>Needs Review</span>
+                    <span
+                      className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold ${
+                        needsReviewCount > 0
+                          ? "bg-rose-100 text-rose-700 border border-rose-200"
+                          : "bg-slate-200 text-slate-600"
+                      }`}
+                    >
+                      {needsReviewCount}
+                    </span>
+                  </button>
                 </div>
 
                 {/* High-Performance Compact Student Search Bar */}
@@ -2361,7 +2534,76 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                   }}
                 >
                   <AnimatePresence initial={false}>
-                    {liveSearchQuery.trim() ? (
+                    {liveStreamTab === "review" ? (
+                      /* NEEDS REVIEW STREAM (Filtered by outlier timing, sorted desc) */
+                      filteredNeedsReviewList.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center py-12 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
+                          <CheckCircle2 size={24} className="mb-2 text-emerald-500" />
+                          <p className="font-bold text-xs text-slate-700">No scans need review</p>
+                          <p className="mt-0.5 text-[11px] text-slate-400 max-w-[220px]">
+                            All student QR-2 scan timings are consistent with the session baseline.
+                          </p>
+                        </div>
+                      ) : (
+                        <>
+                          {filteredNeedsReviewList.map((item) => {
+                            const itemTiming = item.rawItem?.qr2ScanTimingMs ?? item.rawItem?.qr2Ms;
+                            const medianMs = item.rawItem?.sessionMedianQr2Ms ?? timingStats.median;
+                            const timingText = itemTiming != null ? `QR 2: ${itemTiming} ms | Session median: ${medianMs || itemTiming} ms` : null;
+
+                            return (
+                              <motion.div
+                                key={`live-review-${item.enrollmentNo}`}
+                                layout
+                                initial={{ opacity: 0, y: -6 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, scale: 0.95 }}
+                                transition={{ duration: 0.15 }}
+                                className="flex items-center justify-between rounded-xl border border-rose-300 bg-rose-50/70 px-2.5 py-1.5 transition-colors duration-150 hover:bg-rose-50/90"
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white border border-rose-200 overflow-hidden shadow-2xs">
+                                    {item.photoUrl ? (
+                                      <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
+                                    ) : (
+                                      <span className="font-extrabold text-[11px] text-rose-700">
+                                        {item.name.slice(0, 1).toUpperCase()}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="min-w-0">
+                                    <p className="truncate text-xs font-bold text-slate-900 leading-tight">{item.name}</p>
+                                    <div className="flex flex-col mt-0.5">
+                                      <p className="font-mono text-[10px] text-slate-500 truncate leading-tight">{item.enrollmentNo}</p>
+                                      {timingText && (
+                                        <p className="font-mono text-[9px] text-rose-600 font-semibold tracking-tight mt-0.5">
+                                          {timingText}
+                                        </p>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 border border-rose-300 px-2 py-0.5 text-[9px] font-extrabold text-rose-800 shadow-2xs">
+                                    Review
+                                  </span>
+                                  {/* Quick Remove / Trash Dustbin Icon */}
+                                  <button
+                                    type="button"
+                                    onClick={() => onManualAttendance("absent", item.enrollmentNo)}
+                                    title={`Remove ${item.name} (${item.enrollmentNo})`}
+                                    className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-100 active:scale-90 transition cursor-pointer"
+                                  >
+                                    <Trash2 size={13} />
+                                  </button>
+                                </div>
+                              </motion.div>
+                            );
+                          })}
+                        </>
+                      )
+                    ) : liveSearchQuery.trim() ? (
                       /* SEARCH RESULTS VIEW */
                       absentCandidateMatches.length === 0 && filteredLivePresentList.length === 0 ? (
                         <div className="flex flex-col items-center justify-center py-12 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
@@ -2502,6 +2744,13 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                                 })
                               : "Verified";
 
+                            const isFlagged = isItemFlaggedForReview(item);
+                            const itemTiming = item.rawItem?.qr2ScanTimingMs ?? item.rawItem?.qr2Ms;
+                            const medianMs = item.rawItem?.sessionMedianQr2Ms ?? timingStats.median;
+                            const timingText = isFlagged && itemTiming != null
+                              ? `QR 2: ${itemTiming} ms | Session median: ${medianMs || itemTiming} ms`
+                              : null;
+
                             return (
                               <motion.div
                                 key={item.enrollmentNo}
@@ -2510,28 +2759,45 @@ export const LiveSessionStudio: React.FC<LiveSessionStudioProps> = React.memo(({
                                 animate={{ opacity: 1, y: 0 }}
                                 exit={{ opacity: 0, scale: 0.95 }}
                                 transition={{ duration: 0.15 }}
-                                className="flex items-center justify-between rounded-xl border border-emerald-200/80 bg-emerald-50/40 px-2.5 py-1.5 transition-colors duration-150 hover:bg-emerald-50/70"
+                                className={`flex items-center justify-between rounded-xl border px-2.5 py-1.5 transition-colors duration-150 ${
+                                  isFlagged
+                                    ? "border-rose-300 bg-rose-50/60 hover:bg-rose-50/80"
+                                    : "border-emerald-200/80 bg-emerald-50/40 hover:bg-emerald-50/70"
+                                }`}
                               >
                                 <div className="flex items-center gap-2.5 min-w-0">
                                   <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white border border-slate-200 overflow-hidden shadow-2xs">
                                     {item.photoUrl ? (
                                       <img src={item.photoUrl} alt={item.name} className="h-full w-full object-cover" />
                                     ) : (
-                                      <span className="font-extrabold text-[11px] text-slate-700">
+                                      <span className={`font-extrabold text-[11px] ${isFlagged ? "text-rose-700" : "text-slate-700"}`}>
                                         {item.name.slice(0, 1).toUpperCase()}
                                       </span>
                                     )}
                                   </div>
                                   <div className="min-w-0">
                                     <p className="truncate text-xs font-bold text-slate-900 leading-tight">{item.name}</p>
-                                    <p className="font-mono text-[10px] text-slate-500 truncate leading-tight">{item.enrollmentNo}</p>
+                                    <div className="flex flex-col mt-0.5">
+                                      <p className="font-mono text-[10px] text-slate-500 truncate leading-tight">{item.enrollmentNo}</p>
+                                      {timingText && (
+                                        <p className="font-mono text-[9px] text-rose-600 font-semibold tracking-tight mt-0.5">
+                                          {timingText}
+                                        </p>
+                                      )}
+                                    </div>
                                   </div>
                                 </div>
 
                                 <div className="flex items-center gap-1.5 shrink-0">
-                                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100/90 border border-emerald-300 px-2 py-0.5 text-[9px] font-extrabold text-emerald-800 shadow-2xs">
-                                    <Check size={10} className="stroke-[3]" /> {scanTime}
-                                  </span>
+                                  {isFlagged ? (
+                                    <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 border border-rose-300 px-2 py-0.5 text-[9px] font-extrabold text-rose-800 shadow-2xs">
+                                      Review
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100/90 border border-emerald-300 px-2 py-0.5 text-[9px] font-extrabold text-emerald-800 shadow-2xs">
+                                      <Check size={10} className="stroke-[3]" /> {scanTime}
+                                    </span>
+                                  )}
                                   {/* Quick Remove / Trash Dustbin Icon */}
                                   <button
                                     type="button"

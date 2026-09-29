@@ -176,6 +176,12 @@ const env = {
     180000,
     { min: 5000 }
   ),
+
+  // Needs Review: timing-based QR-2 scan anomaly detection (purely informational for faculty)
+  // Minimum absolute QR-2 age (ms) before a student can be considered for review flagging
+  NEEDS_REVIEW_MIN_QR2_AGE_MS: parseNumber("NEEDS_REVIEW_MIN_QR2_AGE_MS", 500, { min: 0 }),
+  // Minimum number of present students in a session before comparative flagging is enabled
+  NEEDS_REVIEW_MIN_SAMPLES: parseNumber("NEEDS_REVIEW_MIN_SAMPLES", 5, { min: 2 }),
   DEFAULT_SESSION_RADIUS_METERS: parseNumber("DEFAULT_SESSION_RADIUS_METERS", 50, { min: 1 }),
   FACENET512_SERVICE_URL: clean(process.env.FACENET512_SERVICE_URL),
 };

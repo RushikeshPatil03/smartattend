@@ -57,9 +57,9 @@ const MAX_DYNAMIC_SEQUENCE_GAP_SECONDS = Math.max(
   Number(import.meta.env.VITE_QR_SEQUENCE_GAP_SECONDS || 6)
 );
 const FACE_VERIFICATION_WINDOW_MS = 15000;
-type ScannerResult = string | { first: string; second: string } | { sequence: RotatingQrPayload[] } | null;
+type ScannerResult = string | { first: string; second: string; secondScannedAt?: number } | { sequence: RotatingQrPayload[] } | null;
 type DynamicPairScanResult =
-  | { kind: "legacy"; first: string; second: string }
+  | { kind: "legacy"; first: string; second: string; secondScannedAt?: number }
   | { kind: "totp"; sequence: RotatingQrPayload[] };
 type DynamicQrPayload = {
   type?: string;
@@ -1440,7 +1440,12 @@ const StudentDashboard: React.FC = () => {
           if ("sequence" in v) {
             resolve({ kind: "totp", sequence: (v as any).sequence });
           } else {
-            resolve({ kind: "legacy", first: (v as any).first, second: (v as any).second });
+            resolve({
+              kind: "legacy",
+              first: (v as any).first,
+              second: (v as any).second,
+              secondScannedAt: (v as any).secondScannedAt || Date.now(),
+            });
           }
         } else {
           resolve(null);
@@ -1687,7 +1692,8 @@ const StudentDashboard: React.FC = () => {
             null,
             coords.accuracy,
             facePayload?.faceVerification || null,
-            faceGrantToken
+            faceGrantToken,
+            pendingQrPairRef.current.secondScannedAt || Date.now()
           );
         }
       })();

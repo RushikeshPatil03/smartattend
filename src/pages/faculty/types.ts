@@ -125,6 +125,9 @@ export type LiveAttendanceItem = {
   enrollmentNo?: string;
   distanceMeters?: number;
   isFaceVerified?: boolean;
+  qr2ScanTimingMs?: number;
+  needsReview?: boolean;
+  sessionMedianQr2Ms?: number;
 };
 
 export type DeviceRequestItem = {

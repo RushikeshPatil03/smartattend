@@ -217,7 +217,8 @@ export async function markAttendanceTwoStep(
   scanGrant?: string | null,
   accuracy?: number | null,
   faceVerification?: Record<string, any> | null,
-  faceGrantToken?: string | null
+  faceGrantToken?: string | null,
+  secondQrScannedAtMs?: number | null
 ) {
   try {
     const first = String(firstQrToken || "").trim();
@@ -231,6 +232,10 @@ export async function markAttendanceTwoStep(
       secondQrToken: second,
       fingerprint: normalizeClientFingerprint(fingerprint),
     };
+
+    if (secondQrScannedAtMs != null && !isNaN(Number(secondQrScannedAtMs))) {
+      payload.secondQrScannedAtMs = Number(secondQrScannedAtMs);
+    }
 
     if (scanGrant) {
       payload.scanGrantToken = String(scanGrant);

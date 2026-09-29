@@ -1395,6 +1395,9 @@ const FacultyDashboard: React.FC = () => {
               },
               distanceMeters: att.distanceMeters ?? att.location?.distanceMeters ?? existing.distanceMeters,
               isFaceVerified: att.isFaceVerified ?? att.face_verification?.verified ?? existing.isFaceVerified,
+              qr2ScanTimingMs: att.qr2ScanTimingMs ?? existing.qr2ScanTimingMs,
+              needsReview: att.needsReview ?? existing.needsReview,
+              sessionMedianQr2Ms: att.sessionMedianQr2Ms ?? existing.sessionMedianQr2Ms,
             };
           } else {
             const newRecord: LiveAttendanceItem = {
@@ -1411,6 +1414,9 @@ const FacultyDashboard: React.FC = () => {
               enrollmentNo: enrollmentNo,
               distanceMeters: att.distanceMeters ?? att.location?.distanceMeters,
               isFaceVerified: att.isFaceVerified ?? att.face_verification?.verified,
+              qr2ScanTimingMs: att.qr2ScanTimingMs,
+              needsReview: att.needsReview,
+              sessionMedianQr2Ms: att.sessionMedianQr2Ms,
             };
             newItemsToPrepend.push(newRecord);
             const newIdx = 0;
@@ -1482,6 +1488,7 @@ const FacultyDashboard: React.FC = () => {
               enrollmentNo: item.roll,
               timestamp: item.t ? new Date(item.t * 1000).toISOString() : new Date().toISOString(),
               status: itemStatus,
+              qr2ScanTimingMs: item.qr2Ms ?? item.qr2ScanTimingMs,
             });
           });
         } else {

@@ -46,7 +46,7 @@ function toCompactAttendanceItem(raw) {
   const status = raw.status === "absent" ? "absent" : "present";
 
   // Strict whitelist: Only non-sensitive public display fields
-  return {
+  const item = {
     id,
     sId,
     roll,
@@ -54,6 +54,17 @@ function toCompactAttendanceItem(raw) {
     t,
     st: status,
   };
+
+  const timing = typeof raw.qr2ScanTimingMs === "number" && raw.qr2ScanTimingMs > 0
+    ? raw.qr2ScanTimingMs
+    : typeof raw.qr2Ms === "number" && raw.qr2Ms > 0
+      ? raw.qr2Ms
+      : null;
+  if (timing !== null) {
+    item.qr2Ms = Math.round(timing);
+  }
+
+  return item;
 }
 
 /**
@@ -154,6 +165,7 @@ async function flushSessionBatch(sessionId) {
       enrollmentNo: it.roll,
       status: it.st || "present",
       timestamp: it.t ? new Date(it.t * 1000).toISOString() : new Date().toISOString(),
+      ...(it.qr2Ms != null ? { qr2ScanTimingMs: it.qr2Ms } : {}),
     })),
   };
   buffer.isFlushing = true;

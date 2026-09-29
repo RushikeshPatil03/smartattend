@@ -452,6 +452,7 @@ class ApiClient {
     faceMatch?: any;
     faceMetrics?: any;
     faceEmbedding?: any;
+    secondQrScannedAtMs?: number;
   }) => this.post("/api/attendance/mark", data);
 
   markAttendance = (data: {

@@ -23,7 +23,6 @@ const {
   getSessionRosterSnapshot,
   getSessionRosterSnapshotsForSessions,
 } = require("../services/sessionRosterSnapshotService");
-// In-memory sliding lock to prevent double-tap race conditions (10-second sliding window)
 const scanLocks = new Map();
 setInterval(() => {
   const now = Date.now();
@@ -34,11 +33,14 @@ setInterval(() => {
 const auth = require("../middleware/auth");
 const rateLimit = require("../middleware/rateLimit");
 const env = require("../config/env");
+const { computeRobustStats, shouldFlagForReview } = require("../services/timingReview");
 
 const SCAN_GRANT_TTL_MS = env.SCAN_GRANT_TTL_MS;
 const QR_VERIFY_MAX_AGE_SECONDS = env.QR_VERIFY_MAX_AGE_SECONDS;
 const QR_MAX_TWO_STEP_GAP_SECONDS = env.QR_MAX_TWO_STEP_GAP_SECONDS;
 const QR_PRECHECK_SKEW_SECONDS = env.QR_PRECHECK_SKEW_SECONDS;
+const NEEDS_REVIEW_MIN_QR2_AGE_MS = env.NEEDS_REVIEW_MIN_QR2_AGE_MS;
+const NEEDS_REVIEW_MIN_SAMPLES = env.NEEDS_REVIEW_MIN_SAMPLES;
 
 const scanGrantsMemoryStore = new Map();
 const faceGrantsMemoryStore = new Map();
@@ -896,10 +898,21 @@ class AttendanceBatchWriter {
     if (items.length === 1) {
       const { payload, resolve, reject, studentId, sessionId } = items[0];
       try {
-        const { data, error } = await supabase
+        let { data, error } = await supabase
           .from("attendances")
           .upsert(payload, { onConflict: "session,student", ignoreDuplicates: true })
           .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification");
+
+        if (error && (error.code === "PGRST204" || error.code === "42703" || String(error.message || "").toLowerCase().includes("qr2_scan_timing_ms"))) {
+          const stripped = { ...payload };
+          delete stripped.qr2_scan_timing_ms;
+          const retryRes = await supabase
+            .from("attendances")
+            .upsert(stripped, { onConflict: "session,student", ignoreDuplicates: true })
+            .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification");
+          data = retryRes.data;
+          error = retryRes.error;
+        }
 
         if (error) {
           if (
@@ -963,10 +976,21 @@ class AttendanceBatchWriter {
       // Resilient fallback: individually insert so one bad row doesn't fail others
       for (const item of items) {
         try {
-          const { data, error } = await supabase
+          let { data, error } = await supabase
             .from("attendances")
             .upsert(item.payload, { onConflict: "session,student", ignoreDuplicates: true })
             .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification");
+
+          if (error && (error.code === "PGRST204" || error.code === "42703" || String(error.message || "").toLowerCase().includes("qr2_scan_timing_ms"))) {
+            const stripped = { ...item.payload };
+            delete stripped.qr2_scan_timing_ms;
+            const retryRes = await supabase
+              .from("attendances")
+              .upsert(stripped, { onConflict: "session,student", ignoreDuplicates: true })
+              .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification");
+            data = retryRes.data;
+            error = retryRes.error;
+          }
 
           if (error) {
             if (
@@ -1043,6 +1067,7 @@ const handleMarkAttendance = async (req, res) => {
     faceMatch,
     faceMetrics,
     faceEmbedding,
+    secondQrScannedAtMs,   // optional: client's clock (ms) at moment of QR-2 decode
   } = req.body || {};
 
   if (!scanGrantToken || !firstQrToken || !secondQrToken) {
@@ -1265,6 +1290,20 @@ const handleMarkAttendance = async (req, res) => {
       });
     }
 
+    // --- QR-2 TIMING MEASUREMENT (informational only, never blocks attendance) ---
+    // secondIat is the authoritative server-signed issue time of QR-2 (Unix seconds).
+    // secondQrScannedAtMs is the client's claimed decode time (ms epoch).
+    // We validate the client value is in a sane range before trusting it.
+    let qr2ScanTimingMs = null;
+    if (typeof secondQrScannedAtMs === "number" && secondQrScannedAtMs > 0) {
+      const qr2IssuedAtMs = secondIat * 1000; // convert signed iat (sec) → ms
+      const estimatedAgeMs = secondQrScannedAtMs - qr2IssuedAtMs;
+      // Only store if the value is plausible: between 0ms and 60s (avoids clock-skew garbage)
+      if (estimatedAgeMs >= 0 && estimatedAgeMs <= 60000) {
+        qr2ScanTimingMs = Math.round(estimatedAgeMs);
+      }
+    }
+
     // --- ATOMIC DATABASE INSERTION (USING EXACT SCHEMA COLUMNS) ---
     const fullAttendancePayload = {
       session: sessionId,
@@ -1291,6 +1330,7 @@ const handleMarkAttendance = async (req, res) => {
       } : null,
       device_fingerprint: normalizedFp,
       face_verification: faceVerificationResult,
+      qr2_scan_timing_ms: qr2ScanTimingMs,
     };
 
     let attendance;
@@ -1343,7 +1383,7 @@ const handleMarkAttendance = async (req, res) => {
     await recordInstantPresence(sessionId, student.id);
 
     // --- SHAPED REALTIME BROADCAST (Micro-batched to avoid WS storms) ---
-    realtimeBroadcaster.enqueue(sessionId, {
+    const broadcastPayload = {
       id: attendance.id,
       sessionId,
       studentId: student.id,
@@ -1351,7 +1391,12 @@ const handleMarkAttendance = async (req, res) => {
       enrollmentNo: student.enrollment_no,
       timestamp: attendance.timestamp,
       status: "present",
-    });
+    };
+    // Only include timing field when it's available to keep payload compact
+    if (qr2ScanTimingMs !== null) {
+      broadcastPayload.qr2ScanTimingMs = qr2ScanTimingMs;
+    }
+    realtimeBroadcaster.enqueue(sessionId, broadcastPayload);
 
     return res.json({
       ok: true,
@@ -1474,7 +1519,7 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
       }
 
       // Fetch all recorded attendances for this session
-      const { data: rawAttendances } = await supabase
+      let { data: rawAttendances, error: attFetchErr } = await supabase
         .from("attendances")
         .select(`
           id,
@@ -1491,12 +1536,45 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
           semester,
           section,
           year,
+          qr2_scan_timing_ms,
           profile:students(id, name, enrollment_no, email, profile_photo_url)
         `)
         .eq("session", String(sessionId))
         .order("timestamp", { ascending: false });
 
+      if (attFetchErr && (attFetchErr.code === "PGRST204" || attFetchErr.code === "42703" || String(attFetchErr.message || "").toLowerCase().includes("qr2_scan_timing_ms"))) {
+        const retryRes = await supabase
+          .from("attendances")
+          .select(`
+            id,
+            student,
+            timestamp,
+            status,
+            device_fingerprint,
+            face_verification,
+            location,
+            enrollment_no,
+            student_name,
+            student_email,
+            department_code,
+            semester,
+            section,
+            year,
+            profile:students(id, name, enrollment_no, email, profile_photo_url)
+          `)
+          .eq("session", String(sessionId))
+          .order("timestamp", { ascending: false });
+        rawAttendances = retryRes.data;
+      }
+
       const rawList = rawAttendances || [];
+
+      // Compute robust session timing stats for the "Needs Review" feature.
+      // Only use non-null timing values from present students.
+      const sessionTimingValues = rawList
+        .filter((a) => a.status === "present" && typeof a.qr2_scan_timing_ms === "number" && a.qr2_scan_timing_ms > 0)
+        .map((a) => a.qr2_scan_timing_ms);
+      const timingStats = computeRobustStats(sessionTimingValues);
 
       const presentStudentIds = new Set();
       const presentEnrollmentNos = new Set();
@@ -1509,6 +1587,14 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
           if (effectiveStudentId) presentStudentIds.add(String(effectiveStudentId));
           if (effectiveEnrollmentNo) presentEnrollmentNos.add(String(effectiveEnrollmentNo).trim().toUpperCase());
         }
+
+        // Compute review flag: only present students with valid timing can be flagged
+        const attQr2Timing = typeof att.qr2_scan_timing_ms === "number" && att.qr2_scan_timing_ms > 0
+          ? att.qr2_scan_timing_ms
+          : null;
+        const needsReview = att.status === "present" && attQr2Timing !== null
+          ? shouldFlagForReview(attQr2Timing, timingStats, NEEDS_REVIEW_MIN_QR2_AGE_MS, NEEDS_REVIEW_MIN_SAMPLES)
+          : false;
 
         return {
           id: att.id,
@@ -1530,6 +1616,10 @@ router.get("/", auth(["FACULTY", "ADMIN", "STUDENT"]), async (req, res) => {
           deviceFingerprint: att.device_fingerprint,
           faceVerification: att.face_verification,
           location: att.location,
+          // Timing fields (only populated when data is available)
+          ...(attQr2Timing !== null ? { qr2ScanTimingMs: attQr2Timing } : {}),
+          ...(needsReview ? { needsReview: true } : {}),
+          ...(timingStats.count >= NEEDS_REVIEW_MIN_SAMPLES ? { sessionMedianQr2Ms: timingStats.median } : {}),
         };
       });
 
