@@ -72,7 +72,7 @@ const ENV_CAMERA_FALLBACK_CONSTRAINTS: MediaStreamConstraints = {
   video: { facingMode: "environment" },
 };
 
-const SCAN_INTERVAL_MS = 60;
+const SCAN_INTERVAL_MS = 30; // Reduced from 60ms → catches QR frames 2× faster
 const DUPLICATE_DETECTION_COOLDOWN_MS = 400;
 
 function isInsecureMobileCameraContext() {

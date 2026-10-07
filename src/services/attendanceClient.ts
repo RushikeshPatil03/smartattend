@@ -218,7 +218,9 @@ export async function markAttendanceTwoStep(
   accuracy?: number | null,
   faceVerification?: Record<string, any> | null,
   faceGrantToken?: string | null,
-  secondQrScannedAtMs?: number | null
+  secondQrScannedAtMs?: number | null,
+  /** ms between QR-2 generation (ts in payload) and student scan — used for timing anomaly detection */
+  qr2GenToScanMs?: number | null
 ) {
   try {
     const first = String(firstQrToken || "").trim();
@@ -235,6 +237,12 @@ export async function markAttendanceTwoStep(
 
     if (secondQrScannedAtMs != null && !isNaN(Number(secondQrScannedAtMs))) {
       payload.secondQrScannedAtMs = Number(secondQrScannedAtMs);
+    }
+
+    // Generation-to-scan delay: time from QR-2 display on projector → student decode
+    // This is device/network-independent and directly measures physical scanning speed.
+    if (qr2GenToScanMs != null && !isNaN(Number(qr2GenToScanMs)) && Number(qr2GenToScanMs) > 0) {
+      payload.qr2GenToScanMs = Number(qr2GenToScanMs);
     }
 
     if (scanGrant) {

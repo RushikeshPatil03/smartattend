@@ -1,0 +1,355 @@
+\documentclass[conference]{IEEEtran}
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{url}
+\usepackage{float}
+
+\graphicspath{{./figures/}}
+
+\title{SmartAttend: A Multi-Factor Attendance Verification System Using Dynamic TOTP, Face Recognition, Device Binding and Geofencing}
+
+\author{
+\IEEEauthorblockN{
+Rushikesh Subhash Patil,
+SHIVAMANI B,
+Pramod S G,
+Srirama Aravind
+}
+\IEEEauthorblockA{
+Department of Computer Science and Engineering\\
+Ballari Institute of Technology \& Management, Ballari, Karnataka, India\\
+Rushikesh Subhash Patil: rushipatil7611@gmail.com\\
+SHIVAMANI B: shivamanishiva56@gmail.com\\
+Pramod S G: pramupramod2360@gmail.com\\
+Srirama Aravind: 123sriramaravind123@gmail.com\\
+Guide: Varsha -- varsha@bitm.edu.in
+}
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Attendance management in educational institutions requires a reliable mechanism for verifying both student identity and physical presence. Conventional attendance methods are time-consuming and may permit proxy attendance, while single-factor digital approaches can be vulnerable to QR sharing, device sharing, or location manipulation. This paper presents SmartAttend, a multi-factor attendance verification system that integrates dynamic Time-Based One-Time Password (TOTP) credentials, facial recognition, directional liveness verification, device binding, and GPS-based geofencing. The system uses a sequential verification process in which a faculty member initiates an attendance session and the student completes facial verification before scanning the dynamically changing classroom QR sequence. The submitted attendance request is further validated against the registered device and classroom location before being recorded in a Supabase PostgreSQL database. Face recognition is implemented using FaceNet512 through a Python FastAPI service, while MediaPipe supports client-side facial landmark and liveness processing. The application is implemented using React with TypeScript, Node.js and Express.js, and Supabase services. Functional testing of the implemented system demonstrated the complete attendance flow from authentication and face verification to QR scanning, location validation, attendance confirmation, and real-time status updates.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Smart attendance, dynamic QR, TOTP, face recognition, FaceNet512, liveness detection, device binding, geofencing, Supabase, biometric authentication.
+\end{IEEEkeywords}
+
+
+\section{Introduction}
+
+Attendance is an important administrative activity in educational institutions because it provides a record of student participation in academic sessions. Traditional attendance techniques such as manual roll calls and paper-based records require considerable faculty effort and may introduce errors in recording and maintaining attendance information. QR-code-based systems have been investigated as a faster alternative because students can use mobile devices to submit attendance information electronically \cite{gujarathi2018,anjum2023}.
+
+However, attendance systems based only on QR codes may not sufficiently verify whether the person scanning the code is the registered student or whether the student is physically present in the classroom. A QR image can potentially be photographed and shared with another student. Similarly, a location-only mechanism does not provide complete identity verification. Facial recognition has therefore been investigated as an additional authentication mechanism for automated attendance systems \cite{garud2025,tabassum2025}.
+
+The SmartAttend system addresses these issues by combining multiple verification mechanisms within a single attendance transaction. The implemented system uses a dynamically changing TOTP-based QR credential, facial identity verification, directional head-movement liveness verification, registered-device validation, and GPS-based geofencing. These checks are performed sequentially before an attendance record is committed.
+
+The objective of the system is not to rely on a single authentication factor. Instead, the system combines different forms of evidence related to identity, device, location, and the live classroom session. This design makes the attendance process more resistant to common proxy-attendance scenarios while retaining a software-based implementation suitable for educational institutions.
+
+
+\section{Literature Survey}
+
+QR-based attendance systems have been proposed as an alternative to manual attendance because they reduce the time required for attendance recording and provide electronic storage of attendance information. Gujarathi \textit{et al.} presented a QR-based attendance system with administrative management and mobile accessibility. However, the use of QR codes alone leaves the possibility of QR sharing and proxy attendance \cite{gujarathi2018}.
+
+Anjum \textit{et al.} proposed a session-based QR attendance system in which teachers generate time-limited QR credentials for attendance. The approach reduces the reuse of a persistent QR credential and simplifies attendance management, although sharing a valid QR representation remains a potential concern \cite{anjum2023}.
+
+Garud \textit{et al.} investigated a face-recognition-based attendance system combined with QR scanning. Their approach performs facial verification after QR interaction and uses facial feature comparison for identity verification \cite{garud2025}. Such systems demonstrate the value of combining QR-based access with biometric verification, but facial recognition can be affected by factors such as illumination and camera conditions.
+
+Tabassum \textit{et al.} studied automated attendance using facial recognition techniques and deep-learning-based recognition models. Their work demonstrates the application of facial recognition for contactless attendance management while also discussing practical challenges related to facial conditions and biometric data \cite{tabassum2025}.
+
+The reviewed approaches demonstrate that QR codes provide convenient attendance submission, while biometric authentication can strengthen identity verification. Location verification can further provide information about physical presence. The SmartAttend system combines these mechanisms with dynamic TOTP credentials and registered-device validation in a sequential verification process.
+
+
+\subsection{Research Gap}
+
+The literature indicates that different attendance systems generally emphasize one or more mechanisms such as QR codes, facial recognition, or location verification. QR-based systems improve convenience but can remain vulnerable to credential sharing. Facial recognition improves identity verification but introduces additional biometric processing requirements. GPS-based approaches provide location information but cannot independently establish student identity.
+
+The research gap addressed by SmartAttend is the integration of multiple verification factors into one sequential attendance transaction. The implemented system combines dynamic TOTP-based QR validation, FaceNet512 facial recognition, directional liveness verification, device binding, and GPS geofencing. Rather than treating these mechanisms as independent attendance methods, SmartAttend uses them as successive validation stages before the attendance transaction is stored.
+
+
+\section{Problem Statement and Objectives}
+
+\subsection{Problem Statement}
+
+Traditional attendance procedures can be time-consuming and require manual effort from faculty members. Digital attendance systems based only on static or shared credentials may also permit proxy attendance. A practical attendance system therefore requires mechanisms that can verify the student's identity, registered device, classroom location, and participation in the active attendance session.
+
+The problem addressed in this work is the development of a software-based attendance system that combines these verification requirements into a single attendance workflow without depending on specialized physical attendance hardware.
+
+\subsection{Objectives}
+
+The main objectives of SmartAttend are:
+
+\begin{itemize}
+    \item To automate classroom attendance using dynamically changing QR credentials.
+    \item To verify student identity using FaceNet512 facial recognition.
+    \item To perform live facial verification using directional head movement.
+    \item To bind attendance access to the student's registered device.
+    \item To validate the student's geographic position using GPS-based geofencing.
+    \item To store verified attendance records in a structured PostgreSQL database.
+    \item To provide real-time attendance status updates to the faculty interface.
+\end{itemize}
+
+
+\section{Proposed SmartAttend System}
+
+SmartAttend follows a sequential multi-factor verification architecture. A faculty member first starts an attendance session by providing the required classroom/session information. The application then generates a dynamic TOTP-based QR credential that changes at a short time interval.
+
+The student's attendance process begins with authentication through the student portal. The student performs facial verification using the device camera. Directional head movement is used as a liveness interaction, while the FaceNet512 service performs biometric identity comparison.
+
+After successful facial verification, the student scans the classroom QR sequence. The server validates the received dynamic credentials and checks the required sequential scanning condition. The student's registered device is then validated using the device-binding mechanism.
+
+The system subsequently validates the student's GPS position against the classroom geofence. Only after the required verification stages are completed is the attendance transaction inserted into the Supabase PostgreSQL database. A real-time event is then delivered to the faculty interface through Supabase Realtime.
+
+The implemented sequence can be summarized as:
+
+\begin{center}
+Faculty starts session\\
+$\downarrow$\\
+Dynamic TOTP QR generation\\
+$\downarrow$\\
+Face and liveness verification\\
+$\downarrow$\\
+Sequential QR scanning\\
+$\downarrow$\\
+Device binding validation\\
+$\downarrow$\\
+GPS/geofence validation\\
+$\downarrow$\\
+Attendance transaction\\
+$\downarrow$\\
+Real-time faculty update
+\end{center}
+
+
+\subsection{Dynamic TOTP-Based QR Verification}
+
+The system uses a dynamically changing TOTP-based QR credential rather than relying on a persistent classroom QR code. The QR credential is generated for the active attendance session and changes at a short time interval.
+
+The latest implementation configuration used for the system employs a one-second TOTP rotation interval. The QR information is cryptographically protected using HMAC-SHA256-based signing. The attendance process requires the student to interact with the active classroom QR sequence rather than submitting a previously stored static QR image.
+
+The sequential QR mechanism provides an additional validation condition because the server can verify the expected progression of the QR credentials during an active session.
+
+
+\subsection{Face Recognition and Liveness Verification}
+
+Facial verification is implemented using two complementary components. MediaPipe is used on the client side for facial landmark processing and directional interaction. The student is instructed to perform a directional head movement, such as turning the head slightly to the left, during the liveness stage.
+
+The biometric recognition stage uses FaceNet512 through a Python FastAPI service. FaceNet512 represents facial characteristics as a high-dimensional embedding. The submitted facial representation is compared with the registered biometric representation to determine whether the identity verification condition is satisfied.
+
+This combination separates lightweight client-side facial interaction from the deeper biometric recognition process.
+
+
+\subsection{Device Binding}
+
+Device binding associates a registered student account with a device identity generated from device-related attributes. During attendance verification, the current device information is checked against the registered device binding.
+
+The purpose of this mechanism is to reduce the possibility of using a single physical device to authenticate multiple student accounts. A device-change process is provided for legitimate device replacement, subject to the application's verification and approval workflow.
+
+
+\subsection{GPS-Based Geofencing}
+
+The system verifies the student's geographic position before completing the attendance transaction. The classroom location acts as the reference point, and the student's current GPS coordinates are used to calculate the distance from that reference.
+
+The Haversine formula is used to calculate geographic distance between the classroom coordinate and the student's coordinate:
+
+\begin{equation}
+d = 2R\arcsin
+\left(
+\sqrt{
+\sin^2\left(\frac{\Delta\phi}{2}\right)
++
+\cos(\phi_1)\cos(\phi_2)
+\sin^2\left(\frac{\Delta\lambda}{2}\right)
+}
+\right)
+\end{equation}
+
+where $R$ represents the Earth's radius, $\phi_1$ and $\phi_2$ represent the two latitude values, and $\Delta\lambda$ and $\Delta\phi$ represent the longitude and latitude differences.
+
+The implementation also considers GPS accuracy before accepting the location reading.
+
+
+\subsection{Attendance Transaction and Real-Time Update}
+
+After successful completion of the verification stages, the backend creates the attendance record in Supabase PostgreSQL. The database provides structured storage for sessions, students, attendance records, and related system information.
+
+The implemented database uses a uniqueness condition for the session and student combination to prevent duplicate attendance records for the same session.
+
+Following successful database insertion, the system publishes an attendance update through Supabase Realtime. This allows the faculty interface to reflect attendance changes without requiring continuous manual refresh.
+
+
+\section{Technology Stack}
+
+The SmartAttend implementation uses a multi-layer technology stack.
+
+\begin{table}[htbp]
+\caption{Technology Stack Used in SmartAttend}
+\centering
+\begin{tabular}{p{0.27\columnwidth} p{0.62\columnwidth}}
+\toprule
+\textbf{Layer} & \textbf{Technology} \\
+\midrule
+Frontend & React, TypeScript, Vite \\
+Styling & Tailwind CSS \\
+Client Routing & React Router \\
+QR Scanner & html5-qrcode \\
+QR Generation & react-qr-code \\
+Client-side Vision & MediaPipe Tasks Vision \\
+Backend & Node.js, Express.js \\
+Authentication & JWT, bcrypt/bcryptjs \\
+QR Security & TOTP, HMAC-SHA256 \\
+Biometric Service & Python FastAPI \\
+Face Recognition & DeepFace, FaceNet512 \\
+Database & Supabase PostgreSQL \\
+Realtime & Supabase Realtime \\
+Location & GPS and Haversine-based geofencing \\
+Security & Device binding, role-based access control \\
+Containerization & Docker / Docker Compose \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The frontend provides the student, faculty, and administrative interfaces. Node.js and Express.js provide the application API layer. The Python FastAPI service handles the FaceNet512 biometric processing. Supabase PostgreSQL stores attendance information, while Supabase Realtime provides live attendance updates.
+
+The technology stack and implementation components are based on the project documentation and implementation materials provided for SmartAttend. 
+
+
+\section{System Implementation}
+
+SmartAttend provides role-based access for students, faculty, and administrators. The student interface allows authentication, facial verification, QR scanning, location verification, and attendance confirmation.
+
+The faculty interface is used to initiate attendance sessions and display the active dynamic QR credential. The faculty dashboard also receives real-time attendance updates after successful transactions.
+
+The backend manages authentication, session creation, QR validation, device validation, geofence verification, biometric-service communication, and attendance submission. The biometric functionality is separated into a Python FastAPI service, while the main application logic is handled through Node.js and Express.js.
+
+The database layer uses Supabase PostgreSQL for persistent attendance and session information. The system also uses real-time communication to update faculty-side attendance information after successful attendance transactions.
+
+
+\section{Results}
+
+The implemented SmartAttend system was tested through the complete attendance workflow. The testing covered authentication, facial verification, dynamic QR scanning, attendance verification, and confirmation of the final attendance state.
+
+Fig.~\ref{fig:login} shows the student authentication interface. The interface provides role selection and student authentication before entering the attendance workflow.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\columnwidth]{student_login.png}
+\caption{SmartAttend student authentication interface.}
+\label{fig:login}
+\end{figure}
+
+Fig.~\ref{fig:face} shows the facial verification stage. The student is instructed to perform a directional head movement as part of the live verification process.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\columnwidth]{face_liveness.png}
+\caption{Directional facial liveness verification stage.}
+\label{fig:face}
+\end{figure}
+
+After successful facial verification, the student scans the dynamic classroom QR credential. The QR scanning interface used during the implemented system is shown in Fig.~\ref{fig:qr}.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\columnwidth]{qr_scanning.png}
+\caption{Student scanning the classroom dynamic QR credential.}
+\label{fig:qr}
+\end{figure}
+
+Following successful verification, the application displays an attendance confirmation screen. Fig.~\ref{fig:success} shows the successful attendance state produced by the implemented system.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\columnwidth]{attendance_success.png}
+\caption{Successful attendance confirmation.}
+\label{fig:success}
+\end{figure}
+
+The screenshots provide evidence that the implemented workflow proceeds from authentication and facial verification through QR interaction to successful attendance confirmation.
+
+
+\section{Discussion}
+
+The implemented system combines several verification factors instead of relying on a single attendance credential. Dynamic TOTP-based QR validation provides session-specific authentication, while facial recognition provides biometric identity verification. Directional liveness interaction adds a live-user verification stage.
+
+Device binding adds another identity-related constraint by associating the student account with a registered device. GPS geofencing provides location information that can be checked against the classroom location. These mechanisms are integrated into a sequential attendance transaction.
+
+Compared with a QR-only approach, the implemented system therefore introduces additional validation stages before attendance is recorded. Compared with a face-only approach, the system additionally verifies the active classroom session, registered device, and geographic location.
+
+
+\section{Advantages}
+
+The major advantages of the implemented SmartAttend system are:
+
+\begin{itemize}
+    \item Dynamic QR credentials reduce dependence on a persistent classroom QR code.
+    \item FaceNet512 provides biometric identity verification.
+    \item Directional head movement provides a live facial interaction step.
+    \item Device binding provides an additional account-device association.
+    \item GPS geofencing verifies the student's location relative to the classroom.
+    \item Supabase PostgreSQL provides centralized attendance storage.
+    \item Supabase Realtime enables live attendance updates.
+    \item Role-based interfaces separate student, faculty, and administrative operations.
+\end{itemize}
+
+
+\section{Limitations}
+
+The implemented system has several practical limitations. Facial verification depends on camera quality, lighting, camera positioning, and the student's ability to follow the directional liveness instruction. GPS-based verification can also be affected by the availability and accuracy of location information, particularly in indoor environments.
+
+The system additionally depends on a functioning camera, location service, network connection, and compatible device for the complete attendance workflow. These factors can affect usability in environments with poor connectivity or limited device capabilities.
+
+
+\section{Future Scope}
+
+Future development can investigate stronger location-integrity mechanisms, improved biometric privacy protection, and additional evaluation under different lighting, camera, and network conditions.
+
+Further experimental evaluation can also measure verification latency, QR validation performance, biometric matching performance, location-validation reliability, and system behavior under concurrent attendance requests. Such measurements should be obtained from controlled experiments before quantitative performance claims are made.
+
+
+\section{Conclusion}
+
+This paper presented SmartAttend, a multi-factor attendance verification system designed for educational institutions. The implemented system combines dynamic TOTP-based QR credentials, FaceNet512 facial recognition, directional liveness verification, device binding, and GPS-based geofencing within a sequential attendance workflow.
+
+The application uses React and TypeScript for the frontend, Node.js and Express.js for the main backend, Python FastAPI for biometric processing, and Supabase PostgreSQL for attendance storage and real-time communication. Functional testing demonstrated the complete workflow from student authentication and facial verification to QR scanning and successful attendance confirmation.
+
+The main contribution of the implementation is the integration of multiple existing verification mechanisms into a single software-based attendance process. The system provides a practical foundation for reducing common proxy-attendance scenarios while maintaining centralized attendance management and real-time faculty visibility.
+
+
+\begin{thebibliography}{00}
+
+\bibitem{gujarathi2018}
+Y. Gujarathi, K. K. Chaitanya, P. Bhramarautu, and M. Menta,
+``QR Based Attendance System,''
+\textit{Turkish Journal of Computer and Mathematics Education},
+vol. 9, no. 3, pp. 1308--1311, 2018.
+
+\bibitem{anjum2023}
+S. Anjum, S. J. Gondane, M. L. Pipare, and Y. P. Valhe,
+``Student Attendance System Using QR Code,''
+\textit{International Journal of Current Science (IJCSPUB)},
+vol. 13, no. 2, Apr. 2023.
+
+\bibitem{garud2025}
+S. Garud, A. Jadhav, S. Jadhav, O. Doiphode, and M. Patil,
+``Face Recognition Based Attendance System Using Machine Learning and Euclidean Distance,''
+in \textit{Proc. 2nd Int. Conf. Integration of Computational Intelligent System (ICICIS)},
+Pune, India, Sep. 2025.
+
+\bibitem{tabassum2025}
+H. Tabassum, J. Jenita, S. S. Hossain, S. R. Sahoo,
+S. Kumari, and S. Rizvi,
+``Facial Recognition-Based Automated Attendance System,''
+in \textit{Proc. 3rd Int. Conf. Advances in Computation, Communication and Information Technology (ICAICCIT)},
+2025.
+
+\end{thebibliography}
+
+\end{document}

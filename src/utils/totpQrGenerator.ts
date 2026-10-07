@@ -8,6 +8,8 @@ export interface RotatingQrPayload {
   classId: string;
   code: string;
   index: number;
+  /** Unix epoch ms when this QR block was generated on the faculty device. */
+  ts?: number;
 }
 
 export const TOTP_BLOCK_DURATION_MS = Number(
@@ -45,7 +47,9 @@ export function getCurrentBlockIndex(): number {
 }
 
 /**
- * Generate full QR payload for current time block
+ * Generate full QR payload for current time block.
+ * Embeds `ts` (generation timestamp in ms) so the student scanner can
+ * compute the exact generation-to-scan delay for timing anomaly detection.
  */
 export function generateRotatingQrPayload(
   secretKey: string,
@@ -59,28 +63,49 @@ export function generateRotatingQrPayload(
     classId,
     code,
     index,
+    ts: Date.now(), // exact generation timestamp — embedded into QR
   };
 }
 
 /**
- * Create a compact, low-density string representation suitable for high-speed QR encoding
- * Uses compact delimited format (classId:code:index) to minimize QR module density
+ * Create a compact, low-density string representation suitable for high-speed QR encoding.
+ * Format: classId:code:index:ts (4 fields)
+ * Backward compat: ts is appended as 4th field; old 3-field parsers silently ignore it.
  */
 export function serializeQrPayload(payload: RotatingQrPayload): string {
-  return `${payload.classId}:${payload.code}:${payload.index}`;
+  const ts = payload.ts ?? Date.now();
+  return `${payload.classId}:${payload.code}:${payload.index}:${ts}`;
 }
 
 /**
- * Parse and validate QR payload from scanned string
- * Supports compact delimited format (classId:code:index), compact JSON, and standard JSON
+ * Parse and validate QR payload from scanned string.
+ * Supports:
+ *   - NEW: 4-field compact format  classId:code:index:ts  (with generation timestamp)
+ *   - LEGACY: 3-field compact format  classId:code:index  (ts will be undefined)
+ *   - JSON payload (standard or compact keys)
  */
 export function parseQrPayload(data: string): RotatingQrPayload | null {
   if (!data || typeof data !== "string") return null;
   const trimmed = data.trim();
 
-  // 1. Fast path: Compact delimited format (classId:code:index)
+  // 1. Fast path: Compact delimited format
   if (trimmed.includes(":")) {
     const parts = trimmed.split(":");
+    // NEW 4-field format: classId:code:index:ts
+    if (parts.length === 4) {
+      const [classId, code, rawIndex, rawTs] = parts;
+      const index = Number(rawIndex);
+      const ts = Number(rawTs);
+      if (
+        classId.length > 0 &&
+        /^\d{6}$/.test(code) &&
+        Number.isSafeInteger(index) &&
+        Number.isFinite(ts) && ts > 0
+      ) {
+        return { classId, code, index, ts };
+      }
+    }
+    // LEGACY 3-field format: classId:code:index (no ts)
     if (parts.length === 3) {
       const [classId, code, rawIndex] = parts;
       const index = Number(rawIndex);
@@ -89,11 +114,7 @@ export function parseQrPayload(data: string): RotatingQrPayload | null {
         /^\d{6}$/.test(code) &&
         Number.isSafeInteger(index)
       ) {
-        return {
-          classId,
-          code,
-          index,
-        };
+        return { classId, code, index };
       }
     }
   }
@@ -105,6 +126,7 @@ export function parseQrPayload(data: string): RotatingQrPayload | null {
       const classId = parsed.classId || parsed.c;
       const code = parsed.code || parsed.t;
       const index = typeof parsed.index === "number" ? parsed.index : Number(parsed.i);
+      const ts = typeof parsed.ts === "number" ? parsed.ts : undefined;
 
       if (
         typeof classId === "string" &&
@@ -115,6 +137,7 @@ export function parseQrPayload(data: string): RotatingQrPayload | null {
           classId,
           code,
           index,
+          ...(ts !== undefined ? { ts } : {}),
         };
       }
     }
@@ -162,6 +185,7 @@ export function startQrPolling(
       classId,
       code,
       index,
+      ts: Date.now(),
     });
   };
 

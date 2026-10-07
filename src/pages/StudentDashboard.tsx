@@ -57,10 +57,14 @@ const MAX_DYNAMIC_SEQUENCE_GAP_SECONDS = Math.max(
   Number(import.meta.env.VITE_QR_SEQUENCE_GAP_SECONDS || 6)
 );
 const FACE_VERIFICATION_WINDOW_MS = 15000;
-type ScannerResult = string | { first: string; second: string; secondScannedAt?: number } | { sequence: RotatingQrPayload[]; secondScannedAt?: number } | null;
+type ScannerResult =
+  | string
+  | { first: string; second: string; secondScannedAt?: number }
+  | { sequence: RotatingQrPayload[]; secondScannedAt?: number; qr2GenToScanMs?: number | null }
+  | null;
 type DynamicPairScanResult =
   | { kind: "legacy"; first: string; second: string; secondScannedAt?: number }
-  | { kind: "totp"; sequence: RotatingQrPayload[]; secondScannedAt?: number };
+  | { kind: "totp"; sequence: RotatingQrPayload[]; secondScannedAt?: number; qr2GenToScanMs?: number | null };
 type DynamicQrPayload = {
   type?: string;
   sessionId?: string;
@@ -1442,6 +1446,7 @@ const StudentDashboard: React.FC = () => {
               kind: "totp",
               sequence: (v as any).sequence,
               secondScannedAt: (v as any).secondScannedAt || Date.now(),
+              qr2GenToScanMs: (v as any).qr2GenToScanMs ?? null,
             });
           } else {
             resolve({
@@ -1677,6 +1682,7 @@ const StudentDashboard: React.FC = () => {
             sequence: seq,
             fingerprint,
             secondQrScannedAtMs: secondScannedAtMs,
+            qr2GenToScanMs: pendingQrPairRef.current.qr2GenToScanMs ?? null,
             lat: coords.lat,
             lng: coords.lng,
             accuracy: coords.accuracy,
@@ -2026,7 +2032,15 @@ const StudentDashboard: React.FC = () => {
                   const blocks = sequentialQrBufferRef.current.getBlocks();
                   const sequence = blocks.map((b) => b.payload);
                   const secondScannedAt = blocks[1]?.scannedAt || Date.now();
-                  closeScanner({ sequence, secondScannedAt });
+                  // Compute generation-to-scan delay for QR-2:
+                  // ts is the exact ms when the faculty device generated this QR block.
+                  // Date.now() - ts = physical time from projector display → camera decode.
+                  // This is device/network-independent — purely measures scanning speed.
+                  const qr2Ts = blocks[1]?.payload?.ts;
+                  const qr2GenToScanMs = (qr2Ts && qr2Ts > 0)
+                    ? Math.max(0, secondScannedAt - qr2Ts)
+                    : null;
+                  closeScanner({ sequence, secondScannedAt, qr2GenToScanMs });
                   return true;
                 }
                 setScannerStatusTone("success");

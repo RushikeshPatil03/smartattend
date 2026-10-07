@@ -1069,6 +1069,7 @@ const handleMarkAttendance = async (req, res) => {
     faceMetrics,
     faceEmbedding,
     secondQrScannedAtMs,   // optional: client's clock (ms) at moment of QR-2 decode
+    qr2GenToScanMs,        // NEW: ms from QR-2 generation (ts in payload) → student decode
   } = req.body || {};
 
   if (!scanGrantToken || !firstQrToken || !secondQrToken) {
@@ -1292,11 +1293,21 @@ const handleMarkAttendance = async (req, res) => {
     }
 
     // --- QR-2 TIMING MEASUREMENT (informational only, never blocks attendance) ---
-    // secondIat is the authoritative server-signed issue time of QR-2 (Unix seconds).
-    // secondQrScannedAtMs is the client's claimed decode time (ms epoch).
-    // We validate the client value is in a sane range before trusting it.
+    //
+    // Priority 1 (MOST ACCURATE): qr2GenToScanMs — client-computed gap between
+    //   the ts timestamp baked into the QR-2 payload (exact ms of QR generation on
+    //   faculty device) and Date.now() at the moment the student's camera decoded it.
+    //   This is device/network-independent: it purely measures physical scanning speed.
+    //
+    // Priority 2 (FALLBACK): secondQrScannedAtMs — client's clock at QR-2 decode minus
+    //   the JWT iat (server-signed issue time). Less accurate because JWT iat is in seconds.
     let qr2ScanTimingMs = null;
-    if (typeof secondQrScannedAtMs === "number" && secondQrScannedAtMs > 0) {
+
+    const clientGenToScan = typeof qr2GenToScanMs === "number" ? qr2GenToScanMs : null;
+    if (clientGenToScan !== null && clientGenToScan >= 0 && clientGenToScan <= 30000) {
+      // Direct measurement: QR-2 generation → student decode (0–30 second sanity window)
+      qr2ScanTimingMs = Math.round(clientGenToScan);
+    } else if (typeof secondQrScannedAtMs === "number" && secondQrScannedAtMs > 0) {
       const qr2IssuedAtMs = secondIat * 1000; // convert signed iat (sec) → ms
       const estimatedAgeMs = secondQrScannedAtMs - qr2IssuedAtMs;
       // Only store if the value is plausible: between 0ms and 60s (avoids clock-skew garbage)
@@ -2379,6 +2390,7 @@ async function handleTotpAttendanceSubmission(req, res) {
     faceMetrics,
     faceEmbedding,
     secondQrScannedAtMs,
+    qr2GenToScanMs,
   } = req.body || {};
 
   const rawSessionId =
@@ -2622,35 +2634,48 @@ async function handleTotpAttendanceSubmission(req, res) {
 
     // --- QR-2 TIMING MEASUREMENT (informational only, never blocks attendance) ---
     let qr2ScanTimingMs = null;
-    const secondBlockIndex =
-      totpValidation.secondBlockIndex ??
-      (Array.isArray(sequence) && sequence[1] && typeof sequence[1].index === "number" ? sequence[1].index : null) ??
-      totpValidation.blockIndex;
 
-    if (typeof secondBlockIndex === "number") {
-      const qr2IssuedAtMs = secondBlockIndex * TOTP_BLOCK_DURATION_MS;
-      let clientScanMs = null;
-      if (typeof secondQrScannedAtMs === "number" && secondQrScannedAtMs > 0) {
-        clientScanMs = secondQrScannedAtMs;
-      } else if (Array.isArray(sequence) && sequence[1] && typeof sequence[1].scannedAt === "number" && sequence[1].scannedAt > 0) {
-        clientScanMs = sequence[1].scannedAt;
-      }
+    // Priority 1 (MOST ACCURATE): direct generation-to-scan ms computed on student client
+    // using exact timestamp embedded in QR-2 at generation time by faculty
+    const clientGenToScan =
+      typeof qr2GenToScanMs === "number" ? qr2GenToScanMs :
+      (Array.isArray(sequence) && sequence[1] && typeof sequence[1].ts === "number" && typeof secondQrScannedAtMs === "number" && secondQrScannedAtMs >= sequence[1].ts)
+        ? (secondQrScannedAtMs - sequence[1].ts)
+        : null;
 
-      if (typeof clientScanMs === "number") {
-        const estimatedAgeMs = clientScanMs - qr2IssuedAtMs;
-        if (estimatedAgeMs >= 0 && estimatedAgeMs <= 60000) {
-          qr2ScanTimingMs = Math.round(estimatedAgeMs);
+    if (clientGenToScan !== null && clientGenToScan >= 0 && clientGenToScan <= 30000) {
+      qr2ScanTimingMs = Math.round(clientGenToScan);
+    } else {
+      const secondBlockIndex =
+        totpValidation.secondBlockIndex ??
+        (Array.isArray(sequence) && sequence[1] && typeof sequence[1].index === "number" ? sequence[1].index : null) ??
+        totpValidation.blockIndex;
+
+      if (typeof secondBlockIndex === "number") {
+        const qr2IssuedAtMs = secondBlockIndex * TOTP_BLOCK_DURATION_MS;
+        let clientScanMs = null;
+        if (typeof secondQrScannedAtMs === "number" && secondQrScannedAtMs > 0) {
+          clientScanMs = secondQrScannedAtMs;
+        } else if (Array.isArray(sequence) && sequence[1] && typeof sequence[1].scannedAt === "number" && sequence[1].scannedAt > 0) {
+          clientScanMs = sequence[1].scannedAt;
+        }
+
+        if (typeof clientScanMs === "number") {
+          const estimatedAgeMs = clientScanMs - qr2IssuedAtMs;
+          if (estimatedAgeMs >= 0 && estimatedAgeMs <= 60000) {
+            qr2ScanTimingMs = Math.round(estimatedAgeMs);
+          } else {
+            // If slight client clock skew or drift, check server-received time fallback
+            const serverAgeMs = Date.now() - qr2IssuedAtMs;
+            if (serverAgeMs >= 0 && serverAgeMs <= 60000) {
+              qr2ScanTimingMs = Math.round(serverAgeMs);
+            }
+          }
         } else {
-          // If slight client clock skew or drift, check server-received time fallback
           const serverAgeMs = Date.now() - qr2IssuedAtMs;
           if (serverAgeMs >= 0 && serverAgeMs <= 60000) {
             qr2ScanTimingMs = Math.round(serverAgeMs);
           }
-        }
-      } else {
-        const serverAgeMs = Date.now() - qr2IssuedAtMs;
-        if (serverAgeMs >= 0 && serverAgeMs <= 60000) {
-          qr2ScanTimingMs = Math.round(serverAgeMs);
         }
       }
     }
