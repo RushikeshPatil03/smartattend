@@ -1303,15 +1303,15 @@ const handleMarkAttendance = async (req, res) => {
     //   the JWT iat (server-signed issue time). Less accurate because JWT iat is in seconds.
     let qr2ScanTimingMs = null;
 
-    const clientGenToScan = typeof qr2GenToScanMs === "number" ? qr2GenToScanMs : null;
-    if (clientGenToScan !== null && clientGenToScan >= 0 && clientGenToScan <= 30000) {
-      // Direct measurement: QR-2 generation → student decode (0–30 second sanity window)
+    const clientGenToScan = typeof qr2GenToScanMs === "number" && qr2GenToScanMs > 0 ? qr2GenToScanMs : null;
+    if (clientGenToScan !== null && clientGenToScan > 0 && clientGenToScan <= 30000) {
+      // Direct measurement: QR-2 generation → student decode (positive sanity window)
       qr2ScanTimingMs = Math.round(clientGenToScan);
     } else if (typeof secondQrScannedAtMs === "number" && secondQrScannedAtMs > 0) {
       const qr2IssuedAtMs = secondIat * 1000; // convert signed iat (sec) → ms
       const estimatedAgeMs = secondQrScannedAtMs - qr2IssuedAtMs;
-      // Only store if the value is plausible: between 0ms and 60s (avoids clock-skew garbage)
-      if (estimatedAgeMs >= 0 && estimatedAgeMs <= 60000) {
+      // Only store if the value is plausible: between 50ms and 60s (avoids clock-skew 0s)
+      if (estimatedAgeMs >= 50 && estimatedAgeMs <= 60000) {
         qr2ScanTimingMs = Math.round(estimatedAgeMs);
       }
     }
@@ -2636,14 +2636,16 @@ async function handleTotpAttendanceSubmission(req, res) {
     let qr2ScanTimingMs = null;
 
     // Priority 1 (MOST ACCURATE): direct generation-to-scan ms computed on student client
-    // using exact timestamp embedded in QR-2 at generation time by faculty
-    const clientGenToScan =
-      typeof qr2GenToScanMs === "number" ? qr2GenToScanMs :
-      (Array.isArray(sequence) && sequence[1] && typeof sequence[1].ts === "number" && typeof secondQrScannedAtMs === "number" && secondQrScannedAtMs >= sequence[1].ts)
-        ? (secondQrScannedAtMs - sequence[1].ts)
-        : null;
+    let clientGenToScan = typeof qr2GenToScanMs === "number" && qr2GenToScanMs > 0 ? qr2GenToScanMs : null;
 
-    if (clientGenToScan !== null && clientGenToScan >= 0 && clientGenToScan <= 30000) {
+    // Priority 2: local inter-scan gap from sequence if available (immune to cross-device clock skew)
+    if (clientGenToScan === null && Array.isArray(sequence) && sequence.length >= 2) {
+      if (typeof sequence[1].scannedAt === "number" && typeof sequence[0].scannedAt === "number" && sequence[1].scannedAt > sequence[0].scannedAt) {
+        clientGenToScan = sequence[1].scannedAt - sequence[0].scannedAt;
+      }
+    }
+
+    if (clientGenToScan !== null && clientGenToScan > 0 && clientGenToScan <= 30000) {
       qr2ScanTimingMs = Math.round(clientGenToScan);
     } else {
       const secondBlockIndex =
@@ -2662,18 +2664,18 @@ async function handleTotpAttendanceSubmission(req, res) {
 
         if (typeof clientScanMs === "number") {
           const estimatedAgeMs = clientScanMs - qr2IssuedAtMs;
-          if (estimatedAgeMs >= 0 && estimatedAgeMs <= 60000) {
+          if (estimatedAgeMs >= 50 && estimatedAgeMs <= 60000) {
             qr2ScanTimingMs = Math.round(estimatedAgeMs);
           } else {
             // If slight client clock skew or drift, check server-received time fallback
             const serverAgeMs = Date.now() - qr2IssuedAtMs;
-            if (serverAgeMs >= 0 && serverAgeMs <= 60000) {
+            if (serverAgeMs >= 50 && serverAgeMs <= 60000) {
               qr2ScanTimingMs = Math.round(serverAgeMs);
             }
           }
         } else {
           const serverAgeMs = Date.now() - qr2IssuedAtMs;
-          if (serverAgeMs >= 0 && serverAgeMs <= 60000) {
+          if (serverAgeMs >= 50 && serverAgeMs <= 60000) {
             qr2ScanTimingMs = Math.round(serverAgeMs);
           }
         }

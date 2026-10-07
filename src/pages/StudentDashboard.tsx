@@ -2033,13 +2033,20 @@ const StudentDashboard: React.FC = () => {
                   const sequence = blocks.map((b) => b.payload);
                   const secondScannedAt = blocks[1]?.scannedAt || Date.now();
                   // Compute generation-to-scan delay for QR-2:
-                  // ts is the exact ms when the faculty device generated this QR block.
-                  // Date.now() - ts = physical time from projector display → camera decode.
-                  // This is device/network-independent — purely measures scanning speed.
-                  const qr2Ts = blocks[1]?.payload?.ts;
-                  const qr2GenToScanMs = (qr2Ts && qr2Ts > 0)
-                    ? Math.max(0, secondScannedAt - qr2Ts)
+                  // 1. Inter-scan gap on the same device (zero clock drift, zero network delay):
+                  const scanGapMs = (blocks.length >= 2 && blocks[0]?.scannedAt && blocks[1]?.scannedAt)
+                    ? Math.max(80, Math.round(blocks[1].scannedAt - blocks[0].scannedAt))
                     : null;
+
+                  // 2. Cross-device generation timestamp:
+                  const qr2Ts = blocks[1]?.payload?.ts;
+                  const rawGenDiff = (qr2Ts && qr2Ts > 0) ? (secondScannedAt - qr2Ts) : null;
+
+                  // If cross-device clock skew makes rawGenDiff <= 50ms, use the rock-solid local scanGapMs
+                  const qr2GenToScanMs = (rawGenDiff !== null && rawGenDiff >= 50 && rawGenDiff <= 5000)
+                    ? Math.round(rawGenDiff)
+                    : scanGapMs;
+
                   closeScanner({ sequence, secondScannedAt, qr2GenToScanMs });
                   return true;
                 }
