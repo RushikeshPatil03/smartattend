@@ -184,6 +184,7 @@ const env = {
   NEEDS_REVIEW_MIN_SAMPLES: parseNumber("NEEDS_REVIEW_MIN_SAMPLES", 5, { min: 2 }),
   DEFAULT_SESSION_RADIUS_METERS: parseNumber("DEFAULT_SESSION_RADIUS_METERS", 50, { min: 1 }),
   FACENET512_SERVICE_URL: clean(process.env.FACENET512_SERVICE_URL),
+  REDIS_URL: clean(process.env.REDIS_URL),
 };
 
 module.exports = env;

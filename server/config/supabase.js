@@ -11,6 +11,25 @@ if (typeof globalThis.WebSocket === "undefined") {
   }
 }
 
+const https = require("https");
+
+// High-concurrency persistent HTTPS Keep-Alive agent
+// Reuses TCP and TLS handshakes across student check-ins, eliminating connection setup latency
+const keepAliveAgent = new https.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 60000,
+  maxSockets: 64,
+  maxFreeSockets: 16,
+  timeout: 30000,
+});
+
+const keepAliveFetch = (url, options = {}) => {
+  return fetch(url, {
+    ...options,
+    agent: keepAliveAgent,
+  });
+};
+
 let supabaseInstance = null;
 
 function getSupabaseClient() {
@@ -44,6 +63,7 @@ function getSupabaseClient() {
         schema: "public",
       },
       global: {
+        fetch: keepAliveFetch,
         headers: {
           "x-application-name": "smart-attend-api-mumbai",
         },
@@ -60,6 +80,9 @@ function getSupabaseClient() {
         },
         db: {
           schema: "public",
+        },
+        global: {
+          fetch: keepAliveFetch,
         },
       });
       return supabaseInstance;

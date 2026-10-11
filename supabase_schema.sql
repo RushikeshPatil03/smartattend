@@ -200,7 +200,8 @@ CREATE TABLE IF NOT EXISTS attendances (
     CONSTRAINT uq_attendance_session_student UNIQUE (session, student)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_attendances_session_student_uniq ON attendances (session, student);
+-- Note: uq_attendance_session_student constraint automatically maintains the backing unique index.
+-- Duplicate manual index idx_attendances_session_student_uniq was removed to save write I/O.
 CREATE INDEX IF NOT EXISTS idx_attendances_session_status ON attendances (session, status, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_attendances_student_time ON attendances (student, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_attendances_subject_faculty ON attendances (subject, faculty, timestamp DESC);

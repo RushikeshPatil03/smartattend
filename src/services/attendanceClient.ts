@@ -171,31 +171,6 @@ export async function requestPersistentStorage(): Promise<boolean> {
   return false;
 }
 
-/**
- * Legacy browser fingerprint generator retained only as a recovery helper for
- * old clients that already registered with attribute-based fingerprints.
- */
-export function getLegacyBrowserFingerprint(): string {
-  try {
-    const parts = [
-      navigator.userAgent || "",
-      navigator.language || "",
-      (navigator as any).platform || "",
-      Intl?.DateTimeFormat?.().resolvedOptions()?.timeZone || "",
-      String(screen?.width ?? ""),
-      String(screen?.height ?? ""),
-      String(screen?.colorDepth ?? ""),
-      String(window.devicePixelRatio ?? ""),
-      String(navigator.hardwareConcurrency ?? ""),
-      String((navigator as any).deviceMemory ?? ""),
-    ];
-
-    const raw = parts.join("|");
-    return btoa(unescape(encodeURIComponent(raw)));
-  } catch {
-    return "unknown-device";
-  }
-}
 
 /**
  * Normalize fingerprint before sending to backend
@@ -270,13 +245,83 @@ export async function markAttendanceTwoStep(
     }
 
     markInFlightKey = dedupeKey;
-    markInFlightPromise = apiClient.post("/api/attendance/mark", payload);
 
+    // Resilient client-side retry with randomized exponential jitter
+    // Max 4 attempts: Initial immediate attempt, then 3 retries on transient errors
+    const executeWithRetry = async () => {
+      const maxAttempts = 4;
+      const jitterDelays = [
+        0, // Attempt 1: immediate
+        300 + Math.floor(Math.random() * 150),  // Attempt 2: 300-450ms
+        800 + Math.floor(Math.random() * 250),  // Attempt 3: 800-1050ms
+        1800 + Math.floor(Math.random() * 400), // Attempt 4: 1800-2200ms
+      ];
+
+      let lastErrorResult: any = null;
+
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (attempt > 0) {
+          await new Promise((resolve) => setTimeout(resolve, jitterDelays[attempt]));
+        }
+
+        try {
+          const res: any = await apiClient.post("/api/attendance/mark", payload);
+
+          // Success or already marked
+          if (res?.ok === true || res?.alreadyMarked === true || res?.already === true) {
+            return res;
+          }
+
+          const status = Number(res?.status || 0);
+          const errorMsg = String(res?.error || "").toLowerCase();
+
+          // Deterministic business/client errors: DO NOT RETRY
+          // (HTTP 400, 401, 403, 404, or known invalid credentials/mismatch codes)
+          const isDeterministicClientError =
+            (status >= 400 && status < 500 && status !== 429) ||
+            res?.code === "DEVICE_MISMATCH" ||
+            res?.code === "LOCATION_MISMATCH" ||
+            res?.code === "FACE_MISMATCH" ||
+            res?.code === "ELIGIBILITY_MISMATCH" ||
+            res?.code === "INVALID_QR_TOKEN" ||
+            res?.code === "INVALID_SCAN_GRANT" ||
+            res?.code === "INVALID_FACE_GRANT" ||
+            res?.code === "SESSION_EXPIRED" ||
+            errorMsg.includes("device mismatch") ||
+            errorMsg.includes("face mismatch") ||
+            errorMsg.includes("location mismatch") ||
+            errorMsg.includes("not enrolled") ||
+            errorMsg.includes("session is no longer active");
+
+          if (isDeterministicClientError) {
+            return res;
+          }
+
+          // Transient server error (500, 502, 503, 504, 429, or network error response)
+          lastErrorResult = res;
+        } catch (callErr: any) {
+          lastErrorResult = {
+            ok: false,
+            error: callErr?.message || "Network error",
+          };
+        }
+      }
+
+      return lastErrorResult || {
+        ok: false,
+        error: "Network connection unstable. Please hold your device steady and retry.",
+      };
+    };
+
+    markInFlightPromise = executeWithRetry();
     const result = await markInFlightPromise;
     return result;
   } catch (err: any) {
     logger.error("markAttendanceTwoStep error", err);
-    return { ok: false, error: err?.message || "Network error" };
+    return {
+      ok: false,
+      error: "Network connection unstable. Please hold your device steady and retry.",
+    };
   } finally {
     markInFlightKey = null;
     markInFlightPromise = null;
@@ -332,7 +377,6 @@ export default {
   getFingerprint,
   initDeviceFingerprint,
   requestPersistentStorage,
-  getLegacyBrowserFingerprint,
   markAttendance,
   markAttendanceTwoStep,
   fetchAttendance,

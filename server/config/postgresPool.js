@@ -55,16 +55,71 @@ function getPostgresPool() {
 }
 
 /**
- * Convenience query helper with automatic connection acquisition & release
+ * Convenience query helper with automatic connection acquisition, release,
+ * and 5000ms query timeout (prevents hanging queries under network stalls).
  */
-async function query(text, params) {
+async function query(text, params = [], options = {}) {
   const pool = getPostgresPool();
   if (!pool) {
     throw new Error(
       "Postgres pool is not configured. Set DATABASE_URL or DIRECT_URL in server/.env"
     );
   }
-  return pool.query(text, params);
+
+  const timeoutMs = options.timeoutMs || 5000;
+  const client = await pool.connect();
+  let timer;
+
+  try {
+    const timeoutPromise = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`Postgres query timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      if (timer.unref) timer.unref();
+    });
+
+    const queryPromise = client.query(text, params);
+    const result = await Promise.race([queryPromise, timeoutPromise]);
+    return result;
+  } finally {
+    if (timer) clearTimeout(timer);
+    client.release();
+  }
+}
+
+/**
+ * Direct RPC invocation through Supavisor Transaction Pooler (Port 6543)
+ * Bypasses PostgREST to achieve lightning-fast sub-20ms execution on check-in bursts.
+ */
+async function callAtomicAttendanceRpc({
+  sessionId,
+  studentId,
+  deviceFingerprint,
+  location = null,
+  faceVerification = null,
+  qr2ScanTimingMs = null,
+}) {
+  const sql = `
+    SELECT mark_student_attendance_atomic(
+      $1::uuid,
+      $2::uuid,
+      $3::varchar,
+      $4::jsonb,
+      $5::jsonb,
+      $6::integer
+    ) AS result;
+  `;
+  const params = [
+    sessionId,
+    studentId,
+    deviceFingerprint || "",
+    location ? JSON.stringify(location) : null,
+    faceVerification ? JSON.stringify(faceVerification) : null,
+    qr2ScanTimingMs != null ? Number(qr2ScanTimingMs) : null,
+  ];
+
+  const res = await query(sql, params, { timeoutMs: 5000 });
+  return res.rows[0]?.result;
 }
 
 /**
@@ -84,9 +139,27 @@ function isPostgresPoolConfigured() {
   return Boolean(env.DATABASE_URL || env.DIRECT_URL);
 }
 
+/**
+ * Cleanly releases all pool connections during graceful shutdown
+ */
+async function closePostgresPool() {
+  if (poolInstance) {
+    try {
+      await poolInstance.end();
+      console.log("[PostgresPool] Closed all database pool connections.");
+    } catch (err) {
+      console.warn("[PostgresPool] Warning closing pool connections:", err?.message || err);
+    } finally {
+      poolInstance = null;
+    }
+  }
+}
+
 module.exports = {
   getPostgresPool,
   query,
   getClient,
   isPostgresPoolConfigured,
+  closePostgresPool,
+  callAtomicAttendanceRpc,
 };

@@ -23,6 +23,8 @@ const departmentRoutes = require("./routes/department");
 const subjectRoutes = require("./routes/subject");
 const publicRoutes = require("./routes/public");
 const activityRoutes = require("./routes/activities");
+const stateStore = require("./services/stateStore");
+const { closePostgresPool } = require("./config/postgresPool");
 
 const app = express();
 
@@ -227,14 +229,26 @@ app.use("/api/public", publicRoutes);
 app.use("/api/activities", activityRoutes);
 
 // ----------------------------------------------------
-// Health Check (Lightweight for fast Render cold start)
+// Health Check (Shielded with 20s sliding-window cache to protect database connection pool)
 // ----------------------------------------------------
-app.get("/api/health", async (_req, res) => {
-  const supabaseConfigured = isSupabaseConfigured();
-  let supabaseReady = false;
-  let supabaseError = null;
+const DB_HEALTH_CACHE_TTL_MS = 20_000; // 20 seconds
+let cachedDbHealth = null; // { supabaseReady, supabaseError, cachedAt }
+let inflightDbHealthPromise = null;
 
-  if (supabaseConfigured) {
+async function checkDatabaseHealth() {
+  const now = Date.now();
+  if (cachedDbHealth && now - cachedDbHealth.cachedAt < DB_HEALTH_CACHE_TTL_MS) {
+    return cachedDbHealth;
+  }
+
+  if (inflightDbHealthPromise) {
+    return inflightDbHealthPromise;
+  }
+
+  inflightDbHealthPromise = (async () => {
+    let supabaseReady = false;
+    let supabaseError = null;
+
     try {
       const client = getSupabaseClient();
       if (client) {
@@ -250,6 +264,30 @@ app.get("/api/health", async (_req, res) => {
     } catch (err) {
       supabaseError = env.IS_PRODUCTION ? "Database connection error" : err.message;
     }
+
+    const result = {
+      supabaseReady,
+      supabaseError,
+      cachedAt: Date.now(),
+    };
+    cachedDbHealth = result;
+    return result;
+  })().finally(() => {
+    inflightDbHealthPromise = null;
+  });
+
+  return inflightDbHealthPromise;
+}
+
+app.get("/api/health", async (_req, res) => {
+  const supabaseConfigured = isSupabaseConfigured();
+  let supabaseReady = false;
+  let supabaseError = null;
+
+  if (supabaseConfigured) {
+    const dbHealth = await checkDatabaseHealth();
+    supabaseReady = dbHealth.supabaseReady;
+    supabaseError = dbHealth.supabaseError;
   }
 
   res.json({
@@ -355,4 +393,74 @@ server.listen(PORT, HOST, () => {
   console.log("=================================================");
 });
 
-module.exports = { app, server };
+// ----------------------------------------------------
+// Graceful Shutdown & Zero-Loss Batch Drainage
+// ----------------------------------------------------
+let isShuttingDown = false;
+
+async function handleShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  // 1. Log initiation
+  console.log("[Shutdown] Graceful shutdown initiated. Rejecting new connections...");
+
+  // 5. Hard fallback safety timeout (8s) to avoid hanging processes during deployment
+  const fallbackTimer = setTimeout(() => {
+    console.error("[Shutdown] Safety timeout reached (8000ms). Forcing process exit.");
+    process.exit(1);
+  }, 8000);
+  if (fallbackTimer.unref) fallbackTimer.unref();
+
+  try {
+    // 2. Close HTTP/HTTPS server to stop taking incoming requests
+    await new Promise((resolve) => {
+      if (server && server.listening) {
+        server.close((err) => {
+          if (err) {
+            console.warn("[Shutdown] HTTP server close warning:", err?.message || err);
+          } else {
+            console.log("[Shutdown] HTTP server closed successfully.");
+          }
+          resolve();
+        });
+      } else {
+        resolve();
+      }
+    });
+
+    // 3. Flush and drain attendanceBatchWriter
+    if (attendanceRoutes.attendanceBatchWriter && typeof attendanceRoutes.attendanceBatchWriter.drainAndFlush === "function") {
+      console.log("[Shutdown] Draining attendance batch writer queue...");
+      await attendanceRoutes.attendanceBatchWriter.drainAndFlush();
+      console.log("[Shutdown] Attendance batch writer drained successfully.");
+    }
+
+    if (attendanceRoutes.attendanceAuditBatchQueue && typeof attendanceRoutes.attendanceAuditBatchQueue.flush === "function") {
+      await attendanceRoutes.attendanceAuditBatchQueue.flush();
+    }
+
+    // 4. Close Redis connection (if connected) and release database pool connections cleanly
+    if (stateStore && typeof stateStore.close === "function") {
+      console.log("[Shutdown] Closing state store / Redis connection...");
+      await stateStore.close();
+    }
+
+    if (typeof closePostgresPool === "function") {
+      console.log("[Shutdown] Releasing database pool connections...");
+      await closePostgresPool();
+    }
+
+    // 6. Exit cleanly
+    console.log("[Shutdown] Graceful shutdown completed. Exiting cleanly.");
+    process.exit(0);
+  } catch (err) {
+    console.error("[Shutdown] Error occurred during graceful shutdown:", err);
+    process.exit(1);
+  }
+}
+
+process.on("SIGTERM", () => handleShutdown("SIGTERM"));
+process.on("SIGINT", () => handleShutdown("SIGINT"));
+
+module.exports = { app, server, handleShutdown };

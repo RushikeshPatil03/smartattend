@@ -3,6 +3,7 @@ const router = express.Router();
 const crypto = require("crypto");
 
 const { getSupabaseClient } = require("../config/supabase");
+const { callAtomicAttendanceRpc } = require("../config/postgresPool");
 const { verifyQRToken, validateTwoStepQR } = require("../services/qrService");
 const {
   verifyTotpSequence,
@@ -24,13 +25,7 @@ const {
   getSessionRosterSnapshot,
   getSessionRosterSnapshotsForSessions,
 } = require("../services/sessionRosterSnapshotService");
-const scanLocks = new Map();
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, timestamp] of scanLocks.entries()) {
-    if (now - timestamp > 10000) scanLocks.delete(key);
-  }
-}, 10000).unref();
+const stateStore = require("../services/stateStore");
 const auth = require("../middleware/auth");
 const rateLimit = require("../middleware/rateLimit");
 const env = require("../config/env");
@@ -42,15 +37,9 @@ const QR_MAX_TWO_STEP_GAP_SECONDS = env.QR_MAX_TWO_STEP_GAP_SECONDS;
 const QR_PRECHECK_SKEW_SECONDS = env.QR_PRECHECK_SKEW_SECONDS;
 const NEEDS_REVIEW_MIN_QR2_AGE_MS = env.NEEDS_REVIEW_MIN_QR2_AGE_MS;
 const NEEDS_REVIEW_MIN_SAMPLES = env.NEEDS_REVIEW_MIN_SAMPLES;
-
-const scanGrantsMemoryStore = new Map();
-const faceGrantsMemoryStore = new Map();
 const FACE_GRANT_TTL_MS = 90_000; // 90 seconds single-use grant for scanning QR after face check
-const activeSessionsMemoryCache = new Map();
-const sessionInflightPromises = new Map();
-const ACTIVE_SESSION_CACHE_TTL_MS = 5000;
-const ACTIVE_SESSION_CACHE_MAX_SIZE = 200;
 
+const sessionInflightPromises = new Map();
 const sessionTouchThrottleMs = new Map(); // sessionId -> lastTouchedTimestamp
 const TOUCH_THROTTLE_MS = 30_000; // 30 seconds
 
@@ -61,22 +50,14 @@ function throttledTouchSession(sessionId) {
   return touchSession(sessionId);
 }
 
-
 function setCachedSession(sid, session) {
-  if (activeSessionsMemoryCache.size >= ACTIVE_SESSION_CACHE_MAX_SIZE) {
-    const oldestKey = activeSessionsMemoryCache.keys().next().value;
-    if (oldestKey) {
-      activeSessionsMemoryCache.delete(oldestKey);
-    }
-  }
-  activeSessionsMemoryCache.delete(sid);
-  activeSessionsMemoryCache.set(sid, { session, cachedAt: Date.now() });
+  stateStore.setCachedSession(sid, session, 10).catch(() => {});
 }
 
 function invalidateCachedSession(sessionId) {
   if (sessionId) {
     const sid = String(sessionId);
-    activeSessionsMemoryCache.delete(sid);
+    stateStore.invalidateCachedSession(sid);
     sessionTouchThrottleMs.delete(sid);
   }
 }
@@ -137,13 +118,9 @@ async function getCachedBatches(type, targetId, supabaseClient) {
 
 async function getCachedActiveSession(sessionId) {
   const sid = String(sessionId);
-  const cached = activeSessionsMemoryCache.get(sid);
-  const now = Date.now();
-  if (cached && now - cached.cachedAt < ACTIVE_SESSION_CACHE_TTL_MS) {
-    // Refresh LRU order on hit
-    activeSessionsMemoryCache.delete(sid);
-    activeSessionsMemoryCache.set(sid, cached);
-    return cached.session;
+  const cached = await stateStore.getCachedSession(sid);
+  if (cached) {
+    return cached;
   }
 
   // Deduplicate concurrent inflight requests for the same session ID
@@ -180,15 +157,15 @@ async function getCachedActiveSession(sessionId) {
         .single();
 
       if (!rawSession) {
-        activeSessionsMemoryCache.delete(sid);
+        stateStore.invalidateCachedSession(sid);
         return null;
       }
 
       const session = await expireIfInactive(rawSession);
       if (session && (session.is_active || session.isActive)) {
-        setCachedSession(sid, session);
+        await stateStore.setCachedSession(sid, session, 10);
       } else {
-        activeSessionsMemoryCache.delete(sid);
+        stateStore.invalidateCachedSession(sid);
       }
       return session;
     } finally {
@@ -200,56 +177,47 @@ async function getCachedActiveSession(sessionId) {
   return fetchPromise;
 }
 
-function cleanupExpiredScanGrants() {
-  const now = Date.now();
-  for (const [key, value] of scanGrantsMemoryStore.entries()) {
-    if (!value || Number(value.expiresAt || 0) <= now) {
-      scanGrantsMemoryStore.delete(key);
-    }
-  }
-}
+/**
+ * Proactive In-Memory State Garbage Collector
+ * Runs periodically every 60s to prune expired tokens, locks, and cache entries.
+ * Prevents memory leaks and V8 heap bloat on memory-constrained hosting tiers (e.g. 512MB RAM).
+ */
+const SWEEP_INTERVAL_MS = 60_000; // 60 seconds
 
-function cleanupExpiredFaceGrants() {
+function sweepExpiredEphemeralState() {
   const now = Date.now();
-  for (const [key, grant] of faceGrantsMemoryStore.entries()) {
-    if (!grant || Number(grant.expiresAt || 0) <= now || grant.consumed) {
-      faceGrantsMemoryStore.delete(key);
-    }
-  }
-}
 
-function cleanupExpiredActiveSessions() {
-  const now = Date.now();
-  for (const [key, cached] of activeSessionsMemoryCache.entries()) {
-    if (!cached || now - Number(cached.cachedAt || 0) >= ACTIVE_SESSION_CACHE_TTL_MS) {
-      activeSessionsMemoryCache.delete(key);
-    }
-  }
-}
-
-function cleanupExpiredSessionTouches() {
-  const now = Date.now();
+  // 1. Sweep session touch throttles older than 10 minutes
   for (const [key, lastTouched] of sessionTouchThrottleMs.entries()) {
     if (now - Number(lastTouched || 0) > 10 * 60 * 1000) {
       sessionTouchThrottleMs.delete(key);
     }
   }
+
+  // 2. Sweep batch roster cache entries exceeding BATCH_ROSTER_CACHE_TTL_MS (60s)
+  for (const [key, cached] of batchRosterCache.entries()) {
+    if (!cached || now - Number(cached.cachedAt || 0) > BATCH_ROSTER_CACHE_TTL_MS) {
+      batchRosterCache.delete(key);
+    }
+  }
+
+  // 3. Trigger hybrid state store sweeper (grants, locks, session cache)
+  if (stateStore && typeof stateStore.sweepMemoryStore === "function") {
+    stateStore.sweepMemoryStore();
+  }
 }
 
-// Background cleanup interval (sweeps orphaned grants, expired sessions, and stale touches every 60s)
-const memoryStoresCleanupInterval = setInterval(() => {
+// Background cleanup interval with unref() so process exits cleanly on shutdown
+const ephemeralMemorySweeperInterval = setInterval(() => {
   try {
-    cleanupExpiredScanGrants();
-    cleanupExpiredFaceGrants();
-    cleanupExpiredActiveSessions();
-    cleanupExpiredSessionTouches();
+    sweepExpiredEphemeralState();
   } catch (err) {
-    console.warn("Memory store cleanup warning:", err?.message || err);
+    console.warn("[Attendance] Ephemeral state sweeper warning:", err?.message || err);
   }
-}, 60000);
+}, SWEEP_INTERVAL_MS);
 
-if (memoryStoresCleanupInterval.unref) {
-  memoryStoresCleanupInterval.unref();
+if (ephemeralMemorySweeperInterval.unref) {
+  ephemeralMemorySweeperInterval.unref();
 }
 
 function getRequestMeta(req) {
@@ -349,119 +317,43 @@ function recordAttendanceAudit(entry) {
   return Promise.resolve();
 }
 
-function saveScanGrant({ token, studentId, sessionId, fingerprint }) {
-  const expiresAt = Date.now() + SCAN_GRANT_TTL_MS;
-  const grant = {
-    studentId: String(studentId),
-    sessionId: String(sessionId),
-    fingerprint: String(fingerprint),
-    consumed: false,
-    createdAt: Date.now(),
-    expiresAt,
-  };
-
-  // Prevent memory unbounded growth by sweeping expired grants if size passes threshold
-  if (scanGrantsMemoryStore.size >= 5000) {
-    cleanupExpiredScanGrants();
-  }
-
-  scanGrantsMemoryStore.set(String(token), grant);
-  return grant;
-}
-
-function consumeScanGrant({ token, studentId, sessionId, fingerprint }) {
-  const key = String(token);
-  const grant = scanGrantsMemoryStore.get(key);
-
-  if (!grant || grant.consumed || Number(grant.expiresAt || 0) < Date.now()) {
-    if (grant && Number(grant.expiresAt || 0) < Date.now()) {
-      scanGrantsMemoryStore.delete(key);
-    }
-    return { ok: false, error: "Scan grant invalid or expired" };
-  }
-
-  if (
-    grant.studentId !== String(studentId) ||
-    grant.sessionId !== String(sessionId) ||
-    grant.fingerprint !== String(fingerprint)
-  ) {
-    return { ok: false, error: "Scan grant context mismatch" };
-  }
-
-  grant.consumed = true;
-  scanGrantsMemoryStore.set(key, grant);
-
-  return { ok: true };
-}
-
-function saveFaceGrant({ studentId, sessionId = null, fingerprint = null, score = 1.0, method = "client-faceapi" }) {
-  if (faceGrantsMemoryStore.size >= 5000) {
-    cleanupExpiredFaceGrants();
-  }
-  const token = crypto.randomBytes(24).toString("hex");
-  const expiresAt = Date.now() + FACE_GRANT_TTL_MS;
-  const grant = {
+async function saveScanGrant({ token, studentId, sessionId, fingerprint }) {
+  return stateStore.saveScanGrant({
     token,
-    studentId: String(studentId),
-    sessionId: sessionId ? String(sessionId) : null,
-    fingerprint: fingerprint ? String(fingerprint) : null,
-    score: Number(score) || 1.0,
-    method: String(method || "client-faceapi"),
-    consumed: false,
-    createdAt: Date.now(),
-    expiresAt,
-  };
-  faceGrantsMemoryStore.set(token, grant);
-  return grant;
+    studentId,
+    sessionId,
+    fingerprint,
+    ttlMs: SCAN_GRANT_TTL_MS,
+  });
 }
 
-function consumeFaceGrant({ token, studentId, sessionId, fingerprint }) {
-  if (!token) {
-    return { ok: false, code: "MISSING_FACE_GRANT", error: "Face verification grant token is required" };
-  }
-  const key = String(token);
-  const grant = faceGrantsMemoryStore.get(key);
+async function consumeScanGrant({ token, studentId, sessionId, fingerprint }) {
+  return stateStore.consumeScanGrant({
+    token,
+    studentId,
+    sessionId,
+    fingerprint,
+  });
+}
 
-  if (!grant || grant.consumed || Number(grant.expiresAt || 0) < Date.now()) {
-    if (grant && Number(grant.expiresAt || 0) < Date.now()) {
-      faceGrantsMemoryStore.delete(key);
-    }
-    return {
-      ok: false,
-      code: "INVALID_FACE_GRANT",
-      error: "Face verification grant expired or invalid. Please verify face again.",
-    };
-  }
+async function saveFaceGrant({ studentId, sessionId = null, fingerprint = null, score = 1.0, method = "client-faceapi" }) {
+  return stateStore.saveFaceGrant({
+    studentId,
+    sessionId,
+    fingerprint,
+    score,
+    method,
+    ttlMs: FACE_GRANT_TTL_MS,
+  });
+}
 
-  if (grant.studentId !== String(studentId)) {
-    return {
-      ok: false,
-      code: "FACE_GRANT_STUDENT_MISMATCH",
-      error: "Face verification grant does not belong to this student",
-    };
-  }
-
-  if (grant.fingerprint && fingerprint && grant.fingerprint !== String(fingerprint)) {
-    return {
-      ok: false,
-      code: "FACE_GRANT_DEVICE_MISMATCH",
-      error: "Face verification grant used on an unauthorized device",
-    };
-  }
-
-  if (grant.sessionId && sessionId && grant.sessionId !== String(sessionId)) {
-    return {
-      ok: false,
-      code: "FACE_GRANT_SESSION_MISMATCH",
-      error: "Face verification grant was issued for a different session",
-    };
-  }
-
-  // Mark single-use (anti-replay)
-  grant.consumed = true;
-  faceGrantsMemoryStore.set(key, grant);
-
-  return { ok: true, grant };
+async function consumeFaceGrant({ token, studentId, sessionId, fingerprint }) {
+  return stateStore.consumeFaceGrant({
+    token,
+    studentId,
+    sessionId,
+    fingerprint,
+  });
 }
 
 /**
@@ -851,9 +743,14 @@ class AttendanceBatchWriter {
     this.timer = null;
     this.BATCH_WINDOW_MS = 60;
     this.MAX_BATCH_SIZE = 30;
+    this.isDraining = false;
+    this.activeFlushes = 0;
   }
 
   enqueue(payload, studentId, sessionId) {
+    if (this.isDraining) {
+      return Promise.reject(new Error("Server is shutting down, rejecting new attendance submissions"));
+    }
     return new Promise((resolve, reject) => {
       const sid = String(sessionId);
       const stid = String(studentId);
@@ -882,108 +779,32 @@ class AttendanceBatchWriter {
     }
     if (this.queue.length === 0) return;
 
-    const items = this.queue.splice(0, this.MAX_BATCH_SIZE);
-    // Fix queue starvation: if more items remain, schedule immediate next flush
-    if (this.queue.length > 0) {
-      this.timer = setTimeout(() => this.flush(), this.BATCH_WINDOW_MS);
-    }
-
-    const supabase = getSupabaseClient();
-    if (!supabase) {
-      const err = new Error("Database unavailable");
-      items.forEach((item) => item.reject(err));
-      return;
-    }
-
-    // Fast-path for single item
-    if (items.length === 1) {
-      const { payload, resolve, reject, studentId, sessionId } = items[0];
-      try {
-        let { data, error } = await supabase
-          .from("attendances")
-          .upsert(payload, { onConflict: "session,student", ignoreDuplicates: true })
-          .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification");
-
-        if (error && (error.code === "PGRST204" || error.code === "42703" || String(error.message || "").toLowerCase().includes("qr2_scan_timing_ms"))) {
-          const stripped = { ...payload };
-          delete stripped.qr2_scan_timing_ms;
-          const retryRes = await supabase
-            .from("attendances")
-            .upsert(stripped, { onConflict: "session,student", ignoreDuplicates: true })
-            .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification");
-          data = retryRes.data;
-          error = retryRes.error;
-        }
-
-        if (error) {
-          if (
-            error?.code === "23505" ||
-            String(error?.message || "").toLowerCase().includes("duplicate") ||
-            String(error?.message || "").toLowerCase().includes("unique")
-          ) {
-            return resolve({ alreadyMarked: true, already: true, studentId, sessionId });
-          }
-          throw error;
-        }
-
-        if (Array.isArray(data) && data.length > 0) {
-          resolve(data[0]);
-        } else {
-          // 0 rows returned because ON CONFLICT DO NOTHING ignored it -> already existed!
-          resolve({ alreadyMarked: true, already: true, studentId, sessionId });
-        }
-      } catch (err) {
-        if (
-          err?.code === "23505" ||
-          String(err?.message || "").toLowerCase().includes("duplicate") ||
-          String(err?.message || "").toLowerCase().includes("unique")
-        ) {
-          resolve({ alreadyMarked: true, already: true, studentId, sessionId });
-        } else {
-          reject(err);
-        }
-      }
-      return;
-    }
-
-    // Bulk upsert with ON CONFLICT DO NOTHING
+    this.activeFlushes++;
     try {
-      const payloads = items.map((i) => i.payload);
-      const { data, error } = await supabase
-        .from("attendances")
-        .upsert(payloads, { onConflict: "session,student", ignoreDuplicates: true })
-        .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification");
-
-      if (error) throw error;
-
-      const resultMap = new Map((data || []).map((row) => [String(row.student), row]));
-
-      for (const item of items) {
-        const row = resultMap.get(String(item.studentId));
-        if (row) {
-          item.resolve(row);
-        } else {
-          // Row was not inserted by Postgres because it already existed for this session
-          item.resolve({
-            alreadyMarked: true,
-            already: true,
-            studentId: item.studentId,
-            sessionId: item.sessionId,
-          });
-        }
+      const items = this.queue.splice(0, this.MAX_BATCH_SIZE);
+      // Fix queue starvation: if more items remain, schedule immediate next flush
+      if (this.queue.length > 0 && !this.isDraining) {
+        this.timer = setTimeout(() => this.flush(), this.BATCH_WINDOW_MS);
       }
-    } catch (bulkErr) {
-      console.warn("Bulk attendance upsert warning, retrying individually:", bulkErr.message);
-      // Resilient fallback: individually insert so one bad row doesn't fail others
-      for (const item of items) {
+
+      const supabase = getSupabaseClient();
+      if (!supabase) {
+        const err = new Error("Database unavailable");
+        items.forEach((item) => item.reject(err));
+        return;
+      }
+
+      // Fast-path for single item
+      if (items.length === 1) {
+        const { payload, resolve, reject, studentId, sessionId } = items[0];
         try {
           let { data, error } = await supabase
             .from("attendances")
-            .upsert(item.payload, { onConflict: "session,student", ignoreDuplicates: true })
+            .upsert(payload, { onConflict: "session,student", ignoreDuplicates: true })
             .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification");
 
           if (error && (error.code === "PGRST204" || error.code === "42703" || String(error.message || "").toLowerCase().includes("qr2_scan_timing_ms"))) {
-            const stripped = { ...item.payload };
+            const stripped = { ...payload };
             delete stripped.qr2_scan_timing_ms;
             const retryRes = await supabase
               .from("attendances")
@@ -999,27 +820,126 @@ class AttendanceBatchWriter {
               String(error?.message || "").toLowerCase().includes("duplicate") ||
               String(error?.message || "").toLowerCase().includes("unique")
             ) {
+              return resolve({ alreadyMarked: true, already: true, studentId, sessionId });
+            }
+            throw error;
+          }
+
+          if (Array.isArray(data) && data.length > 0) {
+            resolve(data[0]);
+          } else {
+            // 0 rows returned because ON CONFLICT DO NOTHING ignored it -> already existed!
+            resolve({ alreadyMarked: true, already: true, studentId, sessionId });
+          }
+        } catch (err) {
+          if (
+            err?.code === "23505" ||
+            String(err?.message || "").toLowerCase().includes("duplicate") ||
+            String(err?.message || "").toLowerCase().includes("unique")
+          ) {
+            resolve({ alreadyMarked: true, already: true, studentId, sessionId });
+          } else {
+            reject(err);
+          }
+        }
+        return;
+      }
+
+      // Bulk upsert with ON CONFLICT DO NOTHING
+      try {
+        const payloads = items.map((i) => i.payload);
+        const { data, error } = await supabase
+          .from("attendances")
+          .upsert(payloads, { onConflict: "session,student", ignoreDuplicates: true })
+          .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification");
+
+        if (error) throw error;
+
+        const resultMap = new Map((data || []).map((row) => [String(row.student), row]));
+
+        for (const item of items) {
+          const row = resultMap.get(String(item.studentId));
+          if (row) {
+            item.resolve(row);
+          } else {
+            // Row was not inserted by Postgres because it already existed for this session
+            item.resolve({
+              alreadyMarked: true,
+              already: true,
+              studentId: item.studentId,
+              sessionId: item.sessionId,
+            });
+          }
+        }
+      } catch (bulkErr) {
+        console.warn("Bulk attendance upsert warning, retrying individually:", bulkErr.message);
+        // Resilient fallback: individually insert so one bad row doesn't fail others
+        for (const item of items) {
+          try {
+            let { data, error } = await supabase
+              .from("attendances")
+              .upsert(item.payload, { onConflict: "session,student", ignoreDuplicates: true })
+              .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification");
+
+            if (error && (error.code === "PGRST204" || error.code === "42703" || String(error.message || "").toLowerCase().includes("qr2_scan_timing_ms"))) {
+              const stripped = { ...item.payload };
+              delete stripped.qr2_scan_timing_ms;
+              const retryRes = await supabase
+                .from("attendances")
+                .upsert(stripped, { onConflict: "session,student", ignoreDuplicates: true })
+                .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification");
+              data = retryRes.data;
+              error = retryRes.error;
+            }
+
+            if (error) {
+              if (
+                error?.code === "23505" ||
+                String(error?.message || "").toLowerCase().includes("duplicate") ||
+                String(error?.message || "").toLowerCase().includes("unique")
+              ) {
+                item.resolve({ alreadyMarked: true, already: true, studentId: item.studentId, sessionId: item.sessionId });
+              } else {
+                item.reject(error);
+              }
+            } else if (Array.isArray(data) && data.length > 0) {
+              item.resolve(data[0]);
+            } else {
+              item.resolve({ alreadyMarked: true, already: true, studentId: item.studentId, sessionId: item.sessionId });
+            }
+          } catch (singleErr) {
+            if (
+              singleErr?.code === "23505" ||
+              String(singleErr?.message || "").toLowerCase().includes("duplicate") ||
+              String(singleErr?.message || "").toLowerCase().includes("unique")
+            ) {
               item.resolve({ alreadyMarked: true, already: true, studentId: item.studentId, sessionId: item.sessionId });
             } else {
-              item.reject(error);
+              item.reject(singleErr);
             }
-          } else if (Array.isArray(data) && data.length > 0) {
-            item.resolve(data[0]);
-          } else {
-            item.resolve({ alreadyMarked: true, already: true, studentId: item.studentId, sessionId: item.sessionId });
-          }
-        } catch (singleErr) {
-          if (
-            singleErr?.code === "23505" ||
-            String(singleErr?.message || "").toLowerCase().includes("duplicate") ||
-            String(singleErr?.message || "").toLowerCase().includes("unique")
-          ) {
-            item.resolve({ alreadyMarked: true, already: true, studentId: item.studentId, sessionId: item.sessionId });
-          } else {
-            item.reject(singleErr);
           }
         }
       }
+    } finally {
+      this.activeFlushes--;
+    }
+  }
+
+  /**
+   * Graceful Shutdown Drainage: Stops accepting new writes, flushes all queued
+   * items to Supabase, and awaits in-flight database operations.
+   */
+  async drainAndFlush() {
+    this.isDraining = true;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    while (this.queue.length > 0) {
+      await this.flush();
+    }
+    while (this.activeFlushes > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
     }
   }
 }
@@ -1124,20 +1044,20 @@ const handleMarkAttendance = async (req, res) => {
     });
   }
 
-  // --- ATOMIC IN-MEMORY DEDUPLICATION GUARD ---
+  // --- ATOMIC DISTRIBUTED IN-FLIGHT DEDUPLICATION GUARD ---
   // Keyed by student ID + sessionId to prevent simultaneous double-scans from hitting DB
   const lockKey = `mark:${student?.id}:${sessionId}`;
-  if (scanLocks.has(lockKey)) {
+  const lockAcquired = await stateStore.acquireLock(lockKey, 5000);
+  if (!lockAcquired) {
     return res.status(409).json({
       ok: false,
       code: "REQUEST_IN_FLIGHT",
       error: "Attendance submission already in progress. Please wait a moment.",
     });
   }
-  scanLocks.set(lockKey, Date.now());
 
   try {
-    const grantCheck = consumeScanGrant({
+    const grantCheck = await consumeScanGrant({
       token: scanGrantToken,
       studentId: student.id,
       sessionId,
@@ -1242,7 +1162,7 @@ const handleMarkAttendance = async (req, res) => {
     };
 
     if (faceGrantToken) {
-      const grantCheck = consumeFaceGrant({
+      const grantCheck = await consumeFaceGrant({
         token: faceGrantToken,
         studentId: student.id,
         sessionId,
@@ -1316,64 +1236,91 @@ const handleMarkAttendance = async (req, res) => {
       }
     }
 
-    // --- ATOMIC DATABASE INSERTION (USING EXACT SCHEMA COLUMNS) ---
-    const fullAttendancePayload = {
-      session: sessionId,
-      student: student.id,
-      faculty: session.faculty,
-      subject: session.subject,
-      enrollment_no: student.enrollment_no || null,
-      student_name: student.name || null,
-      student_email: student.email || null,
-      department_code: student.dept?.code || student.departmentCode || null,
-      semester: Number(student.semester || session.semester) || null,
-      section: String(student.section || "").toUpperCase() || null,
-      year: Number(student.year || session.year) || null,
-      batch_id: session.batch_id || null,
-      category: session.category || "REGULAR",
-      activity_id: session.activity_id || null,
-      timestamp: new Date().toISOString(),
-      status: "present",
-      location: location ? {
-        lat: Number(location.lat),
-        lng: Number(location.lng),
-        accuracy: location.accuracy != null ? Number(location.accuracy) : null,
-        distanceMeters: locationCheck.distanceMeters != null ? Math.round(locationCheck.distanceMeters) : null,
-      } : null,
-      device_fingerprint: normalizedFp,
-      face_verification: faceVerificationResult,
-      qr2_scan_timing_ms: qr2ScanTimingMs,
-    };
+    // --- ATOMIC DATABASE INSERTION (FAST-PATH RPC WITH BATCH WRITER FALLBACK) ---
+    let attendance = null;
+    let alreadyMarked = false;
+    let rpcExecuted = false;
 
-    let attendance;
     try {
-      attendance = await attendanceBatchWriter.enqueue(fullAttendancePayload, student.id, sessionId);
-    } catch (insertError) {
-      if (
-        insertError?.code === "23505" ||
-        String(insertError?.message || "").toLowerCase().includes("unique") ||
-        String(insertError?.message || "").toLowerCase().includes("duplicate")
-      ) {
-        await recordInstantPresence(sessionId, student.id);
-        return res.json({
-          ok: true,
-          already: true,
-          alreadyMarked: true,
-          code: "ALREADY_MARKED",
-          status: "present",
-          session: {
-            id: session.id,
-            _id: session.id,
-            subjectName: session.subj?.name || "Subject",
-            subjectCode: session.subj?.code || "",
-          },
-          message: "Attendance already marked for this session",
-        });
+      const rpcResult = await callAtomicAttendanceRpc({
+        sessionId,
+        studentId: student.id,
+        deviceFingerprint: normalizedFp,
+        location: location ? {
+          lat: Number(location.lat),
+          lng: Number(location.lng),
+          accuracy: location.accuracy != null ? Number(location.accuracy) : null,
+          distanceMeters: locationCheck.distanceMeters != null ? Math.round(locationCheck.distanceMeters) : null,
+        } : null,
+        faceVerification: faceVerificationResult,
+        qr2ScanTimingMs,
+      });
+
+      if (rpcResult) {
+        rpcExecuted = true;
+        if (!rpcResult.ok) {
+          return res.status(403).json({
+            ok: false,
+            code: rpcResult.code || "ELIGIBILITY_MISMATCH",
+            error: rpcResult.message || "Attendance verification failed",
+          });
+        }
+        alreadyMarked = Boolean(rpcResult.already_marked);
+        attendance = rpcResult.attendance;
       }
-      throw insertError;
+    } catch (rpcErr) {
+      console.warn("[Attendance] Atomic RPC fast-path warning, falling back to batch writer:", rpcErr?.message || rpcErr);
     }
 
-    if (attendance?.alreadyMarked || attendance?.already) {
+    if (!rpcExecuted) {
+      const fullAttendancePayload = {
+        session: sessionId,
+        student: student.id,
+        faculty: session.faculty,
+        subject: session.subject,
+        enrollment_no: student.enrollment_no || null,
+        student_name: student.name || null,
+        student_email: student.email || null,
+        department_code: student.dept?.code || student.departmentCode || null,
+        semester: Number(student.semester || session.semester) || null,
+        section: String(student.section || "").toUpperCase() || null,
+        year: Number(student.year || session.year) || null,
+        batch_id: session.batch_id || null,
+        category: session.category || "REGULAR",
+        activity_id: session.activity_id || null,
+        timestamp: new Date().toISOString(),
+        status: "present",
+        location: location ? {
+          lat: Number(location.lat),
+          lng: Number(location.lng),
+          accuracy: location.accuracy != null ? Number(location.accuracy) : null,
+          distanceMeters: locationCheck.distanceMeters != null ? Math.round(locationCheck.distanceMeters) : null,
+        } : null,
+        device_fingerprint: normalizedFp,
+        face_verification: faceVerificationResult,
+        qr2_scan_timing_ms: qr2ScanTimingMs,
+      };
+
+      try {
+        attendance = await attendanceBatchWriter.enqueue(fullAttendancePayload, student.id, sessionId);
+      } catch (insertError) {
+        if (
+          insertError?.code === "23505" ||
+          String(insertError?.message || "").toLowerCase().includes("unique") ||
+          String(insertError?.message || "").toLowerCase().includes("duplicate")
+        ) {
+          alreadyMarked = true;
+        } else {
+          throw insertError;
+        }
+      }
+
+      if (attendance?.alreadyMarked || attendance?.already) {
+        alreadyMarked = true;
+      }
+    }
+
+    if (alreadyMarked) {
       await recordInstantPresence(sessionId, student.id);
       return res.json({
         ok: true,
@@ -1431,7 +1378,7 @@ const handleMarkAttendance = async (req, res) => {
       error: "Failed to record attendance",
     });
   } finally {
-    scanLocks.delete(lockKey);
+    await stateStore.releaseLock(lockKey);
   }
 };
 
@@ -2418,16 +2365,16 @@ async function handleTotpAttendanceSubmission(req, res) {
     });
   }
 
-  // --- ATOMIC IN-MEMORY DEDUPLICATION GUARD ---
+  // --- ATOMIC DISTRIBUTED IN-FLIGHT DEDUPLICATION GUARD ---
   const lockKey = `totp:${student?.id}:${sessionId}`;
-  if (scanLocks.has(lockKey)) {
+  const lockAcquired = await stateStore.acquireLock(lockKey, 5000);
+  if (!lockAcquired) {
     return res.status(409).json({
       ok: false,
       code: "REQUEST_IN_FLIGHT",
       error: "Attendance submission already in progress. Please wait a moment.",
     });
   }
-  scanLocks.set(lockKey, Date.now());
 
   try {
     let totpValidation;
@@ -2561,7 +2508,7 @@ async function handleTotpAttendanceSubmission(req, res) {
     );
 
     if (faceGrantToken) {
-      const grantCheck = consumeFaceGrant({
+      const grantCheck = await consumeFaceGrant({
         token: faceGrantToken,
         studentId: student.id,
         sessionId,
@@ -2682,71 +2629,99 @@ async function handleTotpAttendanceSubmission(req, res) {
       }
     }
 
-    // Atomic upsert into attendances table using micro-batched pipeline
-    const fullAttendancePayload = {
-      session: sessionId,
-      student: student.id,
-      faculty: session.faculty,
-      subject: session.subject,
-      enrollment_no: student.enrollment_no || null,
-      student_name: student.name || null,
-      student_email: student.email || null,
-      department_code: student.dept?.code || student.departmentCode || null,
-      semester: Number(student.semester || session.semester) || null,
-      section: String(student.section || "").toUpperCase() || null,
-      year: Number(student.year || session.year) || null,
-      batch_id: session.batch_id || null,
-      category: session.category || "REGULAR",
-      activity_id: session.activity_id || null,
-      timestamp: new Date().toISOString(),
-      status: "present",
-      location: location
-        ? {
-            lat: Number(location.lat),
-            lng: Number(location.lng),
-            accuracy: location.accuracy != null ? Number(location.accuracy) : null,
-            distanceMeters: locationCheck.distanceMeters != null ? Math.round(locationCheck.distanceMeters) : null,
-          }
-        : null,
-      device_fingerprint: normalizedFp,
-      face_verification: faceVerificationResult,
-      qr2_scan_timing_ms: qr2ScanTimingMs,
-    };
+    // --- ATOMIC DATABASE INSERTION (FAST-PATH RPC WITH BATCH WRITER FALLBACK) ---
+    let attendance = null;
+    let alreadyMarked = false;
+    let rpcExecuted = false;
 
-    let attendance;
     try {
-      attendance = await attendanceBatchWriter.enqueue(fullAttendancePayload, student.id, sessionId);
-    } catch (insertError) {
-      if (
-        insertError?.code === "23505" ||
-        String(insertError?.message || "").toLowerCase().includes("unique") ||
-        String(insertError?.message || "").toLowerCase().includes("duplicate")
-      ) {
-        await recordInstantPresence(sessionId, student.id);
-        return res.json({
-          ok: true,
-          already: true,
-          alreadyMarked: true,
-          code: "ALREADY_MARKED",
-          status: "present",
-          session: {
-            id: session.id,
-            _id: session.id,
-            subjectName: session.subj?.name || "Subject",
-            subjectCode: session.subj?.code || "",
-          },
-          message: "Attendance already marked for this session",
-        });
-      }
-      console.error("Attendance insert error:", insertError);
-      return res.status(400).json({
-        ok: false,
-        code: "INSERT_ERROR",
-        error: insertError?.message || "Failed to record attendance",
+      const rpcResult = await callAtomicAttendanceRpc({
+        sessionId,
+        studentId: student.id,
+        deviceFingerprint: normalizedFp,
+        location: location ? {
+          lat: Number(location.lat),
+          lng: Number(location.lng),
+          accuracy: location.accuracy != null ? Number(location.accuracy) : null,
+          distanceMeters: locationCheck.distanceMeters != null ? Math.round(locationCheck.distanceMeters) : null,
+        } : null,
+        faceVerification: faceVerificationResult,
+        qr2ScanTimingMs,
       });
+
+      if (rpcResult) {
+        rpcExecuted = true;
+        if (!rpcResult.ok) {
+          return res.status(403).json({
+            ok: false,
+            code: rpcResult.code || "ELIGIBILITY_MISMATCH",
+            error: rpcResult.message || "Attendance verification failed",
+          });
+        }
+        alreadyMarked = Boolean(rpcResult.already_marked);
+        attendance = rpcResult.attendance;
+      }
+    } catch (rpcErr) {
+      console.warn("[Attendance/TOTP] Atomic RPC fast-path warning, falling back to batch writer:", rpcErr?.message || rpcErr);
     }
 
-    if (attendance?.alreadyMarked || attendance?.already) {
+    if (!rpcExecuted) {
+      // Atomic upsert into attendances table using micro-batched pipeline fallback
+      const fullAttendancePayload = {
+        session: sessionId,
+        student: student.id,
+        faculty: session.faculty,
+        subject: session.subject,
+        enrollment_no: student.enrollment_no || null,
+        student_name: student.name || null,
+        student_email: student.email || null,
+        department_code: student.dept?.code || student.departmentCode || null,
+        semester: Number(student.semester || session.semester) || null,
+        section: String(student.section || "").toUpperCase() || null,
+        year: Number(student.year || session.year) || null,
+        batch_id: session.batch_id || null,
+        category: session.category || "REGULAR",
+        activity_id: session.activity_id || null,
+        timestamp: new Date().toISOString(),
+        status: "present",
+        location: location
+          ? {
+              lat: Number(location.lat),
+              lng: Number(location.lng),
+              accuracy: location.accuracy != null ? Number(location.accuracy) : null,
+              distanceMeters: locationCheck.distanceMeters != null ? Math.round(locationCheck.distanceMeters) : null,
+            }
+          : null,
+        device_fingerprint: normalizedFp,
+        face_verification: faceVerificationResult,
+        qr2_scan_timing_ms: qr2ScanTimingMs,
+      };
+
+      try {
+        attendance = await attendanceBatchWriter.enqueue(fullAttendancePayload, student.id, sessionId);
+      } catch (insertError) {
+        if (
+          insertError?.code === "23505" ||
+          String(insertError?.message || "").toLowerCase().includes("unique") ||
+          String(insertError?.message || "").toLowerCase().includes("duplicate")
+        ) {
+          alreadyMarked = true;
+        } else {
+          console.error("Attendance insert error:", insertError);
+          return res.status(400).json({
+            ok: false,
+            code: "INSERT_ERROR",
+            error: insertError?.message || "Failed to record attendance",
+          });
+        }
+      }
+
+      if (attendance?.alreadyMarked || attendance?.already) {
+        alreadyMarked = true;
+      }
+    }
+
+    if (alreadyMarked) {
       await recordInstantPresence(sessionId, student.id);
       return res.json({
         ok: true,
@@ -2754,13 +2729,13 @@ async function handleTotpAttendanceSubmission(req, res) {
         alreadyMarked: true,
         code: "ALREADY_MARKED",
         status: "present",
-        message: "Attendance already marked for this session",
         session: {
           id: session.id,
           _id: session.id,
           subjectName: session.subj?.name || "Subject",
           subjectCode: session.subj?.code || "",
         },
+        message: "Attendance already marked for this session",
       });
     }
 
@@ -2834,7 +2809,7 @@ async function handleTotpAttendanceSubmission(req, res) {
       error: err?.message || "Server error",
     });
   } finally {
-    scanLocks.delete(lockKey);
+    await stateStore.releaseLock(lockKey);
   }
 }
 
@@ -3857,6 +3832,8 @@ router.get("/session-roster-history", auth(["FACULTY", "ADMIN"]), async (req, re
 });
 
 module.exports = router;
+module.exports.attendanceBatchWriter = attendanceBatchWriter;
+module.exports.attendanceAuditBatchQueue = attendanceAuditBatchQueue;
 module.exports.invalidateCachedSession = invalidateCachedSession;
 module.exports.invalidateBatchRosterCache = invalidateBatchRosterCache;
 module.exports.getCachedBatches = getCachedBatches;

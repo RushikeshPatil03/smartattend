@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Button } from "./Common";
-import { Clock, RefreshCw, Search, ShieldAlert, ZoomIn, ZoomOut, Minus, Plus, Sparkles } from "lucide-react";
+import { RefreshCw, ZoomIn, Minus, Plus } from "lucide-react";
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 
 type DetectorResult = { rawValue?: string };
@@ -61,18 +61,23 @@ const ENV_CAMERA_CONSTRAINTS: MediaStreamConstraints = {
   audio: false,
   video: {
     facingMode: { ideal: "environment" },
-    width: { ideal: 640 },
-    height: { ideal: 480 },
-    frameRate: { ideal: 24, max: 30 },
+    width: { ideal: 640, max: 1280 },
+    height: { ideal: 480, max: 720 },
+    frameRate: { ideal: 15, max: 30 },
   },
 };
 
 const ENV_CAMERA_FALLBACK_CONSTRAINTS: MediaStreamConstraints = {
   audio: false,
-  video: { facingMode: "environment" },
+  video: {
+    facingMode: "environment",
+    width: { ideal: 640, max: 1280 },
+    height: { ideal: 480, max: 720 },
+  },
 };
 
-const SCAN_INTERVAL_MS = 30; // Reduced from 60ms → catches QR frames 2× faster
+// Throttled frame processing (4-5 FPS) to eliminate main thread locking and thermal throttling on budget devices
+const SCAN_INTERVAL_MS = 200; // ~5 FPS for decoding while keeping video preview hardware-accelerated at 30/60 FPS
 const DUPLICATE_DETECTION_COOLDOWN_MS = 400;
 
 function isInsecureMobileCameraContext() {

@@ -36,7 +36,8 @@ const PORTRAIT_BETA_MIN = 55;
 const PORTRAIT_BETA_MAX = 125;
 const PORTRAIT_GAMMA_TOLERANCE = 28;
 const ORIENTATION_UPDATE_THRESHOLD = 0.8;
-const FACE_QUALITY_INTERVAL_MS = 120;
+// Throttled face quality assessment interval (~5 FPS) to prevent thermal throttling on mobile
+const FACE_QUALITY_INTERVAL_MS = 200;
 
 type ClientFaceVerification = {
   method: "client-faceapi";
@@ -117,15 +118,19 @@ const FRONT_CAMERA_CONSTRAINTS: MediaStreamConstraints = {
   audio: false,
   video: {
     facingMode: "user" as const,
-    width: { ideal: 480, max: 640 },
-    height: { ideal: 480, max: 640 },
-    frameRate: { ideal: 24, max: 30, min: 15 },
+    width: { ideal: 640, max: 1280 },
+    height: { ideal: 480, max: 720 },
+    frameRate: { ideal: 15, max: 30 },
   },
 };
 
 const FRONT_CAMERA_FALLBACK_CONSTRAINTS: MediaStreamConstraints = {
   audio: false,
-  video: { facingMode: "user" as const },
+  video: {
+    facingMode: "user" as const,
+    width: { ideal: 640, max: 1280 },
+    height: { ideal: 480, max: 720 },
+  },
 };
 
 let touchPrewarmedStream: MediaStream | null = null;
