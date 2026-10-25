@@ -342,15 +342,23 @@ const Login: React.FC = () => {
         setCameraStarting(false);
         return;
       }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          facingMode: { ideal: "user" },
-          width: { ideal: 480 },
-          height: { ideal: 640 },
-          frameRate: { ideal: 24, max: 30 },
-        },
-      });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            facingMode: { ideal: "user" },
+            width: { ideal: 480 },
+            height: { ideal: 640 },
+            frameRate: { ideal: 24, max: 30 },
+          },
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: true,
+        });
+      }
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;

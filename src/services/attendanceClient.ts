@@ -17,33 +17,76 @@ const LOCAL_CACHE_KEY = "sa_device_v1"; // localStorage fallback cache
  */
 function openDeviceDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = (e) => {
-      const db = (e.target as IDBOpenDBRequest).result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME);
-      }
-    };
-    req.onsuccess = (e) => resolve((e.target as IDBOpenDBRequest).result);
-    req.onerror = () => reject(req.error);
+    if (typeof indexedDB === "undefined") {
+      return reject(new Error("IndexedDB not available"));
+    }
+    const timer = setTimeout(() => reject(new Error("IndexedDB open timeout")), 600);
+    try {
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = (e) => {
+        const db = (e.target as IDBOpenDBRequest).result;
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+          db.createObjectStore(STORE_NAME);
+        }
+      };
+      req.onsuccess = (e) => {
+        clearTimeout(timer);
+        resolve((e.target as IDBOpenDBRequest).result);
+      };
+      req.onerror = () => {
+        clearTimeout(timer);
+        reject(req.error);
+      };
+      req.onblocked = () => {
+        clearTimeout(timer);
+        reject(new Error("IndexedDB blocked"));
+      };
+    } catch (err) {
+      clearTimeout(timer);
+      reject(err);
+    }
   });
 }
 
 function idbGet(db: IDBDatabase, key: string): Promise<string | undefined> {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readonly");
-    const req = tx.objectStore(STORE_NAME).get(key);
-    req.onsuccess = () => resolve(req.result as string | undefined);
-    req.onerror = () => reject(req.error);
+    const timer = setTimeout(() => reject(new Error("IndexedDB get timeout")), 500);
+    try {
+      const tx = db.transaction(STORE_NAME, "readonly");
+      const req = tx.objectStore(STORE_NAME).get(key);
+      req.onsuccess = () => {
+        clearTimeout(timer);
+        resolve(req.result as string | undefined);
+      };
+      req.onerror = () => {
+        clearTimeout(timer);
+        reject(req.error);
+      };
+    } catch (err) {
+      clearTimeout(timer);
+      reject(err);
+    }
   });
 }
 
 function idbSet(db: IDBDatabase, key: string, value: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readwrite");
-    const req = tx.objectStore(STORE_NAME).put(value, key);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
+    const timer = setTimeout(() => reject(new Error("IndexedDB set timeout")), 500);
+    try {
+      const tx = db.transaction(STORE_NAME, "readwrite");
+      const req = tx.objectStore(STORE_NAME).put(value, key);
+      req.onsuccess = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      req.onerror = () => {
+        clearTimeout(timer);
+        reject(req.error);
+      };
+    } catch (err) {
+      clearTimeout(timer);
+      reject(err);
+    }
   });
 }
 
@@ -148,10 +191,28 @@ export async function initDeviceFingerprint(): Promise<string> {
   if (_deviceIdCache) return _deviceIdCache;
   if (_deviceIdPromise) return _deviceIdPromise;
 
-  _deviceIdPromise = getOrCreateDeviceId().then((id) => {
-    _deviceIdCache = id;
-    return id;
-  });
+  const idPromise = getOrCreateDeviceId()
+    .then((id) => {
+      _deviceIdCache = id;
+      return id;
+    })
+    .catch(() => {
+      const fallback = getFingerprint();
+      _deviceIdCache = fallback;
+      return fallback;
+    });
+
+  // Guarantee resolution within 800ms max — NEVER hang caller!
+  _deviceIdPromise = Promise.race([
+    idPromise,
+    new Promise<string>((resolve) =>
+      setTimeout(() => {
+        const fallback = getFingerprint();
+        _deviceIdCache = fallback;
+        resolve(fallback);
+      }, 800)
+    ),
+  ]);
 
   return _deviceIdPromise;
 }

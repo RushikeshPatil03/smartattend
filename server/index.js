@@ -194,7 +194,7 @@ function isHeavyPayloadRoute(req) {
   const target = String(req.originalUrl || req.path || req.url || "");
   return (
     target.startsWith("/api/student/register") ||
-    target.startsWith("/api/auth/device-change-request") ||
+    target.startsWith("/api/auth/device-change") ||
     target.startsWith("/api/faculty/profile/photo") ||
     target.startsWith("/api/admin/profile") ||
     target.startsWith("/api/attendance/mark") ||

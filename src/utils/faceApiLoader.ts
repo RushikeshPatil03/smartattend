@@ -97,17 +97,31 @@ function openDescriptorDB(): Promise<IDBDatabase> | null {
   if (idbPromise) return idbPromise;
 
   idbPromise = new Promise<IDBDatabase>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      idbPromise = null;
+      reject(new Error("Descriptor DB timeout"));
+    }, 600);
     try {
       const req = indexedDB.open(IDB_DB_NAME, IDB_VERSION);
       req.onupgradeneeded = () => {
         req.result.createObjectStore(IDB_STORE_NAME);
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => {
+        clearTimeout(timer);
+        resolve(req.result);
+      };
       req.onerror = () => {
-        idbPromise = null; // allow retry
+        clearTimeout(timer);
+        idbPromise = null;
         reject(req.error);
       };
+      req.onblocked = () => {
+        clearTimeout(timer);
+        idbPromise = null;
+        reject(new Error("Descriptor DB blocked"));
+      };
     } catch (err) {
+      clearTimeout(timer);
       idbPromise = null;
       reject(err);
     }
@@ -296,7 +310,7 @@ export function loadModelsIfNeeded(): Promise<FaceApi> {
   if (cachedFaceApi) return Promise.resolve(cachedFaceApi);
   if (modelsPromise) return modelsPromise;
 
-  modelsPromise = (async () => {
+  const actualLoad = (async () => {
     const faceapi = await loadScript();
     try {
       // Primary: Load from local same-origin static directory (/models/)
@@ -320,7 +334,17 @@ export function loadModelsIfNeeded(): Promise<FaceApi> {
     }
 
     return faceapi;
-  })().catch((error) => {
+  })();
+
+  modelsPromise = Promise.race([
+    actualLoad,
+    new Promise<FaceApi>((_, reject) =>
+      setTimeout(
+        () => reject(new Error("Face models took too long to load. Please check your network connection and retry.")),
+        15000
+      )
+    ),
+  ]).catch((error) => {
     modelsPromise = null;
     cachedFaceApi = null;
     throw error;
@@ -385,10 +409,19 @@ export function clearDescriptorCache(): void {
 
 function loadImage(url: string) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error("Loading registered profile photo timed out. Please check your network connection."));
+    }, 8000);
     const image = new Image();
     if (!url.startsWith("data:")) image.crossOrigin = "anonymous";
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("Unable to load the registered profile photo."));
+    image.onload = () => {
+      clearTimeout(timer);
+      resolve(image);
+    };
+    image.onerror = () => {
+      clearTimeout(timer);
+      reject(new Error("Unable to load the registered profile photo. Please verify connection."));
+    };
     image.src = url;
   });
 }

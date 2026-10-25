@@ -10,6 +10,7 @@ const RAW_API_BASE = String(import.meta.env.VITE_API_BASE_URL || "").trim();
 const API_BASE = (() => {
   if (typeof window !== "undefined") {
     const host = window.location.hostname;
+    const port = window.location.port;
     const isLocalhost = host === "localhost" || host === "127.0.0.1" || host === "::1";
     const isPrivateIP =
       host.startsWith("192.168.") ||
@@ -22,46 +23,27 @@ const API_BASE = (() => {
       host.endsWith(".ts.net") ||
       host.endsWith(".tailscale.net");
 
-    // 1. If accessed on a mobile phone or local device via Wi-Fi LAN IP (e.g. http://192.168.1.5:5173)
-    if (isPrivateIP) {
-      if (
-        RAW_API_BASE &&
-        !RAW_API_BASE.includes("localhost") &&
-        !RAW_API_BASE.includes("127.0.0.1") &&
-        RAW_API_BASE.startsWith("http")
-      ) {
-        return RAW_API_BASE.replace(/\/+$/, "");
-      }
-      // If no explicit local backend URL is specified, default to production Render backend
-      // so mobile devices don't fail trying to reach non-existent port 4000 on their own IP
-      return FALLBACK_PROD_API;
-    }
-
-    // 2. If running locally on laptop
-    if (isLocalhost) {
-      if (RAW_API_BASE && RAW_API_BASE !== "." && RAW_API_BASE !== "./") {
-        return RAW_API_BASE.replace(/\/+$/, "");
-      }
-      return `${window.location.protocol}//${host}:4000`;
-    }
-
-    // 3. Tunnel environments
-    if (isTunnel) {
-      return "";
-    }
-
-    // 4. Production deployment (Cloudflare Pages, Vercel, Render, custom domain):
+    // Explicit VITE_API_BASE_URL always takes precedence if configured
     if (
       RAW_API_BASE &&
       RAW_API_BASE !== "." &&
-      RAW_API_BASE !== "./" &&
-      !RAW_API_BASE.includes("localhost") &&
-      !RAW_API_BASE.includes("127.0.0.1")
+      RAW_API_BASE !== "./"
     ) {
       return RAW_API_BASE.replace(/\/+$/, "");
     }
 
-    // Fallback: Default to official production API so production builds never hit invalid :4000 ports
+    // 1. Vite dev server (port 5173 or 3000) or tunnel: Vite proxy routes /api to http://127.0.0.1:4000
+    // Seamlessly serves both laptop browser and mobile phones connected over Wi-Fi LAN
+    if (port === "5173" || port === "3000" || isTunnel) {
+      return "";
+    }
+
+    // 2. Direct LAN IP or localhost on non-proxy port: connect directly to port 4000
+    if (isLocalhost || isPrivateIP) {
+      return `${window.location.protocol}//${host}:4000`;
+    }
+
+    // 3. Cloud production deployments (Vercel, Cloudflare Pages, custom domain):
     return FALLBACK_PROD_API;
   }
 
@@ -84,7 +66,7 @@ function buildUrl(url: string): string {
 
 // 60 seconds timeout to accommodate free-tier cold starts (e.g. Render spin-up)
 const DEFAULT_REQUEST_TIMEOUT_MS = Number(
-  import.meta.env.VITE_API_REQUEST_TIMEOUT_MS || 60000
+  import.meta.env.VITE_API_REQUEST_TIMEOUT_MS || 15000
 );
 
 // Background warm-up ping for free-tier server instances
