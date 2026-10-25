@@ -18,7 +18,7 @@ const {
 } = require("../services/totpVerification");
 const { validateStudentLocation, checkSuspiciousLocationJump } = require("../services/locationValidation");
 const { verifyFaceAgainstStudent } = require("../services/faceVerification");
-const { normalizeFingerprint } = require("../services/deviceFingerprint");
+const { normalizeFingerprint, legacyFingerprintHash } = require("../services/deviceFingerprint");
 const { expireIfInactive, touchSession } = require("../services/sessionLifecycle");
 const { broadcastAttendance, removeSessionChannel, realtimeBroadcaster } = require("../services/realtimeService");
 const {
@@ -531,7 +531,13 @@ router.post(
       }
 
       const normalizedFp = normalizeFingerprint(fingerprint);
-      if (!normalizedFp || String(student.device_fingerprint) !== normalizedFp) {
+      const isFpMatch =
+        normalizedFp &&
+        student?.device_fingerprint &&
+        (String(student.device_fingerprint) === normalizedFp ||
+          String(student.device_fingerprint) === legacyFingerprintHash(fingerprint) ||
+          String(student.device_fingerprint).toLowerCase() === String(fingerprint || "").trim().toLowerCase());
+      if (!isFpMatch) {
         return res.status(401).json({ ok: false, error: "Device mismatch - unauthorized scan" });
       }
 
@@ -607,7 +613,7 @@ router.post(
       }
 
       const scanGrantToken = crypto.randomBytes(24).toString("hex");
-      saveScanGrant({
+      await saveScanGrant({
         token: scanGrantToken,
         studentId: student.id,
         sessionId,
@@ -654,7 +660,13 @@ const handleFaceVerification = async (req, res) => {
     } = req.body || {};
 
     const normalizedFp = normalizeFingerprint(fingerprint);
-    if (student?.device_fingerprint && (!normalizedFp || String(student.device_fingerprint) !== normalizedFp)) {
+    const isFpMatch =
+      normalizedFp &&
+      student?.device_fingerprint &&
+      (String(student.device_fingerprint) === normalizedFp ||
+        String(student.device_fingerprint) === legacyFingerprintHash(fingerprint) ||
+        String(student.device_fingerprint).toLowerCase() === String(fingerprint || "").trim().toLowerCase());
+    if (student?.device_fingerprint && !isFpMatch) {
       return res.status(401).json({
         ok: false,
         code: "DEVICE_MISMATCH",
@@ -696,7 +708,7 @@ const handleFaceVerification = async (req, res) => {
       });
     }
 
-    const grant = saveFaceGrant({
+    const grant = await saveFaceGrant({
       studentId: student.id,
       sessionId: sessionId || null,
       fingerprint: normalizedFp,
@@ -1001,7 +1013,13 @@ const handleMarkAttendance = async (req, res) => {
   }
 
   const normalizedFp = normalizeFingerprint(fingerprint);
-  if (!normalizedFp || String(student?.device_fingerprint) !== normalizedFp) {
+  const isFpMatch =
+    normalizedFp &&
+    student?.device_fingerprint &&
+    (String(student.device_fingerprint) === normalizedFp ||
+      String(student.device_fingerprint) === legacyFingerprintHash(fingerprint) ||
+      String(student.device_fingerprint).toLowerCase() === String(fingerprint || "").trim().toLowerCase());
+  if (!isFpMatch) {
     return res.status(401).json({
       ok: false,
       code: "DEVICE_MISMATCH",
@@ -2357,7 +2375,13 @@ async function handleTotpAttendanceSubmission(req, res) {
   const sessionId = String(rawSessionId);
   const normalizedFp = normalizeFingerprint(fingerprint);
 
-  if (!normalizedFp || String(student?.device_fingerprint) !== normalizedFp) {
+  const isFpMatch =
+    normalizedFp &&
+    student?.device_fingerprint &&
+    (String(student.device_fingerprint) === normalizedFp ||
+      String(student.device_fingerprint) === legacyFingerprintHash(fingerprint) ||
+      String(student.device_fingerprint).toLowerCase() === String(fingerprint || "").trim().toLowerCase());
+  if (!isFpMatch) {
     return res.status(401).json({
       ok: false,
       code: "DEVICE_MISMATCH",

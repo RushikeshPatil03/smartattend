@@ -68,6 +68,18 @@ export function useAttendanceLedger({
       batches?.find((b: any) => String(b.id) === String(selectedBatchId))?.student_enrollments?.map((u: any) => String(u || "").trim().toUpperCase()) || []
     );
 
+    const transferredSessionIds = new Set<string>();
+    if (!isAll && currentBatchUsns.size > 0) {
+      (attendances || []).forEach((att: any) => {
+        if (String(att.status).toLowerCase() === "present") {
+          const usn = String(att.student?.enrollmentNo || att.student?.enrollment_no || att.enrollment_no || att.enrollmentNo || "").toUpperCase();
+          if (currentBatchUsns.has(usn)) {
+            transferredSessionIds.add(String(att.session?._id || att.session || att.sessionId));
+          }
+        }
+      });
+    }
+
     const visibleSessions = (sessions || []).filter((s: any) => {
       if (isAll) return true;
       const bId = s.batch_id || (Array.isArray(s.batch_ids) && s.batch_ids.length === 1 ? s.batch_ids[0] : null);
@@ -76,12 +88,12 @@ export function useAttendanceLedger({
         String(bId) === String(selectedBatchId) ||
         (Array.isArray(s.batch_ids) && s.batch_ids.some((id: any) => String(id) === String(selectedBatchId)));
 
-      const hasTransferredAttendee = (attendances || []).some(
-        (att: any) =>
-          String(att.session?._id || att.session || att.sessionId) === String(s.id || s._id) &&
-          currentBatchUsns.has(String(att.student?.enrollmentNo || att.student?.enrollment_no || att.enrollment_no || att.enrollmentNo || "").toUpperCase()) &&
-          String(att.status).toLowerCase() === "present"
-      );
+      const hasTransferredAttendee = transferredSessionIds.has(String(s.id || s._id));
+
+
+
+
+
 
       return isWholeClass || isThisBatch || hasTransferredAttendee;
     }).sort((a: any, b: any) => {
@@ -154,28 +166,20 @@ export function useAttendanceLedger({
           isEligible = isEntireClass || isStudentInBatch || !isAll;
         }
 
-        if (!isEligible) {
-          attRec[colStr] = "—";
-        } else {
+        const wasPresent = presentSet.has(`${eno}|${sessionId}`);
+        if (wasPresent) {
           totalEligible++;
-          if (presentSet.has(`${eno}|${sessionId}`)) {
-            attRec[colStr] = "P";
-            attended++;
+          attended++;
+          if (!isEligible) {
+            attRec[colStr] = "P*";
           } else {
-            // Check if student attended in an alternate batch
-            const attendedElsewhere = (attendances || []).some((att: any) => {
-              const attEno = String(att.student?.enrollmentNo || att.student?.enrollment_no || att.enrollment_no || att.enrollmentNo || "").trim().toUpperCase();
-              const attSid = String(att.session?._id || att.session || att.sessionId || "").trim();
-              return attEno === eno && attSid === sessionId && String(att.status).toLowerCase() === "present";
-            });
-
-            if (attendedElsewhere) {
-              attRec[colStr] = "P*";
-              attended++;
-            } else {
-              attRec[colStr] = "A";
-            }
+            attRec[colStr] = "P";
           }
+        } else if (isEligible) {
+          totalEligible++;
+          attRec[colStr] = "A";
+        } else {
+          attRec[colStr] = "—";
         }
       }
 
@@ -213,7 +217,7 @@ export function useAttendanceLedger({
       allRows: rows,
       totalEligibleCount: visibleSessions.length,
     };
-  }, [sessions, batches, attendances, students, selectedBatchId, searchQuery, filterAtRisk]);
+  }, [sessions, batches, attendances, students, selectedBatchId, searchQuery, filterAtRisk, sessionRosterSnapshots]);
 }
 
 export default useAttendanceLedger;

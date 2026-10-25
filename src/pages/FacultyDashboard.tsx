@@ -1839,6 +1839,17 @@ const FacultyDashboard: React.FC = () => {
             });
 
             const currentBatchUsns = new Set(targetUsns);
+            const transferredSessionIds = new Set<string>();
+            if (currentBatchUsns.size > 0) {
+              rawAttendanceList.forEach((att: any) => {
+                if (String(att.status).toLowerCase() === "present") {
+                  const usn = String(att.student?.enrollmentNo || att.student?.enrollment_no || att.enrollment_no || att.enrollmentNo || "").toUpperCase();
+                  if (currentBatchUsns.has(usn)) {
+                    transferredSessionIds.add(String(att.session?._id || att.session || att.sessionId));
+                  }
+                }
+              });
+            }
 
             sessionList = sessionList.filter((s: any) => {
               const isWholeClass = !s.batch_id && (!s.batch_ids || s.batch_ids.length === 0);
@@ -1846,14 +1857,7 @@ const FacultyDashboard: React.FC = () => {
                 String(s.batch_id) === activeBatchId ||
                 (Array.isArray(s.batch_ids) && s.batch_ids.some((id: any) => String(id) === activeBatchId));
 
-              // Keep session if any student now in this batch attended it in their previous batch
-              const hasTransferredAttendee = rawAttendanceList.some(
-                (att: any) =>
-                  String(att.session?._id || att.session || att.sessionId) === String(s.id || s._id) &&
-                  currentBatchUsns.has(String(att.student?.enrollmentNo || att.student?.enrollment_no || att.enrollment_no || att.enrollmentNo || "").toUpperCase()) &&
-                  String(att.status).toLowerCase() === "present"
-              );
-
+              const hasTransferredAttendee = transferredSessionIds.has(String(s.id || s._id));
               return isWholeClass || isThisBatch || hasTransferredAttendee;
             });
           }
@@ -1912,23 +1916,13 @@ const FacultyDashboard: React.FC = () => {
                   isEligible = isEntireClass || isStudentInBatch || Boolean(activeBatchId);
                 }
 
-                if (presentSet.has(`${eno}|${colKey}`)) {
-                  attRec[colStr] = "P";
+                const wasPresent = presentSet.has(`${eno}|${colKey}`);
+                if (wasPresent) {
+                  attRec[colStr] = isEligible ? "P" : "P*";
+                } else if (isEligible) {
+                  attRec[colStr] = "A";
                 } else {
-                  // Check if student attended in an alternate batch
-                  const attendedElsewhere = rawAttendanceList.some((att: any) => {
-                    const attEno = String(att.student?.enrollmentNo || att.student?.enrollment_no || att.enrollment_no || att.enrollmentNo || "").trim().toUpperCase();
-                    const attSid = String(att.session?._id || att.session || att.sessionId || "").trim();
-                    return attEno === eno && attSid === colKey && String(att.status).toLowerCase() === "present";
-                  });
-
-                  if (attendedElsewhere) {
-                    attRec[colStr] = "P*"; // Mark as Transferred Credit
-                  } else if (isEligible) {
-                    attRec[colStr] = "A";
-                  } else {
-                    attRec[colStr] = "—";
-                  }
+                  attRec[colStr] = "—";
                 }
               }
               return {

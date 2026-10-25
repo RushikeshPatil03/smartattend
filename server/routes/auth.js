@@ -381,7 +381,8 @@ router.post(
           const normalizedNew = normalizeFingerprint(fingerprint);
           const fingerprintMatch =
             storedFp === normalizedNew ||
-            storedFp === legacyFingerprintHash(fingerprint);
+            storedFp === legacyFingerprintHash(fingerprint) ||
+            storedFp.toLowerCase() === String(fingerprint).trim().toLowerCase();
 
           if (!fingerprintMatch) {
             return res.status(401).json({

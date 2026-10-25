@@ -41,3 +41,19 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
+~$*
+
+# Exhibition and presentation materials
+*Exhibition*
+banner_3x5_landscape.html
+extracted_template_assets/
+Project Exhibition Template.docx
+figures/trimmed/
+figures/fig_true_architecture.png
+figures/project_qr.png
+public/bitm_logo.jpeg
+public/demo_qr.svg
+public/vtu_logo.png
+scripts/build_edited_banner.py
+scripts/generate_banner.py
+*Banner*

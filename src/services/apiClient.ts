@@ -193,7 +193,8 @@ class ApiClient {
         return {
           ok: false,
           status: res.status,
-          error: data?.error || "Request failed",
+          ...(typeof data === "object" && data !== null ? data : {}),
+          error: data?.error || data?.message || "Request failed",
         };
       }
 

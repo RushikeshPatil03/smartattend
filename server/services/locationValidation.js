@@ -2,7 +2,7 @@ const EARTH_RADIUS_M = 6371000;
 
 // Maximum acceptable GPS accuracy in meters for attendance marking (Strict < 30m)
 const MAX_STUDENT_GPS_ACCURACY_METERS = Number(
-  process.env.MAX_STUDENT_GPS_ACCURACY_METERS || 30
+  process.env.MAX_STUDENT_GPS_ACCURACY_METERS || process.env.MAX_LOCATION_ACCURACY_METERS || 30
 );
 
 // Base tolerance margin added to classroom radius (meters)

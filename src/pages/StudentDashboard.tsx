@@ -1711,7 +1711,7 @@ const StudentDashboard: React.FC = () => {
       })();
 
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Server response timed out. Please scan again.")), 9000)
+        setTimeout(() => reject(new Error("Server response timed out. Please scan again.")), 15000)
       );
 
       let result: any = null;
