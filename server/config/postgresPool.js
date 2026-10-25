@@ -39,7 +39,7 @@ function getPostgresPool() {
     },
     // Keep pool size small for low-overhead instances (512MB RAM free tier)
     max: maxConnections,
-    min: 0,
+    min: 2,
     idleTimeoutMillis: 10000, // Return idle connections rapidly to Supavisor pool
     connectionTimeoutMillis: 5000,
     // Supavisor transaction pooler does not support session-level prepared statements

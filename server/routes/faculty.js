@@ -22,6 +22,7 @@ const {
   getMobileLocationCapture,
 } = require("../services/mobileLocationCapture");
 const authMiddleware = require("../middleware/authMiddleware");
+const { invalidateUserCache } = require("../middleware/auth");
 const { invalidateCachedSession } = require("./attendance");
 const {
   createSessionRosterSnapshot,
@@ -952,6 +953,8 @@ router.post("/device-change-requests/:id/review", authMiddleware, async (req, re
         .from("students")
         .update(studentUpdate)
         .eq("id", student.id);
+
+      invalidateUserCache(student.id);
     }
 
     const { data: updatedRequest, error: updateReqErr } = await supabase

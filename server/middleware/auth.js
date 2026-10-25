@@ -1,6 +1,57 @@
 const { getSupabaseClient } = require("../config/supabase");
 const { verifyAccessToken } = require("../services/tokenService");
 
+const USER_CACHE_TTL_MS = 30 * 1000; // 30 seconds
+const MAX_CACHE_ENTRIES = 500;
+const userCache = new Map();
+
+function getCachedUser(userId) {
+  const entry = userCache.get(userId);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    userCache.delete(userId);
+    return null;
+  }
+  return entry.user;
+}
+
+function setCachedUser(userId, user) {
+  if (userCache.has(userId)) {
+    userCache.delete(userId);
+  } else if (userCache.size >= MAX_CACHE_ENTRIES) {
+    // Evict oldest entry (Map iterates in insertion order)
+    const oldestKey = userCache.keys().next().value;
+    if (oldestKey) userCache.delete(oldestKey);
+  }
+  userCache.set(userId, {
+    user,
+    expiresAt: Date.now() + USER_CACHE_TTL_MS,
+  });
+}
+
+function invalidateUserCache(userId) {
+  if (userId) {
+    userCache.delete(String(userId));
+  }
+}
+
+function clearUserCache() {
+  userCache.clear();
+}
+
+// Bounded sweep every 60 seconds to clean expired cache entries
+const cacheSweeper = setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of userCache.entries()) {
+    if (now > entry.expiresAt) {
+      userCache.delete(key);
+    }
+  }
+}, 60 * 1000);
+if (cacheSweeper.unref) {
+  cacheSweeper.unref();
+}
+
 function auth(allowedRoles = []) {
   const ALLOWED = allowedRoles.map((r) => String(r).toUpperCase());
 
@@ -29,94 +80,99 @@ function auth(allowedRoles = []) {
         return res.status(503).json({ ok: false, error: "Database unavailable" });
       }
 
-      let user = null;
-      if (role === "ADMIN") {
-        let { data, error } = await supabase
-          .from("admins")
-          .select("id, name, email, college_name, created_at")
-          .eq("id", String(id))
-          .single();
-        if (error || !data) {
-          const fallback = await supabase
-            .from("admins")
-            .select("id, name, email, college_name, created_at")
-            .eq("id", String(id))
-            .single();
-          data = fallback.data;
-        }
-        user = data;
-      } else if (role === "FACULTY") {
-        let { data, error } = await supabase
-          .from("faculties")
-          .select(
-            "id, name, email, department, device_fingerprint, device_lock_enabled, " +
-            "profile_photo_url, created_by_admin, allotted_subjects, " +
-            "credential_id, public_key, counter"
-          )
-          .eq("id", String(id))
-          .single();
-        if (error || !data) {
-          const fallback = await supabase
-            .from("faculties")
-            .select("id, name, email, department, profile_photo_url, created_by_admin, allotted_subjects")
-            .eq("id", String(id))
-            .single();
-          data = fallback.data;
-        }
-        user = data;
-      } else if (role === "STUDENT") {
-        let { data, error } = await supabase
-          .from("students")
-          .select(
-            "id, name, email, enrollment_no, year, semester, section, department, " +
-            "device_fingerprint, college_name, profile_photo_url, " +
-            "created_by_admin, credential_id, public_key, counter, " +
-            "face_signature, face_signature_mirror, face_signature_version, " +
-            "face_embedding, face_embedding_model, face_embedding_version"
-          )
-          .eq("id", String(id))
-          .single();
-        if (error || !data) {
-          const fallback = await supabase
-            .from("students")
-            .select("id, name, email, enrollment_no, year, semester, section, department, college_name, profile_photo_url, created_by_admin")
-            .eq("id", String(id))
-            .single();
-          data = fallback.data;
-        }
-        user = data;
-      }
+      const userIdStr = String(id);
+      let user = getCachedUser(userIdStr);
 
       if (!user) {
-        return res.status(401).json({ ok: false, code: "UNAUTHORIZED", error: "User not found or account deactivated" });
+        if (role === "ADMIN") {
+          const { data, error } = await supabase
+            .from("admins")
+            .select("id, name, email, college_name, created_at")
+            .eq("id", userIdStr)
+            .maybeSingle();
+
+          if (error) {
+            invalidateUserCache(userIdStr);
+            return res.status(401).json({ ok: false, code: "UNAUTHORIZED", error: "Authentication failed" });
+          }
+          user = data;
+        } else if (role === "FACULTY") {
+          const { data, error } = await supabase
+            .from("faculties")
+            .select(
+              "id, name, email, department, device_fingerprint, device_lock_enabled, " +
+              "profile_photo_url, created_by_admin, allotted_subjects, " +
+              "credential_id, public_key, counter"
+            )
+            .eq("id", userIdStr)
+            .maybeSingle();
+
+          if (error) {
+            invalidateUserCache(userIdStr);
+            return res.status(401).json({ ok: false, code: "UNAUTHORIZED", error: "Authentication failed" });
+          }
+          user = data;
+        } else if (role === "STUDENT") {
+          const { data, error } = await supabase
+            .from("students")
+            .select(
+              "id, name, email, enrollment_no, year, semester, section, department, " +
+              "device_fingerprint, college_name, profile_photo_url, " +
+              "created_by_admin, credential_id, public_key, counter, " +
+              "face_signature, face_signature_mirror, face_signature_version, " +
+              "face_embedding, face_embedding_model, face_embedding_version"
+            )
+            .eq("id", userIdStr)
+            .maybeSingle();
+
+          if (error) {
+            invalidateUserCache(userIdStr);
+            return res.status(401).json({ ok: false, code: "UNAUTHORIZED", error: "Authentication failed" });
+          }
+          user = data;
+        }
+
+        if (!user) {
+          invalidateUserCache(userIdStr);
+          return res.status(401).json({ ok: false, code: "UNAUTHORIZED", error: "User not found or account deactivated" });
+        }
+
+        // Cache a clone of the DB user row
+        setCachedUser(userIdStr, { ...user });
       }
 
-      user._id = user.id;
-      user.departmentId = user.department || null;
-      user.department_id = user.department || null;
-      user.createdByAdmin = user.created_by_admin || null;
-      user.collegeName = user.college_name || null;
-      user.profilePhotoUrl = user.profile_photo_url || null;
-      user.enrollmentNo = user.enrollment_no || null;
-      user.deviceFingerprint = user.device_fingerprint || null;
-      user.deviceLockEnabled = user.device_lock_enabled !== false;
-      user.allottedSubjects = user.allotted_subjects || [];
-      user.year = user.year != null ? Number(user.year) : null;
-      user.semester = user.semester != null ? Number(user.semester) : null;
-      user.section = user.section || null;
+      // Clone user so mutations to req.user do not taint the cached object
+      const userObj = { ...user };
+      userObj._id = userObj.id;
+      userObj.departmentId = userObj.department || null;
+      userObj.department_id = userObj.department || null;
+      userObj.createdByAdmin = userObj.created_by_admin || null;
+      userObj.collegeName = userObj.college_name || null;
+      userObj.profilePhotoUrl = userObj.profile_photo_url || null;
+      userObj.enrollmentNo = userObj.enrollment_no || null;
+      userObj.deviceFingerprint = userObj.device_fingerprint || null;
+      userObj.deviceLockEnabled = userObj.device_lock_enabled !== false;
+      userObj.allottedSubjects = userObj.allotted_subjects || [];
+      userObj.year = userObj.year != null ? Number(userObj.year) : null;
+      userObj.semester = userObj.semester != null ? Number(userObj.semester) : null;
+      userObj.section = userObj.section || null;
 
       if (ALLOWED.length > 0 && !ALLOWED.includes(role)) {
         return res.status(403).json({ ok: false, code: "FORBIDDEN", error: "Access forbidden for this user role" });
       }
 
-      req.user = user;
+      req.user = userObj;
       req.userRole = role;
-      req.userId = String(user.id);
+      req.userId = String(userObj.id);
       next();
     } catch {
       return res.status(401).json({ ok: false, code: "UNAUTHORIZED", error: "Authentication failed" });
     }
   };
 }
+
+auth.invalidateUserCache = invalidateUserCache;
+auth.clearUserCache = clearUserCache;
+auth.userCache = userCache;
 
 module.exports = auth;

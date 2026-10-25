@@ -434,6 +434,28 @@ export async function fetchAttendance(filters: Record<string, any> = {}) {
   }
 }
 
+
+export const FRIENDLY_ERRORS: Record<string, string> = {
+  DEVICE_MISMATCH: "This device is not registered for your account. Contact your faculty.",
+  LOCATION_ERROR: "You appear to be outside the classroom. Move closer and try again.",
+  SESSION_EXPIRED: "The class session has ended. Contact your faculty if this is an error.",
+  REMOVED_BY_FACULTY: "Your faculty has removed you from this session.",
+  ELIGIBILITY_MISMATCH: "You are not enrolled in this class section or batch.",
+  FACE_MISMATCH: "Face verification failed. Ensure good lighting and look directly at the camera.",
+  REQUEST_IN_FLIGHT: "Your attendance is being processed. Please wait a moment.",
+  ALREADY_MARKED: "Your attendance is already recorded for this class. ✓",
+  QR_TIMEOUT: "The QR code expired. Please scan the live display again.",
+  INVALID_GRANT: "Your scan session expired. Please start the QR scan process again.",
+  RATE_LIMITED: "Too many attempts. Please wait 60 seconds before trying again.",
+};
+
+export function getFriendlyError(code?: string, rawError?: string): string {
+  if (code && FRIENDLY_ERRORS[code.toUpperCase()]) {
+    return FRIENDLY_ERRORS[code.toUpperCase()];
+  }
+  return rawError || "An unexpected error occurred. Please try again.";
+}
+
 export default {
   getFingerprint,
   initDeviceFingerprint,
@@ -441,4 +463,6 @@ export default {
   markAttendance,
   markAttendanceTwoStep,
   fetchAttendance,
+  getFriendlyError,
+  FRIENDLY_ERRORS,
 };

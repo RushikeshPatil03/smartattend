@@ -43,7 +43,8 @@ BEGIN
     SELECT *
     INTO v_session
     FROM sessions
-    WHERE id = p_session_id;
+    WHERE id = p_session_id
+    FOR SHARE;
 
     IF NOT FOUND THEN
         RETURN jsonb_build_object(

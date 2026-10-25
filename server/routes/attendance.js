@@ -443,12 +443,18 @@ async function validateStudentSessionEligibility(student, session, supabaseClien
 
     // Check immutable roster snapshot first (immune to concurrent/future batch modifications)
     try {
-      const { data: snapMatch } = await supabaseClient
+      const { data: snapRows, error: snapErr } = await supabaseClient
         .from("session_roster_snapshots")
         .select("id, batch_id, batch_name, batch_number")
         .eq("session_id", String(session.id))
         .eq("enrollment_no", studentUsn)
-        .maybeSingle();
+        .limit(1);
+
+      if (snapErr) {
+        throw snapErr;
+      }
+
+      const snapMatch = Array.isArray(snapRows) && snapRows.length > 0 ? snapRows[0] : null;
 
       if (snapMatch) {
         if (snapMatch.batch_id) {
@@ -460,7 +466,8 @@ async function validateStudentSessionEligibility(student, session, supabaseClien
       const { count: snapCount } = await supabaseClient
         .from("session_roster_snapshots")
         .select("id", { count: "exact", head: true })
-        .eq("session_id", String(session.id));
+        .eq("session_id", String(session.id))
+        .limit(1);
 
       if (snapCount && snapCount > 0) {
         return {
@@ -885,14 +892,15 @@ class AttendanceBatchWriter {
         }
       } catch (bulkErr) {
         console.warn("Bulk attendance upsert warning, retrying individually:", bulkErr.message);
-        // Resilient fallback: individually insert so one bad row doesn't fail others
-        for (const item of items) {
-          try {
+        // Resilient fallback: parallel insert with Promise.allSettled so one bad row doesn't fail others
+        const results = await Promise.allSettled(
+          items.map(async (item) => {
             let { data, error } = await supabase
               .from("attendances")
               .upsert(item.payload, { onConflict: "session,student", ignoreDuplicates: true })
               .select("id, session, student, status, timestamp, enrollment_no, student_name, face_verification");
 
+            // Keep existing qr2_scan_timing_ms column fallback strip logic
             if (error && (error.code === "PGRST204" || error.code === "42703" || String(error.message || "").toLowerCase().includes("qr2_scan_timing_ms"))) {
               const stripped = { ...item.payload };
               delete stripped.qr2_scan_timing_ms;
@@ -904,30 +912,32 @@ class AttendanceBatchWriter {
               error = retryRes.error;
             }
 
-            if (error) {
-              if (
-                error?.code === "23505" ||
-                String(error?.message || "").toLowerCase().includes("duplicate") ||
-                String(error?.message || "").toLowerCase().includes("unique")
-              ) {
-                item.resolve({ alreadyMarked: true, already: true, studentId: item.studentId, sessionId: item.sessionId });
-              } else {
-                item.reject(error);
-              }
-            } else if (Array.isArray(data) && data.length > 0) {
-              item.resolve(data[0]);
-            } else {
-              item.resolve({ alreadyMarked: true, already: true, studentId: item.studentId, sessionId: item.sessionId });
-            }
-          } catch (singleErr) {
+            return { item, data, error };
+          })
+        );
+
+        // Then resolve each item based on its individual result
+        for (let i = 0; i < results.length; i++) {
+          const result = results[i];
+          const item = result.status === "fulfilled" ? result.value.item : items[i];
+
+          if (result.status === "rejected" || result.value?.error) {
+            const err = result.status === "rejected" ? result.reason : result.value.error;
             if (
-              singleErr?.code === "23505" ||
-              String(singleErr?.message || "").toLowerCase().includes("duplicate") ||
-              String(singleErr?.message || "").toLowerCase().includes("unique")
+              err?.code === "23505" ||
+              String(err?.message || "").toLowerCase().includes("duplicate") ||
+              String(err?.message || "").toLowerCase().includes("unique")
             ) {
               item.resolve({ alreadyMarked: true, already: true, studentId: item.studentId, sessionId: item.sessionId });
             } else {
-              item.reject(singleErr);
+              item.reject(err);
+            }
+          } else {
+            const { data } = result.value;
+            if (Array.isArray(data) && data.length > 0) {
+              item.resolve(data[0]);
+            } else {
+              item.resolve({ alreadyMarked: true, already: true, studentId: item.studentId, sessionId: item.sessionId });
             }
           }
         }
@@ -1396,7 +1406,7 @@ const handleMarkAttendance = async (req, res) => {
       error: "Failed to record attendance",
     });
   } finally {
-    await stateStore.releaseLock(lockKey);
+    await stateStore.releaseLock(lockKey).catch(() => {});
   }
 };
 
@@ -2833,7 +2843,7 @@ async function handleTotpAttendanceSubmission(req, res) {
       error: err?.message || "Server error",
     });
   } finally {
-    await stateStore.releaseLock(lockKey);
+    await stateStore.releaseLock(lockKey).catch(() => {});
   }
 }
 

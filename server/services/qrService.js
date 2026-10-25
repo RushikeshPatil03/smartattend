@@ -19,12 +19,16 @@ const GRACE_PERIOD_BLOCKS = 3; // Allows current block + past 3 blocks (8-second
 // =========================================================================
 const qrMemoryStore = new Map();     // sessionId -> state object
 const l1SecretCache = new Map();     // sessionId -> { secretKey, expiresAt }
+const qrDbWriteThrottle = new Map(); // sessionId -> lastDbWriteAt timestamp
 
 // Auto-clean stale memory every 10 minutes to prevent memory leaks
 setInterval(() => {
   const now = Date.now();
   for (const [sid, entry] of l1SecretCache.entries()) {
     if (now > entry.expiresAt) l1SecretCache.delete(sid);
+  }
+  for (const [sid, lastWrite] of qrDbWriteThrottle.entries()) {
+    if (now - lastWrite > 30 * 60 * 1000) qrDbWriteThrottle.delete(sid);
   }
 }, 10 * 60 * 1000).unref();
 
@@ -157,18 +161,22 @@ async function setQRState(sessionId, state) {
   const sid = String(sessionId);
   qrMemoryStore.set(sid, state);
 
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    try {
-      const expiresAt = new Date(Date.now() + 300 * 1000).toISOString();
-      await supabase.from("qr_states").upsert({
-        session_id: sid,
-        state,
-        expires_at: expiresAt,
-        updated_at: new Date().toISOString(),
-      });
-    } catch {
-      // Memory store is already updated
+  const lastWrite = qrDbWriteThrottle.get(sid) || 0;
+  if (Date.now() - lastWrite >= 30_000) {
+    qrDbWriteThrottle.set(sid, Date.now());
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const expiresAt = new Date(Date.now() + 300 * 1000).toISOString();
+        await supabase.from("qr_states").upsert({
+          session_id: sid,
+          state,
+          expires_at: expiresAt,
+          updated_at: new Date().toISOString(),
+        });
+      } catch {
+        // Memory store is already updated
+      }
     }
   }
 }
@@ -292,6 +300,7 @@ async function clearSessionQR(sessionId) {
   const sid = String(sessionId);
   qrMemoryStore.delete(sid);
   l1SecretCache.delete(sid);
+  qrDbWriteThrottle.delete(sid);
 
   const supabase = getSupabaseClient();
   if (supabase) {

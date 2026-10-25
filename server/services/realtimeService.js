@@ -314,16 +314,21 @@ async function removeSessionChannel(sessionId) {
 }
 
 // ----------------------------------------------------------------------------
-// Stale Session Channel Cleanup (2-hour inactivity TTL)
-// Prevents memory leaks if faculty session is closed without explicit stop
+// Stale Session Channel Cleanup (4-hour inactivity TTL)
+// Prevents memory leaks and WebSocket leaks if session ends abnormally
 // ----------------------------------------------------------------------------
-const INACTIVE_CHANNEL_TTL_MS = 2 * 60 * 60 * 1000;
+const INACTIVE_CHANNEL_TTL_MS = 4 * 60 * 60 * 1000;
 const channelCleanupInterval = setInterval(() => {
   const now = Date.now();
-  for (const [channelName, entry] of channelCache.entries()) {
+  for (const [name, entry] of channelCache.entries()) {
     if (now - (entry?.lastActivityAt || 0) > INACTIVE_CHANNEL_TTL_MS) {
-      const sessionId = channelName.replace(/^session:/, "");
-      removeSessionChannel(sessionId).catch(() => {});
+      try {
+        if (entry?.channel?.unsubscribe) {
+          entry.channel.unsubscribe();
+        }
+      } catch {}
+      channelCache.delete(name);
+      batchBuffers.delete(name.replace("session:", "")); // clean up batch buffer too
     }
   }
 }, 30 * 60 * 1000);

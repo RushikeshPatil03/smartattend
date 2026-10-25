@@ -9,7 +9,7 @@ import {
   Award, Clock, ShieldAlert, Calendar, Users, UserRound, Mail, GraduationCap, ShieldCheck,
   Smartphone, CheckCircle2
 } from "lucide-react";
-import { markAttendanceTwoStep, getFingerprint } from "../services/attendanceClient";
+import { markAttendanceTwoStep, getFingerprint, getFriendlyError, FRIENDLY_ERRORS } from "../services/attendanceClient";
 import apiClient from "../services/apiClient";
 import {
   ATTENDANCE_GPS_MAX_AGE_MS,
@@ -578,31 +578,25 @@ const MyAttendanceCard: React.FC = () => {
           </button>
         </div>
 
-        {/* Loading skeleton */}
+        {/* Loading skeleton (UX-1) */}
         {loadState === "loading" && !overviewData && (
-          <div className="space-y-4 p-5">
+          <div className="space-y-3 p-5">
             {[1, 2, 3].map((i) => (
-              <div key={i} className="animate-pulse space-y-2">
-                <div className="flex justify-between">
-                  <div className="h-3.5 w-40 rounded-full bg-slate-200" />
-                  <div className="h-3.5 w-10 rounded-full bg-slate-200" />
-                </div>
-                <div className="h-2 w-full rounded-full bg-slate-200" />
-              </div>
+              <div key={i} className="animate-pulse bg-gray-200 dark:bg-gray-700 rounded-xl h-16 w-full" />
             ))}
           </div>
         )}
 
-        {/* Error state */}
+        {/* Error state (UX-1) */}
         {loadState === "error" && !overviewData && (
-          <div className="flex flex-col items-center gap-3 py-10 text-center px-6">
-            <XCircle size={32} className="text-rose-400" />
-            <p className="text-sm font-semibold text-slate-700">Could not load attendance data</p>
-            <p className="text-xs text-slate-400">Check your connection and try again.</p>
+          <div className="m-5 flex flex-col items-center gap-3 rounded-2xl border border-rose-300 bg-rose-50/70 p-6 text-center dark:border-rose-800 dark:bg-rose-950/30">
+            <XCircle size={32} className="text-rose-500" />
+            <p className="text-sm font-semibold text-rose-700 dark:text-rose-300">Could not load attendance data</p>
+            <p className="text-xs text-slate-500">Check your connection and try again.</p>
             <button
               type="button"
               onClick={() => void fetchOverview(false)}
-              className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-white transition cursor-pointer"
+              className="flex items-center gap-2 rounded-xl border border-rose-300 bg-white px-4 py-2 text-xs font-semibold text-rose-700 shadow-sm hover:bg-rose-50 transition cursor-pointer dark:border-rose-700 dark:bg-slate-900 dark:text-rose-300"
             >
               <RefreshCw size={13} /> Retry
             </button>
@@ -792,12 +786,9 @@ const AssignedActivitiesSection: React.FC<{
         {/* Content directly visible */}
         <div className="mt-4 pt-4 border-t border-slate-100 space-y-3">
             {loading && activities.length === 0 ? (
-              <div className="space-y-3">
-                {[1, 2].map((i) => (
-                  <div key={i} className="animate-pulse rounded-2xl border border-slate-200/80 bg-slate-50 p-4 space-y-2">
-                    <div className="h-4 w-3/4 rounded bg-slate-200" />
-                    <div className="h-3 w-1/2 rounded bg-slate-200" />
-                  </div>
+              <div className="space-y-3 p-1">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="animate-pulse bg-gray-200 dark:bg-gray-700 rounded-xl h-16 w-full" />
                 ))}
               </div>
             ) : activities.length === 0 ? (
@@ -934,6 +925,24 @@ function getFriendlyAttendanceMessage(result: any): {
   const code = String(result?.code || "").toUpperCase();
   const rawMsg = String(result?.error || result?.message || "");
   const lowerMsg = rawMsg.toLowerCase();
+
+  // Log raw backend error for debugging (UX-3 constraint)
+  console.error("Attendance submission raw error:", { code, error: rawMsg, result });
+
+  // Map known backend error codes to student-friendly messages (UX-3)
+  if (code && FRIENDLY_ERRORS[code]) {
+    let type: "error" | "location" | "face" | "expired" | "device" = "error";
+    if (code === "LOCATION_ERROR" || code === "OUT_OF_RANGE") type = "location";
+    else if (code === "FACE_MISMATCH") type = "face";
+    else if (code === "DEVICE_MISMATCH") type = "device";
+    else if (code === "SESSION_EXPIRED" || code === "QR_TIMEOUT" || code === "INVALID_GRANT") type = "expired";
+
+    return {
+      title: code.replace(/_/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase()),
+      message: FRIENDLY_ERRORS[code],
+      type,
+    };
+  }
 
   if (
     code === "ALREADY_MARKED" ||
@@ -1076,6 +1085,7 @@ const StudentDashboard: React.FC = () => {
   const [scanStep, setScanStep] = useState<
     "IDLE" | "PREPARING" | "SCANNING" | "SUBMITTING" | "SUCCESS" | "ALREADY_MARKED" | "ERROR"
   >("IDLE");
+  const [qrScanStep, setQrScanStep] = useState<1 | 2 | 3>(1);
   const [errorDetails, setErrorDetails] = useState<{
     title: string;
     message: string;
@@ -1465,6 +1475,7 @@ const StudentDashboard: React.FC = () => {
       dynamicPairFirstPayloadRef.current = null;
       dynamicPairFirstCapturedAtRef.current = null;
       dynamicPairLockedRef.current = false;
+      setQrScanStep(1);
       setIsScannerActive(true);
       setScannerHint("Point at the Dynamic QR — it will capture automatically.");
       setScannerStatusTone("neutral");
@@ -1488,6 +1499,7 @@ const StudentDashboard: React.FC = () => {
     dynamicPairFirstTokenRef.current = raw;
     dynamicPairFirstPayloadRef.current = payload;
     dynamicPairFirstCapturedAtRef.current = Date.now();
+    setQrScanStep(2);
     setScannerStatusTone("success");
     setScannerHint(hint);
     dynamicPairTimeoutRef.current = window.setTimeout(() => {
@@ -1997,6 +2009,69 @@ const StudentDashboard: React.FC = () => {
       {/* Step 2: Camera QR Scanner with 15s Countdown Overlay */}
       {scannerOpen && (
         <>
+          {/* Visual 3-Step Indicator (UX-2) */}
+          <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[75] w-[92%] max-w-sm rounded-2xl bg-slate-900/95 backdrop-blur-md border border-slate-700/60 py-2.5 px-4 shadow-2xl">
+            <div className="flex items-center justify-between text-xs">
+              {/* Step 1: Scan QR 1 */}
+              <div className="flex items-center gap-1.5">
+                <div
+                  className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold transition-all ${
+                    qrScanStep > 1
+                      ? "bg-emerald-500 text-slate-950 font-black"
+                      : qrScanStep === 1
+                      ? "bg-cyan-500 text-white ring-2 ring-cyan-400/50 animate-pulse font-bold"
+                      : "bg-slate-800 text-slate-400"
+                  }`}
+                >
+                  {qrScanStep > 1 ? "✓" : "1"}
+                </div>
+                <span className={qrScanStep === 1 ? "font-bold text-cyan-300" : qrScanStep > 1 ? "text-emerald-400 font-semibold" : "text-slate-400"}>
+                  Scan QR 1
+                </span>
+              </div>
+
+              {/* Connecting Line 1 */}
+              <div className={`h-[2px] flex-1 mx-2 transition-colors ${qrScanStep > 1 ? "bg-emerald-500" : "bg-slate-700"}`} />
+
+              {/* Step 2: Scan QR 2 */}
+              <div className="flex items-center gap-1.5">
+                <div
+                  className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold transition-all ${
+                    qrScanStep > 2
+                      ? "bg-emerald-500 text-slate-950 font-black"
+                      : qrScanStep === 2
+                      ? "bg-cyan-500 text-white ring-2 ring-cyan-400/50 animate-pulse font-bold"
+                      : "bg-slate-800 text-slate-400"
+                  }`}
+                >
+                  {qrScanStep > 2 ? "✓" : "2"}
+                </div>
+                <span className={qrScanStep === 2 ? "font-bold text-cyan-300" : qrScanStep > 2 ? "text-emerald-400 font-semibold" : "text-slate-400"}>
+                  Scan QR 2
+                </span>
+              </div>
+
+              {/* Connecting Line 2 */}
+              <div className={`h-[2px] flex-1 mx-2 transition-colors ${qrScanStep === 3 ? "bg-emerald-500" : "bg-slate-700"}`} />
+
+              {/* Step 3: Verified ✓ */}
+              <div className="flex items-center gap-1.5">
+                <div
+                  className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold transition-all ${
+                    qrScanStep === 3
+                      ? "bg-emerald-500 text-slate-950 font-black"
+                      : "bg-slate-800 text-slate-400"
+                  }`}
+                >
+                  {qrScanStep === 3 ? "✓" : "3"}
+                </div>
+                <span className={qrScanStep === 3 ? "font-bold text-emerald-400" : "text-slate-400"}>
+                  Verified ✓
+                </span>
+              </div>
+            </div>
+          </div>
+
           {faceVerified && faceVerifiedUntil > Date.now() && (
             <FaceVerificationProgressBar
               expiresAt={faceVerifiedUntil}
@@ -2047,9 +2122,11 @@ const StudentDashboard: React.FC = () => {
                     ? Math.round(rawGenDiff)
                     : scanGapMs;
 
+                  setQrScanStep(3);
                   closeScanner({ sequence, secondScannedAt, qr2GenToScanMs });
                   return true;
                 }
+                setQrScanStep(2);
                 setScannerStatusTone("success");
                 setScannerHint("Block 1 of 2 captured ✓ Next rotation in 1s...");
                 return false;
@@ -2064,6 +2141,7 @@ const StudentDashboard: React.FC = () => {
               return false;
             }}
             onCancel={() => {
+              setQrScanStep(1);
               closeScanner(null);
               setScanStep("IDLE");
               setStatusMsg("");
@@ -2470,9 +2548,10 @@ const StudentDashboard: React.FC = () => {
 
             <div className="max-h-[calc(86vh-64px)] overflow-y-auto p-4">
               {todayPanelLoading ? (
-                <div className="flex min-h-[220px] flex-col items-center justify-center text-center">
-                  <LoaderCircle size={28} className="animate-spin text-teal-600" />
-                  <p className="mt-3 text-sm font-semibold text-slate-800">Fetching today's attendance...</p>
+                <div className="space-y-3 p-1">
+                  {[1, 2, 3].map((i) => (
+                    <div key={i} className="animate-pulse bg-gray-200 dark:bg-gray-700 rounded-xl h-16 w-full" />
+                  ))}
                 </div>
               ) : (
                 <>
