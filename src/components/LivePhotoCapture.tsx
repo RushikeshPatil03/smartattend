@@ -342,6 +342,7 @@ const LivePhotoCapture: React.FC<{
   const autoCaptureTimerRef = useRef<number | null>(null);
   const retryCooldownTimerRef = useRef<number | null>(null);
   const verificationInFlightRef = useRef(false);
+  const smoothedProgressRef = useRef(0);
 
   const alignmentReady = true;
   const canAutoGateCapture = false;
@@ -388,6 +389,7 @@ const LivePhotoCapture: React.FC<{
     setFaceQuality(null);
     setVerificationInProgress(false);
     setVerificationMessage("");
+    smoothedProgressRef.current = 0;
     setLivenessProgress(0);
     setLivenessChallenge(null);
     setLivenessDirection(null);
@@ -661,6 +663,7 @@ const LivePhotoCapture: React.FC<{
         // ─────────────────────────────────────────────────────────────────
         setCaptureError("");
         setVerificationMessage("Checking live face movement...");
+        smoothedProgressRef.current = 0;
         setLivenessProgress(0);
         setLivenessPassed(false);
         setLivenessChallenge(null);
@@ -710,14 +713,15 @@ const LivePhotoCapture: React.FC<{
               setLivenessChallenge(update.challenge);
             }
             if (update.passed) {
+              smoothedProgressRef.current = 1.0;
               setLivenessProgress(1.0);
             } else {
-              // Smooth forward monotonic progression
-              const smoothed = Math.min(0.95, Math.max(lastReportedProgress, update.progress));
-              if (Math.abs(smoothed - lastReportedProgress) >= 0.015) {
-                lastReportedProgress = smoothed;
-                setLivenessProgress(smoothed);
-              }
+              // Exponential Moving Average (EMA): filters camera noise while remaining instantly responsive
+              const raw = update.progress;
+              const prev = smoothedProgressRef.current;
+              const smoothed = prev * 0.4 + raw * 0.6;
+              smoothedProgressRef.current = smoothed;
+              setLivenessProgress(smoothed);
             }
           },
         });
@@ -767,7 +771,7 @@ const LivePhotoCapture: React.FC<{
 
         if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
           try {
-            navigator.vibrate(50);
+            navigator.vibrate(40);
           } catch {}
         }
 
@@ -813,6 +817,7 @@ const LivePhotoCapture: React.FC<{
       setCaptureError("");
     } catch (error: any) {
       setVerificationMessage("");
+      smoothedProgressRef.current = 0;
       setLivenessProgress(0);
       setLivenessPassed(false);
       setLivenessChallenge(null);
@@ -1107,27 +1112,29 @@ const LivePhotoCapture: React.FC<{
               <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-20">
                 {/* Horizontal Pill for Left/Right */}
                 {(livenessDirection === "LEFT" || livenessDirection === "RIGHT") && (
-                  <div className="relative h-14 w-48 rounded-full bg-slate-950/70 backdrop-blur-md border border-white/10 p-1 flex items-center shadow-2xl">
+                  <div className="relative h-12 w-48 rounded-full bg-black/25 backdrop-blur-[2px] border border-white/15 p-1 flex items-center shadow-[0_4px_24px_rgba(0,0,0,0.15)]">
                     <div
-                      className={`h-12 w-12 rounded-full flex items-center justify-center transition-transform duration-75 ease-out shadow-lg ${
+                      className={`h-10 w-10 rounded-full flex items-center justify-center shadow-md ${
                         livenessPassed
-                          ? "bg-emerald-500 text-white scale-105 shadow-emerald-500/50"
-                          : "bg-sky-400 text-slate-950"
+                          ? "bg-emerald-500/90 text-white shadow-lg shadow-emerald-500/40 border border-white/40 scale-105"
+                          : "bg-sky-400/80 text-white backdrop-blur-md shadow-sky-500/20 border border-white/30"
                       }`}
                       style={{
                         transform: `translateX(${
                           livenessDirection === "LEFT"
-                            ? (1 - Math.min(1, livenessProgress)) * 128
-                            : Math.min(1, livenessProgress) * 128
+                            ? (1 - Math.min(1, livenessProgress)) * 144
+                            : Math.min(1, livenessProgress) * 144
                         }px)`,
+                        transition: "transform 140ms cubic-bezier(0.16, 1, 0.3, 1), background-color 200ms ease, border-color 200ms ease, box-shadow 200ms ease",
+                        willChange: "transform",
                       }}
                     >
                       {livenessPassed ? (
-                        <CheckCircle2 size={26} className="text-white" />
+                        <CheckCircle2 size={22} className="text-white" />
                       ) : livenessDirection === "LEFT" ? (
-                        <ArrowLeft size={24} className="stroke-[2.5]" />
+                        <ArrowLeft size={20} className="stroke-[2.5]" />
                       ) : (
-                        <ArrowRight size={24} className="stroke-[2.5]" />
+                        <ArrowRight size={20} className="stroke-[2.5]" />
                       )}
                     </div>
                   </div>
@@ -1135,27 +1142,29 @@ const LivePhotoCapture: React.FC<{
 
                 {/* Vertical Pill for Up/Down */}
                 {(livenessDirection === "UP" || livenessDirection === "DOWN") && (
-                  <div className="relative w-14 h-48 rounded-full bg-slate-950/70 backdrop-blur-md border border-white/10 p-1 flex justify-center shadow-2xl">
+                  <div className="relative w-12 h-48 rounded-full bg-black/25 backdrop-blur-[2px] border border-white/15 p-1 flex justify-center shadow-[0_4px_24px_rgba(0,0,0,0.15)]">
                     <div
-                      className={`w-12 h-12 rounded-full flex items-center justify-center transition-transform duration-75 ease-out shadow-lg ${
+                      className={`w-10 h-10 rounded-full flex items-center justify-center shadow-md ${
                         livenessPassed
-                          ? "bg-emerald-500 text-white scale-105 shadow-emerald-500/50"
-                          : "bg-sky-400 text-slate-950"
+                          ? "bg-emerald-500/90 text-white shadow-lg shadow-emerald-500/40 border border-white/40 scale-105"
+                          : "bg-sky-400/80 text-white backdrop-blur-md shadow-sky-500/20 border border-white/30"
                       }`}
                       style={{
                         transform: `translateY(${
                           livenessDirection === "UP"
-                            ? (1 - Math.min(1, livenessProgress)) * 128
-                            : Math.min(1, livenessProgress) * 128
+                            ? (1 - Math.min(1, livenessProgress)) * 144
+                            : Math.min(1, livenessProgress) * 144
                         }px)`,
+                        transition: "transform 140ms cubic-bezier(0.16, 1, 0.3, 1), background-color 200ms ease, border-color 200ms ease, box-shadow 200ms ease",
+                        willChange: "transform",
                       }}
                     >
                       {livenessPassed ? (
-                        <CheckCircle2 size={26} className="text-white" />
+                        <CheckCircle2 size={22} className="text-white" />
                       ) : livenessDirection === "UP" ? (
-                        <ArrowUp size={24} className="stroke-[2.5]" />
+                        <ArrowUp size={20} className="stroke-[2.5]" />
                       ) : (
-                        <ArrowDown size={24} className="stroke-[2.5]" />
+                        <ArrowDown size={20} className="stroke-[2.5]" />
                       )}
                     </div>
                   </div>

@@ -33,10 +33,10 @@ export const DEFAULT_MOVEMENT_ROTATION_THRESHOLD = Number(
   import.meta.env.VITE_FACEAPI_MOVEMENT_ROTATION_THRESHOLD || 0.045
 );
 
-// Calibrated for natural, effortless head movements (<250ms completion window)
-export const RELATIVE_YAW_DELTA_THRESHOLD = 0.050;
-export const RELATIVE_PITCH_DELTA_THRESHOLD = 0.045;
-export const MIN_LIVENESS_DURATION_MS = 250;
+// Calibrated for intentional, clearly visible head movements (~15°–20° turn)
+export const RELATIVE_YAW_DELTA_THRESHOLD = 0.068;
+export const RELATIVE_PITCH_DELTA_THRESHOLD = 0.058;
+export const MIN_LIVENESS_DURATION_MS = 350;
 export const CONSECUTIVE_FRAMES_REQUIRED = 2;
 
 export type ChallengeDirection = "UP" | "DOWN" | "LEFT" | "RIGHT";
@@ -360,7 +360,13 @@ export async function runMovementLiveness(
     const threshold = challenge.startsWith("TURN")
       ? RELATIVE_YAW_DELTA_THRESHOLD
       : RELATIVE_PITCH_DELTA_THRESHOLD;
-    const progress = Math.min(1.0, Math.max(0, delta / threshold));
+
+    // Small deadzone: if delta < 0.015, knob rests calmly at center when looking straight ahead
+    const DEADZONE_DELTA = 0.015;
+    const progress =
+      delta <= DEADZONE_DELTA
+        ? 0
+        : Math.min(1.0, Math.max(0, (delta - DEADZONE_DELTA) / (threshold - DEADZONE_DELTA)));
 
     const currentDelta = delta;
     const targetThreshold = threshold;
