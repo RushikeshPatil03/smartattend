@@ -118,9 +118,9 @@ const FRONT_CAMERA_CONSTRAINTS: MediaStreamConstraints = {
   audio: false,
   video: {
     facingMode: "user" as const,
-    width: { ideal: 640, max: 1280 },
-    height: { ideal: 480, max: 720 },
-    frameRate: { ideal: 15, max: 30 },
+    width: { ideal: 480, max: 640 },
+    height: { ideal: 480, max: 640 },
+    frameRate: { ideal: 30, max: 30 },
   },
 };
 
@@ -128,8 +128,8 @@ const FRONT_CAMERA_FALLBACK_CONSTRAINTS: MediaStreamConstraints = {
   audio: false,
   video: {
     facingMode: "user" as const,
-    width: { ideal: 640, max: 1280 },
-    height: { ideal: 480, max: 720 },
+    width: { ideal: 480, max: 640 },
+    height: { ideal: 480, max: 640 },
   },
 };
 
@@ -380,6 +380,8 @@ const LivePhotoCapture: React.FC<{
       }
       videoRef.current.srcObject = null;
     }
+
+    releasePrewarmedFrontStream();
 
     setCameraActive(false);
     setCameraLoading(false);
@@ -663,7 +665,7 @@ const LivePhotoCapture: React.FC<{
         setLivenessPassed(false);
         setLivenessChallenge(null);
         setLivenessDirection(null);
-        // 1. Movement Liveness Challenge
+        // 1. Movement Liveness Challenge with Concurrent 1:1 Biometric Extraction
         if (!isModelsLoaded()) {
           await loadModelsIfNeeded();
         }
@@ -671,7 +673,32 @@ const LivePhotoCapture: React.FC<{
         let lastReportedDirection: ChallengeDirection | null = null;
         let lastReportedProgress = 0;
 
+        // Concurrent biometric matching promise:
+        // Established the millisecond the initial frontal baseline is computed.
+        let liveBiometricPromise: Promise<{
+          capturedDataUrl: string;
+          match: { matched: boolean; similarity: number; distance: number; threshold: number };
+        }> | null = null;
+
+        const startConcurrentBiometricExtraction = () => {
+          if (liveBiometricPromise || !videoRef.current) return;
+          const videoEl = videoRef.current;
+          liveBiometricPromise = (async () => {
+            const [capturedDataUrl, referenceDescriptor, liveDescriptor] = await Promise.all([
+              captureVideoFrame(videoEl, DEFAULT_CAPTURE_OPTIONS),
+              computeDescriptorFromImageURL(faceVerificationReferenceUrl!),
+              computeDescriptorFromVideoFrame(videoEl),
+            ]);
+            const match = await compareFaceDescriptors(referenceDescriptor, liveDescriptor);
+            return { capturedDataUrl, match };
+          })();
+        };
+
         const liveness = await runMovementLiveness(videoRef.current!, {
+          onBaselineEstablished: () => {
+            // First 2 stable frontal frames established baseline: fire extraction concurrently!
+            startConcurrentBiometricExtraction();
+          },
           onChallengeUpdate: (update) => {
             if (update.prompt !== lastReportedPrompt) {
               lastReportedPrompt = update.prompt;
@@ -683,12 +710,10 @@ const LivePhotoCapture: React.FC<{
               setLivenessChallenge(update.challenge);
             }
             if (update.passed) {
-              // Liveness movement completed! Hold progress at 92% while 1:1 biometric comparison executes
-              setLivenessProgress(0.92);
-              setVerificationMessage("Matching face against registered profile...");
+              setLivenessProgress(1.0);
             } else {
-              // Smooth forward monotonic progression scaled up to 0.88
-              const smoothed = Math.min(0.88, Math.max(lastReportedProgress, update.progress * 0.88));
+              // Smooth forward monotonic progression
+              const smoothed = Math.min(0.95, Math.max(lastReportedProgress, update.progress));
               if (Math.abs(smoothed - lastReportedProgress) >= 0.015) {
                 lastReportedProgress = smoothed;
                 setLivenessProgress(smoothed);
@@ -701,18 +726,34 @@ const LivePhotoCapture: React.FC<{
           throw new Error(liveness.reason || "Live face movement was not detected.");
         }
 
-        // Liveness confirmed! Now run 1:1 biometric matching
-        setVerificationMessage("Matching face against registered profile...");
-        setLivenessProgress(0.94);
+        // Liveness confirmed! Ensure biometric extraction was kicked off
+        if (!liveBiometricPromise && videoRef.current) {
+          startConcurrentBiometricExtraction();
+        }
 
-        // 2. Strict 1:1 Cosine Similarity Matching (Threshold >= 0.915)
-        const [capturedDataUrl, referenceDescriptor, liveDescriptor] = await Promise.all([
-          captureVideoFrame(videoRef.current!, DEFAULT_CAPTURE_OPTIONS),
-          computeDescriptorFromImageURL(faceVerificationReferenceUrl!),
-          computeDescriptorFromVideoFrame(videoRef.current!),
-        ]);
-        imageDataUrl = capturedDataUrl;
-        const match = await compareFaceDescriptors(referenceDescriptor, liveDescriptor);
+        let biometricResult: {
+          capturedDataUrl: string;
+          match: { matched: boolean; similarity: number; distance: number; threshold: number };
+        };
+
+        try {
+          biometricResult = await liveBiometricPromise!;
+        } catch {
+          // Resilient fallback: re-run once if initial frame extraction failed
+          if (videoRef.current) {
+            const [capturedDataUrl, referenceDescriptor, liveDescriptor] = await Promise.all([
+              captureVideoFrame(videoRef.current, DEFAULT_CAPTURE_OPTIONS),
+              computeDescriptorFromImageURL(faceVerificationReferenceUrl!),
+              computeDescriptorFromVideoFrame(videoRef.current),
+            ]);
+            const match = await compareFaceDescriptors(referenceDescriptor, liveDescriptor);
+            biometricResult = { capturedDataUrl, match };
+          } else {
+            throw new Error("Unable to capture video frame for identity match.");
+          }
+        }
+
+        const { capturedDataUrl, match } = biometricResult;
         if (!match.matched) {
           throw new Error(
             `Face mismatch: Detected face does not match the registered account photo (Similarity: ${(match.similarity * 100).toFixed(1)}% / Required: ${(match.threshold * 100).toFixed(0)}%).`
@@ -724,7 +765,13 @@ const LivePhotoCapture: React.FC<{
         setLivenessPassed(true);
         setVerificationMessage("Identity Verified ✓");
 
-        // Brief 180ms visual celebration so student clearly sees the green checkmark
+        if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+          try {
+            navigator.vibrate(50);
+          } catch {}
+        }
+
+        // Brief 180ms visual celebration so student clearly sees the emerald green checkmark
         await new Promise((res) => setTimeout(res, 180));
 
         faceVerification = {
@@ -739,6 +786,7 @@ const LivePhotoCapture: React.FC<{
             similarity: match.similarity,
           },
         };
+        imageDataUrl = capturedDataUrl;
       } else {
         // ─────────────────────────────────────────────────────────────────
         // MODE B: INITIAL REGISTRATION / ENROLLMENT PHOTO CAPTURE MODE
@@ -941,6 +989,29 @@ const LivePhotoCapture: React.FC<{
     faceQualityReady,
   ]);
 
+  const activePromptTitle = useMemo(() => {
+    if (livenessPassed) return "Identity Verified ✓";
+    if (verificationInProgress) {
+      if (livenessDirection === "LEFT") return "Turn your head left";
+      if (livenessDirection === "RIGHT") return "Turn your head right";
+      if (livenessDirection === "UP") return "Tilt your head up";
+      if (livenessDirection === "DOWN") return "Tilt your head down";
+      return verificationMessage || "Align your face";
+    }
+    return title;
+  }, [livenessDirection, livenessPassed, title, verificationInProgress, verificationMessage]);
+
+  const activePromptSubtitle = useMemo(() => {
+    if (livenessPassed) return "Verified ✓";
+    if (verificationInProgress && livenessDirection) {
+      return "Keep going until the dot turns green";
+    }
+    if (verificationInProgress) {
+      return "Hold still, looking into front camera...";
+    }
+    return description;
+  }, [description, livenessDirection, livenessPassed, verificationInProgress]);
+
   return (
     <div
       className={
@@ -952,15 +1023,23 @@ const LivePhotoCapture: React.FC<{
       {!compactMode ? (
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <p className="text-sm font-semibold text-slate-900">{title}</p>
-            <p className="mt-1 text-xs leading-5 text-slate-500">{description}</p>
+            <h2 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight">
+              {activePromptTitle}
+            </h2>
+            <p className="mt-1 text-xs sm:text-sm text-slate-500">
+              {activePromptSubtitle}
+            </p>
           </div>
         </div>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-1.5 text-center sm:text-left">
           <div>
-            <p className="text-sm font-semibold text-white">{title}</p>
-            <p className="mt-0.5 text-xs leading-5 text-slate-400">{description}</p>
+            <h2 className="text-base sm:text-lg font-bold text-white tracking-tight">
+              {activePromptTitle}
+            </h2>
+            <p className="mt-0.5 text-xs sm:text-sm text-slate-400">
+              {activePromptSubtitle}
+            </p>
           </div>
           {canUseFaceQualityGate ? (
             <div
@@ -1023,127 +1102,74 @@ const LivePhotoCapture: React.FC<{
               </div>
             )}
 
-            {/* Circular Progress Ring & Direction Guidance Overlay */}
-            <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-10">
-              <div
-                className="relative flex items-center justify-center"
-                style={{ width: "min(62vw, 260px)", height: "min(62vw, 260px)" }}
-              >
-                <svg
-                  className="w-full h-full transform -rotate-90 drop-shadow-md"
-                  viewBox="0 0 240 240"
-                >
-                  <defs>
-                    <linearGradient id="livenessNormal" x1="0%" y1="0%" x2="100%" y2="100%">
-                      <stop offset="0%" stopColor="#38bdf8" />
-                      <stop offset="100%" stopColor="#0284c7" />
-                    </linearGradient>
-                    <linearGradient id="livenessMid" x1="0%" y1="0%" x2="100%" y2="100%">
-                      <stop offset="0%" stopColor="#38bdf8" />
-                      <stop offset="60%" stopColor="#f59e0b" />
-                      <stop offset="100%" stopColor="#10b981" />
-                    </linearGradient>
-                    <linearGradient id="livenessDone" x1="0%" y1="0%" x2="100%" y2="100%">
-                      <stop offset="0%" stopColor="#10b981" />
-                      <stop offset="50%" stopColor="#22c55e" />
-                      <stop offset="100%" stopColor="#059669" />
-                    </linearGradient>
-                    <filter id="emeraldGlow" x="-20%" y="-20%" width="140%" height="140%">
-                      <feGaussianBlur stdDeviation="3.5" result="blur" />
-                      <feComposite in="SourceGraphic" in2="blur" operator="over" />
-                    </filter>
-                  </defs>
-
-                  {/* Background Track Arc */}
-                  <circle
-                    cx="120"
-                    cy="120"
-                    r="98"
-                    stroke={verificationInProgress ? "rgba(255, 255, 255, 0.25)" : "rgba(255, 255, 255, 0.15)"}
-                    strokeWidth={verificationInProgress ? "6" : "3"}
-                    strokeDasharray={verificationInProgress ? undefined : "6 6"}
-                    fill="none"
-                  />
-
-                  {/* Dynamic Progress Arc */}
-                  {verificationInProgress || livenessPassed ? (
-                    <circle
-                      cx="120"
-                      cy="120"
-                      r="98"
-                      stroke={
-                        livenessPassed
-                          ? "url(#livenessDone)"
-                          : livenessProgress >= 0.5
-                          ? "url(#livenessMid)"
-                          : "url(#livenessNormal)"
-                      }
-                      strokeWidth={livenessPassed ? "8" : "7"}
-                      strokeDasharray={2 * Math.PI * 98}
-                      strokeDashoffset={2 * Math.PI * 98 * (1 - Math.min(1, Math.max(0, livenessProgress)))}
-                      strokeLinecap="round"
-                      fill="none"
-                      filter={livenessPassed || livenessProgress >= 0.8 ? "url(#emeraldGlow)" : undefined}
-                      style={{
-                        transition: "stroke-dashoffset 120ms cubic-bezier(0.2, 0.8, 0.2, 1), stroke 200ms ease",
-                      }}
-                    />
-                  ) : null}
-                </svg>
-
-                {/* Center Direction Arrow / Progress / Silhouette */}
-                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                  {livenessPassed ? (
-                    <div className="flex flex-col items-center justify-center animate-in fade-in zoom-in duration-300">
-                      <div className="rounded-full bg-emerald-500/30 p-2.5 backdrop-blur-md border border-emerald-400/50 shadow-lg shadow-emerald-500/40">
-                        <CheckCircle2 size={38} className="text-emerald-400" />
-                      </div>
-                      <span className="mt-1.5 text-[11px] font-bold text-emerald-300 tracking-wider uppercase bg-emerald-950/90 px-2.5 py-0.5 rounded-full border border-emerald-500/40 shadow-sm">
-                        Verified ✓
-                      </span>
-                    </div>
-                  ) : verificationInProgress && livenessProgress >= 0.90 ? (
-                    <div className="flex flex-col items-center justify-center animate-in fade-in duration-200">
-                      <div className="rounded-full bg-slate-900/70 p-2.5 backdrop-blur-md border border-cyan-400/50 shadow-lg shadow-cyan-500/30">
-                        <LoaderCircle size={30} className="text-cyan-300 animate-spin" />
-                      </div>
-                      <div className="mt-1.5 flex items-center gap-1.5 bg-slate-900/90 px-2.5 py-0.5 rounded-full border border-cyan-400/30 shadow-sm">
-                        <span className="text-[11px] font-bold text-cyan-200">
-                          Matching...
-                        </span>
-                      </div>
-                    </div>
-                  ) : verificationInProgress && livenessDirection ? (
-                    <div className="flex flex-col items-center justify-center animate-in fade-in duration-200">
-                      <div className="rounded-full bg-slate-900/70 p-2.5 backdrop-blur-md border border-sky-400/50 shadow-lg">
-                        {livenessDirection === "UP" && (
-                          <ArrowUp size={30} className="text-sky-300 animate-bounce" />
-                        )}
-                        {livenessDirection === "DOWN" && (
-                          <ArrowDown size={30} className="text-sky-300 animate-bounce" />
-                        )}
-                        {livenessDirection === "LEFT" && (
-                          <ArrowLeft size={30} className="text-sky-300 animate-bounce" />
-                        )}
-                        {livenessDirection === "RIGHT" && (
-                          <ArrowRight size={30} className="text-sky-300 animate-bounce" />
-                        )}
-                      </div>
-                      <div className="mt-1.5 flex items-center gap-1.5 bg-slate-900/90 px-2.5 py-0.5 rounded-full border border-sky-400/30 shadow-sm">
-                        <span className="text-[11px] font-bold text-sky-200">
-                          {Math.round(livenessProgress * 100)}%
-                        </span>
-                      </div>
-                    </div>
-                  ) : (
+            {/* Modern Directional Pill Slider (Google Face Unlock Style) & Face Guide */}
+            {(verificationInProgress || livenessPassed) && livenessDirection ? (
+              <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-20">
+                {/* Horizontal Pill for Left/Right */}
+                {(livenessDirection === "LEFT" || livenessDirection === "RIGHT") && (
+                  <div className="relative h-14 w-48 rounded-full bg-slate-950/70 backdrop-blur-md border border-white/10 p-1 flex items-center shadow-2xl">
                     <div
-                      style={{ width: "min(34vw, 140px)", height: "min(42vw, 175px)" }}
-                      className="rounded-[50%] border-2 border-dashed border-white/30"
-                    />
-                  )}
-                </div>
+                      className={`h-12 w-12 rounded-full flex items-center justify-center transition-transform duration-75 ease-out shadow-lg ${
+                        livenessPassed
+                          ? "bg-emerald-500 text-white scale-105 shadow-emerald-500/50"
+                          : "bg-sky-400 text-slate-950"
+                      }`}
+                      style={{
+                        transform: `translateX(${
+                          livenessDirection === "LEFT"
+                            ? (1 - Math.min(1, livenessProgress)) * 128
+                            : Math.min(1, livenessProgress) * 128
+                        }px)`,
+                      }}
+                    >
+                      {livenessPassed ? (
+                        <CheckCircle2 size={26} className="text-white" />
+                      ) : livenessDirection === "LEFT" ? (
+                        <ArrowLeft size={24} className="stroke-[2.5]" />
+                      ) : (
+                        <ArrowRight size={24} className="stroke-[2.5]" />
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Vertical Pill for Up/Down */}
+                {(livenessDirection === "UP" || livenessDirection === "DOWN") && (
+                  <div className="relative w-14 h-48 rounded-full bg-slate-950/70 backdrop-blur-md border border-white/10 p-1 flex justify-center shadow-2xl">
+                    <div
+                      className={`w-12 h-12 rounded-full flex items-center justify-center transition-transform duration-75 ease-out shadow-lg ${
+                        livenessPassed
+                          ? "bg-emerald-500 text-white scale-105 shadow-emerald-500/50"
+                          : "bg-sky-400 text-slate-950"
+                      }`}
+                      style={{
+                        transform: `translateY(${
+                          livenessDirection === "UP"
+                            ? (1 - Math.min(1, livenessProgress)) * 128
+                            : Math.min(1, livenessProgress) * 128
+                        }px)`,
+                      }}
+                    >
+                      {livenessPassed ? (
+                        <CheckCircle2 size={26} className="text-white" />
+                      ) : livenessDirection === "UP" ? (
+                        <ArrowUp size={24} className="stroke-[2.5]" />
+                      ) : (
+                        <ArrowDown size={24} className="stroke-[2.5]" />
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
+            ) : (
+              /* Subtle Oval Face Guide when aligning or before direction starts */
+              <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-10">
+                <div
+                  style={{ width: "min(38vw, 150px)", height: "min(48vw, 190px)" }}
+                  className="rounded-[50%] border-2 border-dashed border-white/25 transition-opacity duration-300"
+                />
+              </div>
+            )}
 
             {/* Floating Challenge Prompt (Top-Center) */}
             <div className="absolute top-3 inset-x-3 z-20 flex justify-center pointer-events-none">
@@ -1166,7 +1192,9 @@ const LivePhotoCapture: React.FC<{
                   }`}
                 />
                 <span className="truncate">
-                  {verificationInProgress && verificationMessage
+                  {livenessPassed
+                    ? "Identity Verified ✓"
+                    : verificationInProgress && verificationMessage
                     ? verificationMessage
                     : faceQualityReady
                     ? "Face ready"

@@ -213,14 +213,25 @@ function classesNeededToReach75(attended: number, total: number): number | null 
   return Math.max(0, needed);
 }
 
-function canSkipClasses(attended: number, total: number): number | null {
-  // How many classes can the student miss and still stay ≥ 75%?
-  // (attended) / (total + x) >= 0.75  — student skips but still has 'attended' present
-  // attended >= 0.75 * (total + x)
-  // x <= (attended / 0.75) - total
+/**
+ * Calculates how many missed classes will cause the student's attendance to drop below 75%.
+ * Returns the exact critical miss count (missing this many classes drops them < 75%).
+ *
+ * Example:
+ * If a student is at 80% (8/10), missing 1 class (8/11 = 72.7%) drops below 75% -> returns 1.
+ * If a student is at 90% (9/10), missing 3 classes (9/13 = 69.2%) drops below 75% -> returns 3.
+ */
+function classesUntilBelow75(attended: number, total: number): number | null {
   if (total === 0) return null;
-  const canSkip = Math.floor(attended / 0.75 - total);
-  return canSkip > 0 ? canSkip : 0;
+  const pct = attended / total;
+  if (pct < 0.75) return 0;
+  // (attended) / (total + x) >= 0.75
+  // attended >= 0.75 * total + 0.75 * x
+  // 0.75 * x <= attended - 0.75 * total
+  // x <= (attended / 0.75) - total
+  // Missing (safeMargin + 1) classes drops attendance strictly below 75%.
+  const safeMargin = Math.max(0, Math.floor(attended / 0.75 - total));
+  return safeMargin + 1;
 }
 
 /**
@@ -311,20 +322,22 @@ const SubjectProgressBar: React.FC<{ subject: SubjectAttendanceRow; animDelay: n
   subject,
   animDelay,
 }) => {
+  const isUnstarted = subject.totalClassesConducted === 0;
   const pct = subject.attendancePercentage;
   const tier = getAttendanceTier(pct);
   const needed = classesNeededToReach75(subject.classesAttended, subject.totalClassesConducted);
-  const canSkip = canSkipClasses(subject.classesAttended, subject.totalClassesConducted);
+  const missCount = classesUntilBelow75(subject.classesAttended, subject.totalClassesConducted);
 
-  // Actionable contextual hint
-  const hint =
-    pct >= 75
-      ? canSkip !== null && canSkip > 0
-        ? `Can skip ~${canSkip} more class${canSkip !== 1 ? "es" : ""}`
-        : "At safe threshold"
-      : needed !== null && needed > 0
-        ? `Attend ${needed} more to reach 75%`
-        : "Below 75% threshold";
+  // Actionable contextual hint (academically constructive warning)
+  const hint = isUnstarted
+    ? "No classes conducted yet"
+    : pct >= 75
+    ? missCount !== null && missCount > 0
+      ? `Missing ${missCount} class${missCount !== 1 ? "es" : ""} drops below 75%`
+      : "Above 75% threshold"
+    : needed !== null && needed > 0
+    ? `Attend ${needed} more to reach 75%`
+    : "Below 75% threshold";
 
   return (
     <div
@@ -350,19 +363,25 @@ const SubjectProgressBar: React.FC<{ subject: SubjectAttendanceRow; animDelay: n
 
         {/* Right: percentage + emoji */}
         <div className="flex shrink-0 items-center gap-1.5">
-          <span className={`text-[13px] font-bold tabular-nums ${tier.textColor}`}>
-            {pct.toFixed(pct % 1 === 0 ? 0 : 1)}%
+          <span
+            className={`text-[13px] font-bold tabular-nums ${
+              isUnstarted ? "text-slate-400" : tier.textColor
+            }`}
+          >
+            {isUnstarted ? "—" : `${pct.toFixed(pct % 1 === 0 ? 0 : 1)}%`}
           </span>
-          <span className="text-sm leading-none">{tier.label}</span>
+          <span className="text-sm leading-none">{isUnstarted ? "⚪" : tier.label}</span>
         </div>
       </div>
 
       {/* Progress bar */}
       <div className="relative h-2 w-full overflow-hidden rounded-full bg-slate-100">
         <div
-          className={`h-full rounded-full transition-all duration-700 ease-out ${tier.barColor}`}
+          className={`h-full rounded-full transition-all duration-700 ease-out ${
+            isUnstarted ? "bg-slate-200" : tier.barColor
+          }`}
           style={{
-            width: `${Math.min(pct, 100)}%`,
+            width: isUnstarted ? "0%" : `${Math.min(pct, 100)}%`,
             transitionDelay: `${animDelay + 100}ms`,
           }}
         />
@@ -381,8 +400,10 @@ const SubjectProgressBar: React.FC<{ subject: SubjectAttendanceRow; animDelay: n
         </span>
         <span
           className={
-            tier.color === "emerald"
-              ? "text-slate-500 font-normal"
+            isUnstarted
+              ? "text-slate-400 font-normal"
+              : tier.color === "emerald"
+              ? "text-emerald-600 font-medium"
               : `${tier.textColor} font-bold`
           }
         >
@@ -544,8 +565,10 @@ const MyAttendanceCard: React.FC = () => {
   const overallPct = overviewData?.overview?.overallAttendancePercentage ?? 0;
   const overallTier = getAttendanceTier(overallPct);
 
-  // Subjects at risk (< 75%)
-  const atRisk = sorted.filter((s) => s.attendancePercentage < ATTENDANCE_THRESHOLDS.SAFE);
+  // Subjects actively at risk (< 75% for classes already conducted)
+  const atRisk = sorted.filter(
+    (s) => s.totalClassesConducted > 0 && s.attendancePercentage < ATTENDANCE_THRESHOLDS.SAFE
+  );
   const hasData = (loadState === "loaded" || loadState === "idle") && !!overviewData;
 
   return (
@@ -1266,10 +1289,18 @@ const StudentDashboard: React.FC = () => {
     });
     gpsStopRef.current = stopGpsWatcher;
 
-    // 3. IMMEDIATE WEBGL & MODEL PRE-WARMING: Warmup neural networks and WebGL shaders on mount
-    void preloadForStudent(registeredFacePhoto);
-    void prewarmMediaPipe();
-    void prewarmQrCamera();
+    // 3. IDLE WEBGL & NEURAL NETWORK MODEL PRE-WARMING:
+    // Warm up MediaPipe models and TinyFaceDetector WASM in idle time (requestIdleCallback).
+    // Preloads student reference photo descriptor into IndexedDB / RAM.
+    // Strictly does NOT acquire physical hardware camera streams in the background on mount.
+    scheduleIdle(() => {
+      if (!mountedRef.current) return;
+      if (registeredFacePhoto) {
+        void preloadForStudent(registeredFacePhoto);
+      }
+      void prewarmMediaPipe();
+      void prewarmQrCamera();
+    }, 150);
 
     // 4. Background permission query & department list sync
     scheduleIdle(() => {
@@ -1395,6 +1426,8 @@ const StudentDashboard: React.FC = () => {
     setLiveFacePhoto("");
     setFaceGateStatus("VERIFYING");
     setFaceGateMessage("");
+    // Enforce mutual exclusion: stop front camera tracks completely before launching QR scanner
+    releasePrewarmedFrontStream();
 
     faceGateTimerRef.current = window.setTimeout(() => {
       if (!mountedRef.current) return;
@@ -1864,6 +1897,9 @@ const StudentDashboard: React.FC = () => {
     }
 
     // Step 1: Open Face Gate Modal first (Only front camera is requested)
+    // Enforce mutual exclusion: ensure rear QR camera tracks are 100% idle
+    void preloadCameraQrScanner().then((m) => m.forceReleaseAllCameraTracks?.());
+
     setFaceGateStatus("VERIFYING");
     setFaceGateMessage("Looking for your face...");
     setLiveFacePhoto("");

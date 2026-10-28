@@ -33,11 +33,11 @@ export const DEFAULT_MOVEMENT_ROTATION_THRESHOLD = Number(
   import.meta.env.VITE_FACEAPI_MOVEMENT_ROTATION_THRESHOLD || 0.045
 );
 
-// Calibrated for comfortable, natural head movements without false-positive camera noise
-export const RELATIVE_PITCH_DELTA_THRESHOLD = 0.050; // User-approved subtle nod/tilt (Up/Down)
-export const RELATIVE_YAW_DELTA_THRESHOLD = 0.070;   // User-approved subtle turn (Left/Right)
-export const MIN_LIVENESS_DURATION_MS = 400;         // User-approved active window
-export const CONSECUTIVE_FRAMES_REQUIRED = 2;        // User-approved sustained verification frames
+// Calibrated for natural, effortless head movements (<250ms completion window)
+export const RELATIVE_YAW_DELTA_THRESHOLD = 0.050;
+export const RELATIVE_PITCH_DELTA_THRESHOLD = 0.045;
+export const MIN_LIVENESS_DURATION_MS = 250;
+export const CONSECUTIVE_FRAMES_REQUIRED = 2;
 
 export type ChallengeDirection = "UP" | "DOWN" | "LEFT" | "RIGHT";
 
@@ -58,6 +58,7 @@ export type MovementLivenessOptions = {
   translateThreshold?: number;
   rotThreshold?: number;
   challenge?: LivenessChallenge;
+  onBaselineEstablished?: () => void;
   onChallengeUpdate?: (update: ChallengeUpdate) => void;
 };
 
@@ -106,8 +107,12 @@ function average(points: FacePoint[]): FacePoint {
 }
 
 export function getRandomLivenessChallenge(): LivenessChallenge {
-  const index = Math.floor(Math.random() * CHALLENGES.length);
-  return CHALLENGES[index];
+  // Prioritize Left/Right challenges (60% weight on yaw turns as yaw is 3x more reliable on mobile)
+  const rand = Math.random();
+  if (rand < 0.30) return "TURN_LEFT";
+  if (rand < 0.60) return "TURN_RIGHT";
+  if (rand < 0.80) return "TILT_UP";
+  return "TILT_DOWN";
 }
 
 export function getChallengeDirection(challenge: LivenessChallenge): ChallengeDirection {
@@ -128,13 +133,13 @@ export function getChallengeDirection(challenge: LivenessChallenge): ChallengeDi
 export function getChallengePrompt(challenge: LivenessChallenge): string {
   switch (challenge) {
     case "TURN_LEFT":
-      return "Turn head slightly left";
+      return "Turn your head left";
     case "TURN_RIGHT":
-      return "Turn head slightly right";
+      return "Turn your head right";
     case "TILT_UP":
-      return "Tilt head slightly upwards";
+      return "Tilt your head up";
     case "TILT_DOWN":
-      return "Tilt head slightly downwards";
+      return "Tilt your head down";
     default:
       return "Please make a slight head movement";
   }
@@ -300,6 +305,12 @@ export async function runMovementLiveness(
         pitchRatio: (initialPose.pitchRatio + pose.pitchRatio) / 2,
         yawRatio: (initialPose.yawRatio + pose.yawRatio) / 2,
       };
+      // Baseline established from 2 stable frontal frames: notify listener for concurrent biometric extraction
+      try {
+        options.onBaselineEstablished?.();
+      } catch {
+        // Safe execution
+      }
       continue;
     }
 
